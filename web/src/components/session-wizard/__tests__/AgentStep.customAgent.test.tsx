@@ -69,11 +69,17 @@ const uninstalledBuiltin: AgentInfo = {
   acp_capable: false,
 };
 
-function renderAgentStep(overrides: { tool?: string; agents?: AgentInfo[] }) {
+function renderAgentStep(overrides: { tool?: string; agents?: AgentInfo[]; useStructuredView?: boolean }) {
   const onChange = vi.fn();
   const utils = render(
     <AgentStep
-      data={{ ...initialData, tool: overrides.tool ?? "claude" }}
+      data={{
+        ...initialData,
+        tool: overrides.tool ?? "claude",
+        // Terminal is the default view (LOCAL PATCH), so tests that assert on
+        // the expanded structured-view card must opt in explicitly.
+        useStructuredView: overrides.useStructuredView ?? initialData.useStructuredView,
+      }}
       onChange={onChange}
       agents={overrides.agents ?? [builtin, custom]}
       profiles={[] as ProfileInfo[]}
@@ -123,6 +129,7 @@ describe("AgentStep custom-agent selection (#1252)", () => {
     const { getByRole, getByText, queryByText } = renderAgentStep({
       tool: "oc-superpowers",
       agents: [builtin, acpCustom],
+      useStructuredView: true,
     });
     expect(getByRole("switch", { name: "Use structured view" })).toBeTruthy();
     expect(getByText(/Renders the agent's plan, tool calls, and diffs/)).toBeTruthy();
@@ -133,9 +140,11 @@ describe("AgentStep custom-agent selection (#1252)", () => {
     const { getByRole, getByText } = renderAgentStep({
       tool: "claude",
       agents: [builtin, custom],
+      useStructuredView: true,
     });
-    // The ACP-capable case now renders ViewPickerCard (an
-    // interactive switch defaulting on) rather than a read-only notice.
+    // The ACP-capable case now renders ViewPickerCard (an interactive
+    // switch, defaulting off per the LOCAL PATCH) rather than a read-only
+    // notice; this case opts in to assert the expanded card content.
     expect(getByRole("switch", { name: "Use structured view" })).toBeTruthy();
     expect(getByText(/Renders the agent's plan/)).toBeTruthy();
   });

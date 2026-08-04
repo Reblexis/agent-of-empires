@@ -219,8 +219,10 @@ describe("SessionWizard reducer / APPLY_PROFILE_DEFAULTS (#1142)", () => {
 });
 
 describe("SessionWizard reducer / useStructuredView (#1580)", () => {
-  it("defaults useStructuredView to true so ACP-capable tools use the structured view by default", () => {
-    expect(initialData.useStructuredView).toBe(true);
+  it("defaults useStructuredView to false so new sessions use the terminal view by default", () => {
+    // LOCAL PATCH: terminal is the default view everywhere (TUI, `aoe add`,
+    // and now the web wizard); structured view is opt-in per session.
+    expect(initialData.useStructuredView).toBe(false);
   });
 
   it("SET_FIELD useStructuredView updates the flag", () => {
