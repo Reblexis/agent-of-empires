@@ -186,22 +186,24 @@ describe("SessionWizard structured_view payload", () => {
     return render(<SessionWizard onClose={() => {}} onCreated={() => {}} prefill={{ path: "/tmp/proj" }} />);
   }
 
-  it("sends the structured view for an ACP tool when the toggle is left on (default)", async () => {
+  it("sends the terminal view for an ACP tool when the toggle is left off (default)", async () => {
+    // LOCAL PATCH: terminal is the default view, so an untouched wizard must
+    // launch a tmux/PTY session even for an ACP-capable tool.
     const { getByText } = renderWizard();
     fireEvent.click(getByText(/Launch session/));
     await waitFor(() => expect(createSession).toHaveBeenCalled());
-    expect(createSession).toHaveBeenCalledWith(expect.objectContaining({ tool: "claude", view: "structured" }));
+    expect(createSession).toHaveBeenCalledWith(expect.objectContaining({ tool: "claude", view: "terminal" }));
   });
 
-  it("sends the terminal view when the user opts out via the toggle", async () => {
+  it("sends the structured view when the user opts in via the toggle", async () => {
     const { getByText, getByRole } = renderWizard();
     // The structured-view switch lives under More options (#2210): expand,
-    // flip it off, then launch.
+    // flip it on, then launch.
     fireEvent.click(getByText("More options"));
     fireEvent.click(getByRole("switch", { name: "Use structured view" }));
     fireEvent.click(getByText(/Launch session/));
     await waitFor(() => expect(createSession).toHaveBeenCalled());
-    expect(createSession).toHaveBeenCalledWith(expect.objectContaining({ tool: "claude", view: "terminal" }));
+    expect(createSession).toHaveBeenCalledWith(expect.objectContaining({ tool: "claude", view: "structured" }));
   });
 
   it("sends profile-resolved agent model and effort defaults", async () => {
@@ -214,13 +216,16 @@ describe("SessionWizard structured_view payload", () => {
       },
       sandbox: {},
     } as never);
-    const { getAllByText, getByText } = renderWizardWithoutToolPrefill();
+    const { getAllByText, getByText, getByRole } = renderWizardWithoutToolPrefill();
     // The resolved launch command (#1911) lives in the agent options under
     // the More options fold; expand it, then wait for the profile-resolved
     // "opencode" command to confirm APPLY_PROFILE_DEFAULTS landed before we
     // launch.
     fireEvent.click(getByText("More options"));
     await waitFor(() => expect(getAllByText(/opencode/).length).toBeGreaterThan(0));
+    // LOCAL PATCH: terminal is now the default, and agent_model/agent_effort
+    // ride along only on a structured-view create, so opt in explicitly.
+    fireEvent.click(getByRole("switch", { name: "Use structured view" }));
     fireEvent.click(getByText(/Launch session/));
     await waitFor(() => expect(createSession).toHaveBeenCalled());
     expect(createSession).toHaveBeenCalledWith(

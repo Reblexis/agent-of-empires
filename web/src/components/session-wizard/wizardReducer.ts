@@ -54,9 +54,10 @@ export interface WizardData {
    *  scratch arm. Not part of the submit payload. */
   pathIsGitRepo: boolean;
   /** Per-session opt-in to structured view rendering for ACP-capable tools.
-   *  Defaults true so ACP-capable tools render in the structured view by
-   *  default ("ACP tools run in structured view" behavior); the user
-   *  can turn it off in AgentStep to launch a tmux/terminal session. The
+   *  LOCAL PATCH: defaults false so every new session launches in the
+   *  terminal (tmux/PTY) view, matching the TUI and `aoe add`, which both
+   *  treat the terminal as the default and structured as opt-in. The user
+   *  can turn it on in AgentStep to launch a structured-view session. The
    *  submit path sends `view: "structured"` only when the tool is
    *  ACP-capable and this flag is set; the server re-validates
    *  capability (src/server/api/sessions.rs). Intentionally not
@@ -137,7 +138,7 @@ export const initialData: WizardData = {
   commandOverride: "",
   scratch: false,
   pathIsGitRepo: true,
-  useStructuredView: true,
+  useStructuredView: false,
   agentModel: "",
   agentEffort: "",
   importAcpSessionId: "",

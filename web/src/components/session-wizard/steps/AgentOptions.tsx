@@ -310,8 +310,10 @@ export function AgentOptions({
   return (
     <div>
       {/* View picker. ACP-capable tools get a per-session structured-view
-          toggle (default on, see #1580); other tools show a read-only
-          terminal fallback notice. Lives under More options (#2210). */}
+          toggle (LOCAL PATCH: default off, so new sessions launch in the
+          terminal view; see #1580 for the original default-on behavior);
+          other tools show a read-only terminal fallback notice. Lives
+          under More options (#2210). */}
       {acpCapable ? (
         <ViewPickerCard
           checked={data.useStructuredView}
