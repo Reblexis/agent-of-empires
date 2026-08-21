@@ -22,6 +22,12 @@ vi.mock("../../hooks/useWebSettings", () => ({
   useWebSettings: () => ({ settings: { mobileFontSize: 14, desktopFontSize: 14 }, update: vi.fn() }),
 }));
 
+const writeClipboardMock = vi.hoisted(() => vi.fn());
+vi.mock("../../lib/clipboard", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../lib/clipboard")>()),
+  writeClipboard: writeClipboardMock,
+}));
+
 const CLIENT_HEIGHT = 200;
 const LINE_H = 14 * 1.2; // fontSize * LINE_RATIO
 
@@ -164,6 +170,30 @@ describe("MobileLiveTerminal live-edge scroll", () => {
     scrollHeight += LINE_H;
     stream();
     expect(scroller.scrollTop).toBe(bottom()); // follow resumes after release
+  });
+
+  it("copies the selection to the clipboard when the drag releases", () => {
+    // Matches the attached-terminal docs: releasing the drag copies, no
+    // Ctrl/Cmd+C needed. Only selections anchored inside the scroller count.
+    writeClipboardMock.mockClear();
+    const { scroller } = mount();
+    fireEvent.pointerDown(scroller, { pointerType: "mouse", button: 0 });
+
+    const textNode = document.createTreeWalker(scroller, NodeFilter.SHOW_TEXT).nextNode();
+    expect(textNode).not.toBeNull();
+    const range = document.createRange();
+    range.selectNodeContents(textNode!);
+    const sel = window.getSelection()!;
+    sel.removeAllRanges();
+    sel.addRange(range);
+
+    fireEvent.pointerUp(window, { pointerType: "mouse", button: 0 });
+    expect(writeClipboardMock).toHaveBeenCalledWith(textNode!.textContent);
+
+    // A release with no prior drag over the terminal must not copy.
+    writeClipboardMock.mockClear();
+    fireEvent.pointerUp(window, { pointerType: "mouse", button: 0 });
+    expect(writeClipboardMock).not.toHaveBeenCalled();
   });
 
   it("does not detach when a content shrink clamps scrollTop to the new bottom", () => {
