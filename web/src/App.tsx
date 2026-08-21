@@ -133,6 +133,7 @@ import { BottomDock } from "./components/BottomDock";
 import { PaneDndController } from "./components/PaneDndController";
 import { visibleToFullIndex, type DropTarget } from "./components/paneDnd";
 import { BackgroundAgentsPanel } from "./components/acp/BackgroundAgentsPanel";
+import { ContextPane } from "./components/ContextPane";
 import { DiffPane } from "./components/DiffPane";
 import { FilesPane } from "./components/FilesPane";
 import { FileContentViewer } from "./components/diff/FileContentViewer";
@@ -633,7 +634,7 @@ function AppContent({
       const defaultDock: DockLocation =
         pluginPaneById.get(kind)?.defaultDock ?? BUILTIN_PANES.find((p) => p.id === kind)?.defaultDock ?? "right";
       if (isPluginPaneId(kind)) togglePlugin(kind, defaultDock);
-      else toggleKind(kind as "diff" | "terminal" | "agents" | "files", defaultDock);
+      else toggleKind(kind as "diff" | "terminal" | "agents" | "files" | "context", defaultDock);
     },
     [toggleKind, togglePlugin, pluginPaneById],
   );
@@ -765,6 +766,9 @@ function AppContent({
     // The background-agents panel only applies to structured-view (ACP)
     // sessions; a plain terminal session never launches sub-agents.
     ...(activeSession?.view === "structured" ? ["agents"] : []),
+    // The context recap reads the tmux scrollback, so it exists only for
+    // terminal sessions (structured ones summarize inline via /summarize).
+    ...(caps.canUseTerminal && activeSession && activeSession.view !== "structured" ? ["context"] : []),
     ...(caps.cityhall ? [] : pluginPanes.map((p) => p.id)),
   ];
 
@@ -1842,6 +1846,12 @@ function AppContent({
         // read) resets instead of requesting the old path from the new
         // session. See #3088 review.
         return <FilesPane key={activeSessionId ?? "none"} sessionId={activeSessionId} />;
+      }
+      if (id === "context") {
+        // Remount on session switch so the recap and its polling reset.
+        return (
+          <ContextPane key={activeSessionId ?? "none"} sessionId={activeSessionId} session={activeSession ?? null} />
+        );
       }
       if (id === "diff") {
         return (

@@ -275,6 +275,11 @@ export function syncPluginTabs(layout: DockLayout, available: { id: TabId; defau
 // diff + terminal tabs it always had. See #3088.
 const AUTO_OPEN_PANES = BUILTIN_PANES.filter((p) => p.id !== "agents" && p.id !== "files");
 
+// Panes that existed in the v1 layout schema. Migration must only carry these:
+// a pane that postdates v1 (context) can never have been "open" in a v1
+// layout, so the absent-key-means-open default must not apply to it.
+const V1_PANES = AUTO_OPEN_PANES.filter((p) => p.id === "diff" || p.id === "terminal");
+
 function defaultTemplate(): DockLayout {
   // Desktop opens diff + terminal in the right dock (matches the historical
   // expanded right column); narrow viewports start empty and drive the surface
@@ -296,7 +301,7 @@ function migrateTemplate(): DockLayout {
     try {
       const parsed = JSON.parse(v1) as Record<string, unknown>;
       let l = emptyDockLayout();
-      for (const p of AUTO_OPEN_PANES) {
+      for (const p of V1_PANES) {
         const v = parsed[p.id];
         let open = true;
         let dock: DockLocation = p.defaultDock;
@@ -321,7 +326,7 @@ function migrateTemplate(): DockLayout {
   if (collapsed === "1") return emptyDockLayout();
   if (collapsed === "0") {
     let l = emptyDockLayout();
-    for (const p of AUTO_OPEN_PANES) {
+    for (const p of V1_PANES) {
       const tabId = p.id === "terminal" ? terminalTabId(0) : p.id;
       l = addTab(l, p.defaultDock, tabId, false);
     }
@@ -412,7 +417,7 @@ export interface PaneLayoutApi {
   /** Reorder, move across docks/groups, or split into a new group. */
   placeTab: (tabId: TabId, target: PlaceTarget) => void;
   /** Activity-bar toggle for a built-in kind ("diff" or "terminal"). */
-  toggleKind: (kind: "diff" | "terminal" | "agents" | "files", defaultDock: DockLocation) => void;
+  toggleKind: (kind: "diff" | "terminal" | "agents" | "files" | "context", defaultDock: DockLocation) => void;
   /** Add/remove a plugin pane tab (activity-bar toggle). */
   togglePlugin: (id: TabId, defaultDock: DockLocation) => void;
   syncPlugins: (available: { id: TabId; defaultDock: DockLocation }[]) => void;
@@ -535,11 +540,11 @@ export function usePaneLayout(sessionId: string | null): PaneLayoutApi {
     [mutate],
   );
   const toggleKind = useCallback(
-    (kind: "diff" | "terminal" | "agents" | "files", defaultDock: DockLocation) =>
+    (kind: "diff" | "terminal" | "agents" | "files" | "context", defaultDock: DockLocation) =>
       mutate((l) => {
-        // Single-instance panes (diff, files, agents) toggle their one tab; the
-        // terminal kind is multi-instance and toggles the whole group.
-        if (kind === "diff" || kind === "agents" || kind === "files") {
+        // Single-instance panes (diff, files, agents, context) toggle their one
+        // tab; the terminal kind is multi-instance and toggles the whole group.
+        if (kind === "diff" || kind === "agents" || kind === "files" || kind === "context") {
           const at = findTab(l, kind);
           if (at) return isDockCollapsed(l, at.dock) ? openOrRevealTab(l, kind, defaultDock) : removeTab(l, kind);
           return openOrRevealTab(l, kind, defaultDock);

@@ -3317,6 +3317,129 @@ pub async fn summarize_session(
     StatusCode::ACCEPTED.into_response()
 }
 
+/// Latest cached terminal-context recap for a session, plus whether a recap
+/// one-shot is in flight right now. `text`/`generated_at` are null until the
+/// first successful generation; the web "Context" pane polls this while
+/// `inflight` is true. See `session::terminal_context`.
+pub async fn get_terminal_context(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    // Defense in depth: a recap is conversation-derived text from a plain
+    // terminal session, which a locked-down CityHall client has no business
+    // reading (its enumeration is structured-only anyway).
+    if let Some(resp) = cityhall_block_non_structured(&state, &id).await {
+        return resp;
+    }
+    let exists = {
+        let instances = state.instances.read().await;
+        instances.iter().any(|i| i.id == id)
+    };
+    if !exists {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "message": "Session not found" })),
+        )
+            .into_response();
+    }
+    let snapshot = state
+        .terminal_context
+        .lock()
+        .expect("terminal_context poisoned")
+        .get(&id)
+        .cloned();
+    let inflight = state
+        .terminal_context_inflight
+        .lock()
+        .expect("terminal_context_inflight poisoned")
+        .contains(&id);
+    Json(serde_json::json!({
+        "text": snapshot.as_ref().map(|s| s.text.clone()),
+        "generated_at": snapshot.as_ref().map(|s| s.generated_at),
+        "inflight": inflight,
+    }))
+    .into_response()
+}
+
+/// Start a terminal-context recap one-shot for a session. Preflights the same
+/// eligibility gate the spawned task re-applies so the caller never gets a 202
+/// for a session that would silently drop. A `202` means "recap started";
+/// the pane polls the GET twin until `inflight` clears. Terminal sessions
+/// only; structured sessions use `/summarize`.
+pub async fn refresh_terminal_context(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = cityhall_block_non_structured(&state, &id).await {
+        return resp;
+    }
+    if let Some(resp) = super::acp::read_only_block(&state) {
+        return resp;
+    }
+
+    let Some((profile, tool, command, project_path, sandboxed, structured)) = ({
+        let instances = state.instances.read().await;
+        instances.iter().find(|i| i.id == id).map(|i| {
+            (
+                i.source_profile.clone(),
+                i.tool.clone(),
+                i.command.clone(),
+                i.project_path.clone(),
+                i.is_sandboxed(),
+                i.is_structured(),
+            )
+        })
+    }) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "message": "Session not found" })),
+        )
+            .into_response();
+    };
+
+    let resolved = crate::session::repo_config::resolve_config_with_repo_or_warn(
+        &profile,
+        std::path::Path::new(&project_path),
+    );
+    if let Err(reason) = crate::session::terminal_context::resolve_context_agent(
+        structured,
+        &tool,
+        &resolved.session.smart_rename_agent,
+        sandboxed,
+        &command,
+        &resolved.session.agent_command_override,
+    ) {
+        use crate::session::smart_rename::SkipReason;
+        let (status, message) = match reason {
+            SkipReason::NotStructured => (
+                StatusCode::BAD_REQUEST,
+                "Structured sessions summarize via /summarize, not the context pane",
+            ),
+            SkipReason::Sandboxed => (
+                StatusCode::CONFLICT,
+                "Context recaps are not available for sandboxed sessions",
+            ),
+            SkipReason::NoOneshot => (StatusCode::CONFLICT, "The recap agent has no one-shot mode"),
+            SkipReason::CommandOverridden => (
+                StatusCode::CONFLICT,
+                "The recap agent's command is overridden",
+            ),
+            // resolve_context_agent never returns the rename-only reasons.
+            _ => (
+                StatusCode::CONFLICT,
+                "Context recap is unavailable for this session",
+            ),
+        };
+        return (status, Json(serde_json::json!({ "message": message }))).into_response();
+    }
+
+    tokio::spawn(crate::session::terminal_context::try_terminal_context(
+        state.clone(),
+        id.clone(),
+    ));
+    StatusCode::ACCEPTED.into_response()
+}
+
 /// Stop a session, matching the TUI's `x` keybind: kill the tmux pane and
 /// stop (but do not remove) the Docker container for plain sessions; shut down
 /// the worker for structured-view sessions. The session record is preserved
