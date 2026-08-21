@@ -146,6 +146,26 @@ describe("MobileLiveTerminal live-edge scroll", () => {
     expect(scroller.scrollTop).toBe(bottom());
   });
 
+  it("suspends the follow pin while a mouse selection drag is held, resumes on release", () => {
+    // Regression: streamed frames re-pinning scrollTop during a desktop
+    // drag-select scrolled the text up under the pointer, so the finished
+    // selection covered rows above the intended ones.
+    const { scroller, stream } = mount();
+    expect(scroller.scrollTop).toBe(bottom());
+    const held = scroller.scrollTop;
+
+    fireEvent.pointerDown(scroller, { pointerType: "mouse", button: 0 });
+    scrollHeight += 2 * LINE_H;
+    stream();
+    stream();
+    expect(scroller.scrollTop).toBe(held); // no pin while the button is down
+
+    fireEvent.pointerUp(window, { pointerType: "mouse", button: 0 });
+    scrollHeight += LINE_H;
+    stream();
+    expect(scroller.scrollTop).toBe(bottom()); // follow resumes after release
+  });
+
   it("does not detach when a content shrink clamps scrollTop to the new bottom", () => {
     const { scroller, stream } = mount();
     expect(scroller.scrollTop).toBe(bottom());
