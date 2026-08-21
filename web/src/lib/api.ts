@@ -2236,6 +2236,52 @@ export async function summarizeSession(id: string): Promise<{ ok: boolean; messa
   }
 }
 
+/** Daemon-cached terminal-context recap for a session. `text`/`generated_at`
+ *  are null until the first successful generation; `inflight` is true while a
+ *  recap one-shot is running (the Context pane polls until it clears). */
+export interface TerminalContextResult {
+  text: string | null;
+  generated_at: string | null;
+  inflight: boolean;
+}
+
+/** Read the cached terminal-context recap. Null on any fetch failure so the
+ *  pane can distinguish "no recap yet" from "could not reach the daemon". */
+export async function getTerminalContext(id: string): Promise<TerminalContextResult | null> {
+  try {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/terminal-context`);
+    if (!res.ok) return null;
+    return (await res.json()) as TerminalContextResult;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Start a terminal-context recap one-shot. A 202 means "started"; the result
+ * lands in the cache read by {@link getTerminalContext}. Returns the server's
+ * message on a gate failure (structured session, sandboxed, no one-shot
+ * agent) so the pane can surface it.
+ */
+export async function refreshTerminalContext(id: string): Promise<{ ok: boolean; message?: string }> {
+  try {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/terminal-context`, {
+      method: "POST",
+    });
+    if (res.ok) return { ok: true };
+    let message: string | undefined;
+    try {
+      const body = await res.json();
+      message = typeof body?.message === "string" ? body.message : undefined;
+    } catch {
+      // non-JSON error body; fall through with no message
+    }
+    return { ok: false, message };
+  } catch {
+    return { ok: false };
+  }
+}
+
 /**
  * Edit a managed worktree session's workdir name: move the worktree
  * directory and, optionally, rename its git branch. The session must not be

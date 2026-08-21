@@ -389,6 +389,22 @@ pub struct AppState {
     /// title call; a dedicated single slot keeps heavy background summaries
     /// from starving the snappy first-prompt rename. See #2808.
     pub summary_semaphore: tokio::sync::Semaphore,
+    /// Latest terminal-context recap per session, for the web "Context" pane.
+    /// Daemon-memory only: a recap is cheap to regenerate from the pane, so it
+    /// is not worth persisting across restarts. Synchronous mutex; tiny
+    /// critical sections. See `session::terminal_context`.
+    pub terminal_context: std::sync::Mutex<
+        std::collections::HashMap<String, crate::session::terminal_context::ContextSnapshot>,
+    >,
+    /// Session ids with an in-flight terminal-context one-shot, so the pane's
+    /// stale-on-open trigger and its refresh button cannot spawn concurrent
+    /// recap generators for one session. Also read by the GET endpoint so the
+    /// pane knows to keep polling. See `session::terminal_context`.
+    pub terminal_context_inflight: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// Global cap (1) on concurrent terminal-context one-shots, sized like
+    /// `summary_semaphore` and for the same reason: a recap reads a large
+    /// transcript, so it must not starve the snappy smart-rename pool.
+    pub terminal_context_semaphore: tokio::sync::Semaphore,
     /// Suppression set for the startup-recovery cascade. While an entry is
     /// present and younger than `recovery::RECENTLY_RESTARTED_TTL`, the
     /// `status_poll_loop` skips `update_status_with_metadata` for that
@@ -1222,6 +1238,11 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         summary_semaphore: tokio::sync::Semaphore::new(
             crate::session::conversation_summary::MAX_CONCURRENT,
         ),
+        terminal_context: std::sync::Mutex::new(std::collections::HashMap::new()),
+        terminal_context_inflight: std::sync::Mutex::new(std::collections::HashSet::new()),
+        terminal_context_semaphore: tokio::sync::Semaphore::new(
+            crate::session::terminal_context::MAX_CONCURRENT,
+        ),
         recently_restarted: crate::session::recovery::new_recently_restarted(),
         delete_epoch: std::sync::atomic::AtomicU64::new(0),
         recovery_pending: crate::session::recovery::new_recovery_pending(),
@@ -1797,6 +1818,10 @@ fn build_router(state: Arc<AppState>) -> Router {
             post(api::force_smart_rename),
         )
         .route("/api/sessions/{id}/summarize", post(api::summarize_session))
+        .route(
+            "/api/sessions/{id}/terminal-context",
+            get(api::get_terminal_context).post(api::refresh_terminal_context),
+        )
         .route("/api/sessions/{id}/start", post(api::start_session))
         .route(
             "/api/sessions/{id}/terminal",
@@ -6180,6 +6205,11 @@ pub mod test_support {
             summary_inflight: std::sync::Mutex::new(std::collections::HashSet::new()),
             summary_semaphore: tokio::sync::Semaphore::new(
                 crate::session::conversation_summary::MAX_CONCURRENT,
+            ),
+            terminal_context: std::sync::Mutex::new(std::collections::HashMap::new()),
+            terminal_context_inflight: std::sync::Mutex::new(std::collections::HashSet::new()),
+            terminal_context_semaphore: tokio::sync::Semaphore::new(
+                crate::session::terminal_context::MAX_CONCURRENT,
             ),
             recently_restarted: crate::session::recovery::new_recently_restarted(),
             delete_epoch: std::sync::atomic::AtomicU64::new(0),
