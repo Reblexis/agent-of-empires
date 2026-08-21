@@ -2494,7 +2494,9 @@ const CITYHALL_MUTATION_ALLOW: &[(&str, &str)] = &[
 /// #7.
 #[cfg(test)]
 const CITYHALL_MUTATION_DENY: &[(&str, &str)] = &[
-    // Terminal surface.
+    // Terminal surface. The context recap is terminal-derived text, so it is
+    // denied with the rest of the pane/output reads.
+    ("POST", "/api/sessions/{id}/terminal-context"),
     ("POST", "/api/sessions/{id}/ensure"),
     ("POST", "/api/sessions/{id}/send"),
     ("POST", "/api/sessions/{id}/terminal"),
