@@ -131,6 +131,135 @@ export function splitUrls(text: string): UrlPart[] {
   return parts;
 }
 
+/** One clickable range inside a rendered row, in UTF-16 code-unit offsets of
+ *  the row's joined text. `href` is the FULL url, which for a wrapped URL is
+ *  longer than the row's visible fragment. */
+export interface LinkSpan {
+  start: number;
+  end: number;
+  href: string;
+}
+
+/** How many extra rows a wrapped URL may continue across. tmux panes are at
+ *  most a few hundred cells wide, so 8 rows covers every real URL while
+ *  bounding the join walk. */
+const MAX_URL_CONTINUATION_ROWS = 8;
+
+/**
+ * Per-row link spans for a window of rendered rows, matching URLs on each
+ * row's JOINED text (so a URL styled as several ANSI segments is one link,
+ * not per-segment fragments) and joining a URL that wraps across full-width
+ * rows (tmux wraps by cells, so a long URL continues on the next row with no
+ * marker). Every row a wrapped URL touches gets a span carrying the full
+ * joined href. Rows without links share the exported `NO_LINKS` constant so
+ * memoized row components keep identity.
+ *
+ * `matchCache`/`spanCache`, when supplied, are keyed by row segment-array
+ * identity (stable across frames via LineParseCache) so a streamed frame
+ * only pays regex work for changed rows and unchanged rows keep their span
+ * array identity.
+ */
+export const NO_LINKS: LinkSpan[] = [];
+
+interface RowMatch {
+  index: number;
+  raw: string;
+}
+
+export function computeRowLinks(
+  rows: AnsiSegment[][],
+  cols: number,
+  matchCache?: WeakMap<AnsiSegment[], RowMatch[]>,
+  spanCache?: WeakMap<AnsiSegment[], LinkSpan[]>,
+): LinkSpan[][] {
+  const texts: string[] = rows.map((r) => lineText(r));
+  const matchesFor = (i: number): RowMatch[] => {
+    const key = rows[i]!;
+    const hit = matchCache?.get(key);
+    if (hit) return hit;
+    const out: RowMatch[] = [];
+    for (const m of texts[i]!.matchAll(URL_RE)) out.push({ index: m.index, raw: m[0] });
+    matchCache?.set(key, out);
+    return out;
+  };
+  const result: LinkSpan[][] = new Array(rows.length).fill(NO_LINKS);
+  // Rows already consumed as a continuation carry the code-unit offset the
+  // primary scan should resume from (the URL fragment prefix is spoken for).
+  const resumeAt: number[] = new Array(rows.length).fill(0);
+  for (let i = 0; i < rows.length; i++) {
+    const text = texts[i]!;
+    const spans: LinkSpan[] = result[i] === NO_LINKS ? [] : [...result[i]!];
+    for (const m of matchesFor(i)) {
+      if (m.index < resumeAt[i]!) continue;
+      let raw = m.raw;
+      let end = m.index + raw.length;
+      // A match running to the exact end of a full-width row continues on
+      // the next row: tmux wrapped it mid-URL with no marker. Join the
+      // leading non-space run of each following row while the wrap keeps
+      // filling the full width.
+      const contSpans: { row: number; end: number }[] = [];
+      if (end === text.length && textWidth(text) === cols) {
+        let j = i + 1;
+        while (j < rows.length && j - i <= MAX_URL_CONTINUATION_ROWS) {
+          const next = texts[j]!;
+          const frag = /^\S+/.exec(next);
+          if (!frag) break;
+          raw += frag[0];
+          contSpans.push({ row: j, end: frag[0].length });
+          if (frag[0].length === next.length && textWidth(next) === cols) {
+            j++;
+            continue;
+          }
+          break;
+        }
+      }
+      const trimmed = raw.replace(URL_TRAILING, "");
+      const href = /^https?:\/\/\S/.test(trimmed) ? trimmed : raw;
+      const cut = raw.length - href.length;
+      // Trailing punctuation trimmed from the href also leaves the visible
+      // span, shrinking the LAST fragment (dropping it entirely if the trim
+      // ate the whole fragment).
+      if (contSpans.length > 0) {
+        const last = contSpans[contSpans.length - 1]!;
+        last.end -= cut;
+        if (last.end <= 0) contSpans.pop();
+      } else {
+        end -= cut;
+      }
+      if (end > m.index) spans.push({ start: m.index, end, href });
+      for (const c of contSpans) {
+        const rowSpans = result[c.row] === NO_LINKS ? [] : [...result[c.row]!];
+        rowSpans.push({ start: 0, end: c.end, href });
+        result[c.row] = rowSpans;
+        resumeAt[c.row] = Math.max(resumeAt[c.row]!, c.end);
+      }
+    }
+    if (spans.length > 0) result[i] = spans;
+  }
+  // Preserve span-array identity for unchanged rows so memoized row
+  // components skip them. Continuations make a row's spans depend on its
+  // neighbors, so the cache is validated by value, not just row identity.
+  if (spanCache) {
+    for (let i = 0; i < rows.length; i++) {
+      if (result[i] === NO_LINKS) continue;
+      const key = rows[i]!;
+      const cached = spanCache.get(key);
+      if (
+        cached &&
+        cached.length === result[i]!.length &&
+        cached.every(
+          (s, k) => s.start === result[i]![k]!.start && s.end === result[i]![k]!.end && s.href === result[i]![k]!.href,
+        )
+      ) {
+        result[i] = cached;
+      } else {
+        spanCache.set(key, result[i]!);
+      }
+    }
+  }
+  return result;
+}
+
 // Terminal cell widths, wcwidth-style: combining marks and zero-width
 // joiners take no cell; East Asian Wide/Fullwidth and emoji take two.
 // tmux wraps by cells, so wrapping (and the cursor math built on it)

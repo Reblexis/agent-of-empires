@@ -1,6 +1,17 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
-import { LineParseCache, ansiToLines, findCursorCharIndex, lineText, splitUrls, wrapLine } from "./liveTermLines";
+import {
+  LineParseCache,
+  NO_LINKS,
+  ansiToLines,
+  computeRowLinks,
+  findCursorCharIndex,
+  lineText,
+  splitUrls,
+  wrapLine,
+  type LinkSpan,
+} from "./liveTermLines";
+import type { AnsiSegment } from "./ansi";
 
 describe("ansiToLines", () => {
   it("splits plain text into lines and drops the capture trailing terminator", () => {
@@ -156,6 +167,78 @@ describe("splitUrls", () => {
 
   it("does not linkify a bare host:port without a scheme", () => {
     expect(splitUrls("localhost:3000 is up")).toEqual([{ text: "localhost:3000 is up", url: null }]);
+  });
+});
+
+describe("computeRowLinks", () => {
+  const row = (...texts: string[]): AnsiSegment[] => texts.map((text) => ({ text, style: {} }));
+
+  it("matches a URL split across styled segments as one span", () => {
+    // Claude Code styles URLs, so a segment boundary can fall mid-URL; the
+    // per-segment matcher this replaces linkified only the first fragment.
+    const rows = [row("see ", "https://exam", "ple.com/pull/1", " ok")];
+    expect(computeRowLinks(rows, 80)).toEqual([[{ start: 4, end: 30, href: "https://example.com/pull/1" }]]);
+  });
+
+  it("shares the NO_LINKS identity for rows without URLs", () => {
+    const rows = [row("plain"), row("also plain")];
+    const links = computeRowLinks(rows, 80);
+    expect(links[0]).toBe(NO_LINKS);
+    expect(links[1]).toBe(NO_LINKS);
+  });
+
+  it("joins a URL wrapped across full-width rows into one href", () => {
+    // 20-col pane: the URL fills the row exactly and continues on the next.
+    const first = "see https://a.io/abc"; // 20 cells, URL runs to the edge
+    const second = "defgh done";
+    const rows = [row(first), row(second)];
+    const links = computeRowLinks(rows, 20);
+    expect(links[0]).toEqual([{ start: 4, end: 20, href: "https://a.io/abcdefgh" }]);
+    expect(links[1]).toEqual([{ start: 0, end: 5, href: "https://a.io/abcdefgh" }]);
+  });
+
+  it("does not join when the next row starts with whitespace", () => {
+    const first = "see https://a.io/abc"; // full 20-col row
+    const rows = [row(first), row(" unrelated")];
+    const links = computeRowLinks(rows, 20);
+    expect(links[0]).toEqual([{ start: 4, end: 20, href: "https://a.io/abc" }]);
+    expect(links[1]).toBe(NO_LINKS);
+  });
+
+  it("does not join when the row is not full width", () => {
+    const rows = [row("see https://a.io/abc"), row("next line")];
+    // 40-col pane: the URL ends mid-row, so the newline is a real break.
+    const links = computeRowLinks(rows, 40);
+    expect(links[0]).toEqual([{ start: 4, end: 20, href: "https://a.io/abc" }]);
+    expect(links[1]).toBe(NO_LINKS);
+  });
+
+  it("trims trailing punctuation off the joined continuation", () => {
+    const first = "see https://a.io/abc"; // full 20-col row
+    const rows = [row(first), row("def). more text")];
+    const links = computeRowLinks(rows, 20);
+    expect(links[0]).toEqual([{ start: 4, end: 20, href: "https://a.io/abcdef" }]);
+    expect(links[1]).toEqual([{ start: 0, end: 3, href: "https://a.io/abcdef" }]);
+  });
+
+  it("still finds URLs after a continuation fragment on the same row", () => {
+    const first = "see https://a.io/abc"; // full 20-col row
+    const rows = [row(first), row("def and https://b.io")];
+    const links = computeRowLinks(rows, 20);
+    expect(links[1]).toEqual([
+      { start: 0, end: 3, href: "https://a.io/abcdef" },
+      { start: 8, end: 20, href: "https://b.io" },
+    ]);
+  });
+
+  it("keeps span-array identity for unchanged rows across calls", () => {
+    const stable = row("see https://a.io/x done");
+    const rows = [stable, row("plain")];
+    const matchCache = new WeakMap<AnsiSegment[], { index: number; raw: string }[]>();
+    const spanCache = new WeakMap<AnsiSegment[], LinkSpan[]>();
+    const a = computeRowLinks(rows, 80, matchCache, spanCache);
+    const b = computeRowLinks([stable, row("other")], 80, matchCache, spanCache);
+    expect(b[0]).toBe(a[0]);
   });
 });
 

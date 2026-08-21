@@ -1,7 +1,15 @@
 import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ReactNode, RefObject } from "react";
 import type { AnsiSegment, AnsiStyle } from "../lib/ansi";
-import { LineParseCache, findCursorCharIndex, splitUrls, textWidth, wrapLine } from "../lib/liveTermLines";
+import {
+  LineParseCache,
+  NO_LINKS,
+  computeRowLinks,
+  findCursorCharIndex,
+  textWidth,
+  wrapLine,
+  type LinkSpan,
+} from "../lib/liveTermLines";
 import { wheelNotches } from "../lib/liveMouse";
 import { registerMobileKeyboardProxyReceiver, type MobileKeyboardProxyInput } from "../lib/mobileKeyboardProxy";
 import { writeClipboard } from "../lib/clipboard";
@@ -307,44 +315,70 @@ function specialKeySequence(e: TerminalKeyLike): string | null {
   }
 }
 
-// Wrap http(s) URLs in a segment's text as clickable anchors, so agent output
-// (PR links, localhost dev servers, docs) opens in one tap instead of a
-// manual select-copy-paste (#2685). Plain text returns as-is.
-function linkify(text: string): ReactNode {
-  const parts = splitUrls(text);
-  if (parts.length === 1 && parts[0]!.url == null) return text;
-  return parts.map((p, i) =>
-    p.url ? (
-      <a key={i} href={p.url} target="_blank" rel="noopener noreferrer" className="underline cursor-pointer">
-        {p.text}
-      </a>
-    ) : (
-      p.text
-    ),
-  );
+// Render one row's segments with its precomputed link spans (see
+// `computeRowLinks`) as clickable anchors, so agent output (PR links,
+// localhost dev servers, docs) opens in one tap instead of a manual
+// select-copy-paste (#2685). Spans are ranges over the row's JOINED text, so
+// a URL styled as several ANSI segments (or wrapped from a previous row) is
+// one link with the full href, not per-segment fragments. Each overlapping
+// segment piece gets its own anchor carrying the same href; visually they
+// read as one underlined run.
+function renderSegsWithLinks(segs: AnsiSegment[], links: LinkSpan[]): ReactNode[] {
+  const out: ReactNode[] = [];
+  let offset = 0;
+  segs.forEach((seg, i) => {
+    const segStart = offset;
+    const segEnd = offset + seg.text.length;
+    offset = segEnd;
+    const overlapping = links.filter((l) => l.start < segEnd && l.end > segStart);
+    if (overlapping.length === 0) {
+      out.push(
+        <span key={i} style={segStyle(seg.style)}>
+          {seg.text}
+        </span>,
+      );
+      return;
+    }
+    const children: ReactNode[] = [];
+    let pos = segStart;
+    for (const l of overlapping) {
+      const from = Math.max(l.start, segStart);
+      const to = Math.min(l.end, segEnd);
+      if (from > pos) children.push(seg.text.slice(pos - segStart, from - segStart));
+      children.push(
+        <a key={`${from}`} href={l.href} target="_blank" rel="noopener noreferrer" className="underline cursor-pointer">
+          {seg.text.slice(from - segStart, to - segStart)}
+        </a>,
+      );
+      pos = to;
+    }
+    if (pos < segEnd) children.push(seg.text.slice(pos - segStart));
+    out.push(
+      <span key={i} style={segStyle(seg.style)}>
+        {children}
+      </span>,
+    );
+  });
+  return out;
 }
 
 export const Row = memo(function Row({
   segs,
   cursorCol,
   focused = false,
+  links = NO_LINKS,
 }: {
   segs: AnsiSegment[];
   cursorCol: number | null;
   focused?: boolean;
+  /** Precomputed link spans over this row's joined text (`computeRowLinks`).
+   *  Defaults to the shared empty constant so memo identity holds. */
+  links?: LinkSpan[];
 }) {
   const cursorStyle = focused ? CURSOR_CELL_STYLE_FOCUSED : CURSOR_CELL_STYLE_BLURRED;
   if (cursorCol == null) {
     if (segs.length === 0) return <div> </div>; // keep empty rows at full height
-    return (
-      <div>
-        {segs.map((seg, i) => (
-          <span key={i} style={segStyle(seg.style)}>
-            {linkify(seg.text)}
-          </span>
-        ))}
-      </div>
-    );
+    return <div>{renderSegsWithLinks(segs, links)}</div>;
   }
   // The cursor row (live input line) keeps the delicate cell-split logic below
   // and is not linkified; agent-output URLs live in the cursorCol == null rows.
@@ -528,6 +562,23 @@ export function MobileLiveTerminal({
   // programmatic scrollTop during an active touch cancels the native
   // gesture on iOS.
   const touchActiveRef = useRef(false);
+  // Same suppression for a desktop mouse selection drag (left button down
+  // over the text, forward mode off): while it is held, streamed frames must
+  // not scroll the text under the pointer. Set in onPointerDown; cleared by
+  // the window-level pointerup/pointercancel listeners below, since the
+  // release routinely lands outside the scroller.
+  const mouseSelectingRef = useRef(false);
+  useEffect(() => {
+    const clear = () => {
+      mouseSelectingRef.current = false;
+    };
+    window.addEventListener("pointerup", clear);
+    window.addEventListener("pointercancel", clear);
+    return () => {
+      window.removeEventListener("pointerup", clear);
+      window.removeEventListener("pointercancel", clear);
+    };
+  }, []);
   // Geometry from BEFORE the current DOM mutation. Pinning decisions use
   // "was the user at the bottom before this content/size change", the
   // classic chat-scroll algorithm: it reads the user's position straight
@@ -633,6 +684,14 @@ export function MobileLiveTerminal({
       pendingHeightPinRef.current = false;
     } else if (
       !touchActiveRef.current &&
+      // A mouse selection drag suppresses the pin exactly like an active
+      // touch: streamed frames re-pinning scrollTop to the growing bottom
+      // scroll the text up UNDER the stationary pointer, so the selection's
+      // moving end (pixel-based) lands rows below the anchored text and the
+      // finished selection covers the wrong rows ("selects slightly above").
+      // Follow resumes on release (pointerup clears the ref; the next frame
+      // pins as usual).
+      !mouseSelectingRef.current &&
       // First frame and keyboard (height) pins always apply. The
       // follow-the-tail pin (`target > scrollTop`) is additionally gated on
       // NOT moving up: the detach latch only trips past ~2px, so without this
@@ -684,6 +743,23 @@ export function MobileLiveTerminal({
     }
     return { rows, lineStartRow };
   }, [lines, renderCols, wrapCache]);
+  // Link spans per visual row, matched on each row's joined text and joined
+  // across full-width wrapped rows (see computeRowLinks). The WeakMap caches
+  // are keyed by row segment-array identity (stable via LineParseCache /
+  // wrapCache), so a streamed frame only pays regex work for changed rows and
+  // unchanged rows keep span identity for the Row memo.
+  const [linkMatchCache] = useState(() => new WeakMap<AnsiSegment[], { index: number; raw: string }[]>());
+  const [linkSpanCache] = useState(() => new WeakMap<AnsiSegment[], LinkSpan[]>());
+  const rowLinks = useMemo(
+    () =>
+      computeRowLinks(
+        visual.rows,
+        renderCols > 0 ? renderCols : Number.POSITIVE_INFINITY,
+        linkMatchCache,
+        linkSpanCache,
+      ),
+    [visual, renderCols, linkMatchCache, linkSpanCache],
+  );
   const screenRows = frame?.rows ?? 0;
   const history = frame?.history ?? 0;
   const fetchedHistory = Math.max(0, lines.length - screenRows);
@@ -1080,7 +1156,15 @@ export function MobileLiveTerminal({
   // the user can still select page text. Coordinates come from `pointerCell`.
   const onPointerDown = useCallback(
     (e: React.PointerEvent) => {
-      if (e.pointerType !== "mouse" || !forwardModeRef.current || e.shiftKey) return;
+      if (e.pointerType !== "mouse") return;
+      if (!forwardModeRef.current || e.shiftKey) {
+        // A left press outside forward mode starts a native selection drag;
+        // latch it so streamed frames stop pinning the scroll (and moving
+        // the text) until the button is released. No preventDefault: the
+        // browser owns the selection.
+        if (e.button === 0) mouseSelectingRef.current = true;
+        return;
+      }
       const base = e.button === 1 ? 1 : e.button === 2 ? 2 : e.button === 0 ? 0 : -1;
       if (base < 0) return;
       e.preventDefault();
@@ -1830,6 +1914,7 @@ export function MobileLiveTerminal({
                       segs={segs}
                       cursorCol={i === cursorRow ? live.col : null}
                       focused={i === cursorRow && focused}
+                      links={rowLinks[i]}
                     />
                   );
                 })}
