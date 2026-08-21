@@ -569,14 +569,27 @@ export function MobileLiveTerminal({
   // release routinely lands outside the scroller.
   const mouseSelectingRef = useRef(false);
   useEffect(() => {
-    const clear = () => {
+    const finish = (e: Event) => {
+      // Releasing a selection drag copies the selection, matching the
+      // attached-terminal behavior the docs promise ("releasing the drag
+      // copies to your system clipboard automatically"). Only a selection
+      // anchored inside this scroller counts; the pointerup grants the
+      // transient activation the async clipboard write needs.
+      if (mouseSelectingRef.current && e.type === "pointerup") {
+        const sel = window.getSelection();
+        const el = scrollerRef.current;
+        if (sel && !sel.isCollapsed && el && sel.anchorNode && el.contains(sel.anchorNode)) {
+          const text = sel.toString();
+          if (text) void writeClipboard(text);
+        }
+      }
       mouseSelectingRef.current = false;
     };
-    window.addEventListener("pointerup", clear);
-    window.addEventListener("pointercancel", clear);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
     return () => {
-      window.removeEventListener("pointerup", clear);
-      window.removeEventListener("pointercancel", clear);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
     };
   }, []);
   // Geometry from BEFORE the current DOM mutation. Pinning decisions use
