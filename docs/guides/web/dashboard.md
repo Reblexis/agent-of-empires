@@ -11,6 +11,10 @@ The dashboard is the home screen of the web app: a workspace sidebar on the left
 - **Top bar** carries the command palette, the right-panel picker, and the overflow menu.
 - **Home screen** (no session selected) shows a count of running, waiting, and error sessions.
 
+### Context pane
+
+Terminal sessions get a **Context** tab in the dock beside Diff and Terminal: a short agent-generated recap of the session (the last user ask, work done, open threads), so returning to a forgotten session doesn't mean replaying the scrollback. Opening the tab shows the cached recap and regenerates it automatically when a turn has completed since it was generated; the refresh control regenerates on demand. The recap is produced by the same utility agent smart rename uses (`smart_rename_agent`, default: the session's own agent) on its cheap model tier, reading a bounded slice of the tmux scrollback. Structured-view sessions summarize inline via **Summarize** instead.
+
 ## Creating a session
 
 The **New session** wizard is one screen of one-line rows, like the TUI dialog; a row with a chevron opens its details in a panel:
