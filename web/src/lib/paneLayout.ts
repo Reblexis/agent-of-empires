@@ -228,6 +228,11 @@ export function syncPluginTabs(layout: DockLayout, available: { id: TabId; defau
 // Sub agents and Files are opt-in, so they never auto-open as empty tabs.
 const AUTO_OPEN_PANES = BUILTIN_PANES.filter((p) => p.id !== "agents" && p.id !== "files");
 
+// Panes that existed in the v1 layout schema. Migration must only carry these:
+// a pane that postdates v1 (context) can never have been "open" in a v1
+// layout, so the absent-key-means-open default must not apply to it.
+const V1_PANES = AUTO_OPEN_PANES.filter((p) => p.id === "diff" || p.id === "terminal");
+
 function defaultTemplate(): DockLayout {
   // Narrow viewports start empty and use the mobile picker.
   const open = typeof window !== "undefined" && window.innerWidth >= 768;
@@ -247,7 +252,7 @@ function migrateTemplate(): DockLayout {
     try {
       const parsed = JSON.parse(v1) as Record<string, unknown>;
       let l = emptyDockLayout();
-      for (const p of AUTO_OPEN_PANES) {
+      for (const p of V1_PANES) {
         const v = parsed[p.id];
         let open = true;
         let dock: DockLocation = p.defaultDock;
@@ -272,7 +277,7 @@ function migrateTemplate(): DockLayout {
   if (collapsed === "1") return emptyDockLayout();
   if (collapsed === "0") {
     let l = emptyDockLayout();
-    for (const p of AUTO_OPEN_PANES) {
+    for (const p of V1_PANES) {
       const tabId = p.id === "terminal" ? terminalTabId(0) : p.id;
       l = addTab(l, p.defaultDock, tabId, false);
     }
@@ -358,7 +363,7 @@ export interface PaneLayoutApi {
   activateTab: (dock: DockLocation, tabId: TabId) => void;
   moveTab: (tabId: TabId, toDock: DockLocation) => void;
   placeTab: (tabId: TabId, target: PlaceTarget) => void;
-  toggleKind: (kind: "diff" | "terminal" | "agents" | "files", defaultDock: DockLocation) => void;
+  toggleKind: (kind: "diff" | "terminal" | "agents" | "files" | "context", defaultDock: DockLocation) => void;
   togglePlugin: (id: TabId, defaultDock: DockLocation) => void;
   syncPlugins: (available: { id: TabId; defaultDock: DockLocation }[]) => void;
   setDockCollapsed: (dock: DockLocation, collapsed: boolean) => void;
@@ -472,10 +477,10 @@ export function usePaneLayout(sessionId: string | null, outsideRepository: boole
     [mutate],
   );
   const toggleKind = useCallback(
-    (kind: "diff" | "terminal" | "agents" | "files", defaultDock: DockLocation) =>
+    (kind: "diff" | "terminal" | "agents" | "files" | "context", defaultDock: DockLocation) =>
       mutate((l) => {
         // Single-instance panes toggle their tab; terminals toggle the whole group.
-        if (kind === "diff" || kind === "agents" || kind === "files") {
+        if (kind === "diff" || kind === "agents" || kind === "files" || kind === "context") {
           const at = findTab(l, kind);
           if (at) return isDockCollapsed(l, at.dock) ? openOrRevealTab(l, kind, defaultDock) : removeTab(l, kind);
           return openOrRevealTab(l, kind, defaultDock);
