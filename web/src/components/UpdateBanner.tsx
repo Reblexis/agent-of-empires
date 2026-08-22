@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { dismissUpdate, fetchUpdateStatus } from "../lib/api";
 import type { UpdateStatus } from "../lib/api";
-
+import { writeClipboard } from "../lib/clipboard";
+import { agentUpdatePrompt } from "../lib/agentUpdatePrompt";
 // Re-poll cadence for `/api/system/update-status`. The server caches the
 // GitHub check for a day, so hourly polls are cheap cache hits that still
 // pick up a new release (or a dismissal from another device) promptly.
@@ -24,6 +25,8 @@ export function UpdateBanner() {
   // Optimistic local dismissal so the banner hides immediately on click,
   // before the POST lands and the next poll reflects the persisted value.
   const [locallyDismissed, setLocallyDismissed] = useState<string | null>(null);
+  // Feedback for the copy-agent-prompt action (LOCAL PATCH).
+  const [copied, setCopied] = useState<"copied" | "failed" | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -72,6 +75,14 @@ export function UpdateBanner() {
     void dismissUpdate(status.latest_version);
   };
 
+  const onCopyPrompt = () => {
+    if (!status.latest_version) return;
+    void writeClipboard(agentUpdatePrompt(status.latest_version)).then((ok) => {
+      setCopied(ok ? "copied" : "failed");
+      setTimeout(() => setCopied(null), 2500);
+    });
+  };
+
   return (
     <div
       role="status"
@@ -92,6 +103,18 @@ export function UpdateBanner() {
           Release notes
         </a>
       )}
+      <button
+        type="button"
+        onClick={onCopyPrompt}
+        className="underline hover:text-brand-200 cursor-pointer"
+        title="Copy a prompt telling an AI agent to rebase the local patches onto this release and redeploy"
+      >
+        {copied === "copied"
+          ? "Prompt copied - paste it to your agent"
+          : copied === "failed"
+            ? "Copy failed"
+            : "Copy agent update prompt"}
+      </button>
       <button
         type="button"
         onClick={onDismiss}

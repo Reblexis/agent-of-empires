@@ -13,10 +13,15 @@ import type { UpdateStatus } from "../../lib/api";
 
 const fetchUpdateStatus = vi.fn();
 const dismissUpdate = vi.fn();
+const writeClipboard = vi.fn();
 
 vi.mock("../../lib/api", () => ({
   fetchUpdateStatus: (...args: unknown[]) => fetchUpdateStatus(...args),
   dismissUpdate: (...args: unknown[]) => dismissUpdate(...args),
+}));
+
+vi.mock("../../lib/clipboard", () => ({
+  writeClipboard: (...args: unknown[]) => writeClipboard(...args),
 }));
 
 function makeStatus(overrides?: Partial<UpdateStatus>): UpdateStatus {
@@ -36,6 +41,8 @@ beforeEach(() => {
   fetchUpdateStatus.mockReset();
   dismissUpdate.mockReset();
   dismissUpdate.mockResolvedValue(true);
+  writeClipboard.mockReset();
+  writeClipboard.mockResolvedValue(true);
 });
 
 afterEach(() => {
@@ -111,5 +118,21 @@ describe("UpdateBanner", () => {
     expect(dismissUpdate).toHaveBeenCalledTimes(1);
     expect(dismissUpdate).toHaveBeenCalledWith("1.1.0");
     expect(container.querySelector('[role="status"]')).toBeNull();
+  });
+
+  it("copies the agent rebase prompt instead of installing (LOCAL PATCH)", async () => {
+    // This deployment is a locally patched build; the banner's action hands
+    // an AI agent the rebase job rather than triggering any installer.
+    fetchUpdateStatus.mockResolvedValue(makeStatus());
+    render(<UpdateBanner />);
+
+    await screen.findByRole("status");
+    fireEvent.click(screen.getByText("Copy agent update prompt"));
+
+    await waitFor(() => expect(writeClipboard).toHaveBeenCalledTimes(1));
+    const prompt = writeClipboard.mock.calls[0]![0] as string;
+    expect(prompt).toContain("aoe-update-local v1.1.0");
+    expect(prompt).toContain("WITHOUT the built-in updater");
+    expect(await screen.findByText(/Prompt copied/)).toBeTruthy();
   });
 });
