@@ -763,6 +763,7 @@ export function MobileLiveTerminal({
   // unchanged rows keep span identity for the Row memo.
   const [linkMatchCache] = useState(() => new WeakMap<AnsiSegment[], { index: number; raw: string }[]>());
   const [linkSpanCache] = useState(() => new WeakMap<AnsiSegment[], LinkSpan[]>());
+  const [linkTextCache] = useState(() => new WeakMap<AnsiSegment[], string>());
   const rowLinks = useMemo(
     () =>
       computeRowLinks(
@@ -770,8 +771,9 @@ export function MobileLiveTerminal({
         renderCols > 0 ? renderCols : Number.POSITIVE_INFINITY,
         linkMatchCache,
         linkSpanCache,
+        linkTextCache,
       ),
-    [visual, renderCols, linkMatchCache, linkSpanCache],
+    [visual, renderCols, linkMatchCache, linkSpanCache, linkTextCache],
   );
   const screenRows = frame?.rows ?? 0;
   const history = frame?.history ?? 0;

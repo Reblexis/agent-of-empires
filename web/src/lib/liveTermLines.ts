@@ -37,7 +37,7 @@ interface CachedLine {
  *  parsed under different carried styles are different render results, so
  *  the entry state is part of the cache key. */
 function styleKey(s: AnsiStyle): string {
-  return `${s.fg ?? ""}|${s.bg ?? ""}|${+!!s.bold}${+!!s.dim}${+!!s.italic}${+!!s.underline}${+!!s.inverse}`;
+  return `${s.fg ?? ""}|${s.bg ?? ""}|${+!!s.bold}${+!!s.dim}${+!!s.italic}${+!!s.underline}${+!!s.inverse}|${s.link ?? ""}`;
 }
 
 /**
@@ -166,13 +166,48 @@ interface RowMatch {
   raw: string;
 }
 
+/** Explicit link spans from OSC 8 hyperlink state on a row's segments: a
+ *  contiguous run of segments carrying the same `style.link` is one span
+ *  whose href is the escape's own URI. These outrank regex matching: the
+ *  emitting program said exactly what the link is, and the visible text may
+ *  be arbitrary (shortened labels, wrapped fragments). */
+function explicitSpans(row: AnsiSegment[]): LinkSpan[] {
+  let spans: LinkSpan[] | null = null;
+  let open: LinkSpan | null = null;
+  let off = 0;
+  for (const seg of row) {
+    const link = seg.style.link;
+    if (open && open.href !== link) {
+      open.end = off;
+      (spans ??= []).push(open);
+      open = null;
+    }
+    if (link && !open) open = { start: off, end: off, href: link };
+    off += seg.text.length;
+  }
+  if (open) {
+    open.end = off;
+    (spans ??= []).push(open);
+  }
+  return spans ?? NO_LINKS;
+}
+
 export function computeRowLinks(
   rows: AnsiSegment[][],
   cols: number,
   matchCache?: WeakMap<AnsiSegment[], RowMatch[]>,
   spanCache?: WeakMap<AnsiSegment[], LinkSpan[]>,
+  textCache?: WeakMap<AnsiSegment[], string>,
 ): LinkSpan[][] {
-  const texts: string[] = rows.map((r) => lineText(r));
+  const textFor = (i: number): string => {
+    const key = rows[i]!;
+    const hit = textCache?.get(key);
+    if (hit !== undefined) return hit;
+    const text = lineText(key);
+    textCache?.set(key, text);
+    return text;
+  };
+  const texts: string[] = rows.map((_, i) => textFor(i));
   const matchesFor = (i: number): RowMatch[] => {
     const key = rows[i]!;
     const hit = matchCache?.get(key);
@@ -188,9 +223,13 @@ export function computeRowLinks(
   const resumeAt: number[] = new Array(rows.length).fill(0);
   for (let i = 0; i < rows.length; i++) {
     const text = texts[i]!;
-    const spans: LinkSpan[] = result[i] === NO_LINKS ? [] : [...result[i]!];
+    const explicit = explicitSpans(rows[i]!);
+    const spans: LinkSpan[] = result[i] === NO_LINKS ? [...explicit] : [...result[i]!, ...explicit];
     for (const m of matchesFor(i)) {
       if (m.index < resumeAt[i]!) continue;
+      // An OSC 8 hyperlink already covers this text: its escape-supplied
+      // href wins over anything the regex would guess.
+      if (explicit.some((s) => s.start < m.index + m.raw.length && s.end > m.index)) continue;
       let raw = m.raw;
       let end = m.index + raw.length;
       // A match running to the exact end of a full-width row continues on
@@ -234,7 +273,12 @@ export function computeRowLinks(
         resumeAt[c.row] = Math.max(resumeAt[c.row]!, c.end);
       }
     }
-    if (spans.length > 0) result[i] = spans;
+    if (spans.length > 0) {
+      // Renderers walk spans in order; explicit and regex spans were
+      // appended from separate passes, so normalize here.
+      spans.sort((a, b) => a.start - b.start);
+      result[i] = spans;
+    }
   }
   // Preserve span-array identity for unchanged rows so memoized row
   // components skip them. Continuations make a row's spans depend on its

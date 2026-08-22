@@ -231,6 +231,27 @@ describe("computeRowLinks", () => {
     ]);
   });
 
+  it("uses the OSC 8 escape's own URI as the href, not the visible text", () => {
+    // Claude Code emits its URLs as OSC 8 hyperlinks; the visible text can
+    // be a fragment (wrapped) or a label, and the raw regex used to swallow
+    // the escape bytes into the href.
+    const osc8 =
+      "\x1b]8;;https://claude.ai/code/s_01AB?from=cli\x1b\\https://claude.ai/code/s_01AB?fro\x1b]8;;\x1b\\ done";
+    const rows = ansiToLines(osc8 + "\n");
+    const links = computeRowLinks(rows, 200);
+    expect(links[0]).toEqual([{ start: 0, end: 33, href: "https://claude.ai/code/s_01AB?from=cli" }]);
+  });
+
+  it("carries an OSC 8 link across wrapped lines via the SGR state thread", () => {
+    // The open escape lands on line one, the close on line two; the carried
+    // style threads the link so both fragments span with the full href.
+    const cache = new LineParseCache();
+    const lines = cache.lines("\x1b]8;;https://a.io/full\x1b\\https://a.io/fu\nll\x1b]8;;\x1b\\ rest\n");
+    const links = computeRowLinks(lines, 200);
+    expect(links[0]).toEqual([{ start: 0, end: 15, href: "https://a.io/full" }]);
+    expect(links[1]).toEqual([{ start: 0, end: 2, href: "https://a.io/full" }]);
+  });
+
   it("keeps span-array identity for unchanged rows across calls", () => {
     const stable = row("see https://a.io/x done");
     const rows = [stable, row("plain")];

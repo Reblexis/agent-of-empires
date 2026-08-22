@@ -49,6 +49,40 @@ describe("collapseCarriageReturns", () => {
   });
 });
 
+describe("parseAnsi OSC handling", () => {
+  it("opens and closes an OSC 8 hyperlink, ST-terminated", () => {
+    const segs = parseAnsi(`${ESC}]8;;https://a.io/x${ESC}\\click me${ESC}]8;;${ESC}\\ rest`);
+    expect(segs.map((s) => s.text)).toEqual(["click me", " rest"]);
+    expect(segs[0].style.link).toBe("https://a.io/x");
+    expect(segs[1].style.link).toBeUndefined();
+  });
+
+  it("accepts the BEL terminator", () => {
+    const segs = parseAnsi(`${ESC}]8;;https://a.io/x\x07label${ESC}]8;;\x07after`);
+    expect(segs[0].text).toBe("label");
+    expect(segs[0].style.link).toBe("https://a.io/x");
+    expect(segs[1].style.link).toBeUndefined();
+  });
+
+  it("keeps a hyperlink open across an SGR reset", () => {
+    // OSC 8 state is orthogonal to SGR; only an empty OSC 8 closes it.
+    const segs = parseAnsi(`${ESC}]8;;https://a.io${ESC}\\${ESC}[1mbold${ESC}[0mplain${ESC}]8;;${ESC}\\`);
+    expect(segs.map((s) => s.text)).toEqual(["bold", "plain"]);
+    expect(segs[0].style.link).toBe("https://a.io");
+    expect(segs[1].style.link).toBe("https://a.io");
+    expect(segs[1].style.bold).toBeUndefined();
+  });
+
+  it("strips non-hyperlink OSC payloads (window title)", () => {
+    const segs = parseAnsi(`${ESC}]0;my title${ESC}\\visible`);
+    expect(segs.map((s) => s.text)).toEqual(["visible"]);
+  });
+
+  it("stripAnsi removes OSC sequences too", () => {
+    expect(stripAnsi(`${ESC}]8;;https://a.io${ESC}\\text${ESC}]8;;${ESC}\\`)).toBe("text");
+  });
+});
+
 describe("parseAnsi", () => {
   it("returns a single segment with no style for plain text", () => {
     const segs = parseAnsi("hello world");
