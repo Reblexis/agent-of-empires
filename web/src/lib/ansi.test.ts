@@ -57,6 +57,14 @@ describe("parseAnsi OSC handling", () => {
     expect(segs[1].style.link).toBeUndefined();
   });
 
+  it("parses the id-param form Claude Code emits", () => {
+    // Field capture: `ESC ]8;id=1ts8dx4;https://... ST` — the uri starts
+    // after the LAST semicolon of the params block, not after `8;;`.
+    const segs = parseAnsi(`${ESC}]8;id=1ts8dx4;https://claude.ai/code/artifact/9eaf${ESC}\\label${ESC}]8;;${ESC}\\`);
+    expect(segs.map((s) => s.text)).toEqual(["label"]);
+    expect(segs[0].style.link).toBe("https://claude.ai/code/artifact/9eaf");
+  });
+
   it("accepts the BEL terminator", () => {
     const segs = parseAnsi(`${ESC}]8;;https://a.io/x\x07label${ESC}]8;;\x07after`);
     expect(segs[0].text).toBe("label");
