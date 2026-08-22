@@ -15,14 +15,14 @@
 //      typed segments the React layer can style.
 
 // Any CSI sequence: ESC [ params final-byte (any letter).
-const ANY_CSI = /\[[\d;?]*[a-zA-Z]/g;
-// SGR specifically: same shape, terminated by `m`.
-const SGR = /\[([\d;]*)m/g;
-// CSI sequences other than SGR — anything ending in a letter that
-// isn't `m`. We match the full sequence so ANY_CSI followed by a
-// negative-set replace would risk eating SGR; instead use a
-// non-`m`-terminator pattern.
-const NON_SGR_CSI = /\[[\d;?]*[a-ln-zA-LN-Z]/g;
+const ANY_CSI = /\x1b\[[\d;?]*[a-zA-Z]/g;
+// Any OSC sequence: ESC ] payload, terminated by BEL or ST (ESC \\). Claude
+// Code emits OSC 8 hyperlinks (`ESC ]8;;url ST text ESC ]8;; ST`); other OSC
+// payloads (window title etc.) are stripped.
+const ANY_OSC = /\x1b\]([^\x07\x1b]*)(?:\x07|\x1b\\)/g;
+// One combined token pass for the parser: OSC (group 1: payload), SGR
+// (group 2: params), or any other CSI (matched whole, dropped).
+const TOKEN = /\x1b\]([^\x07\x1b]*)(?:\x07|\x1b\\)|\x1b\[([\d;]*)m|\x1b\[[\d;?]*[a-ln-zA-LN-Z]/g;
 
 export interface AnsiStyle {
   fg?: string;
@@ -32,6 +32,10 @@ export interface AnsiStyle {
   italic?: boolean;
   underline?: boolean;
   inverse?: boolean;
+  /** Active OSC 8 hyperlink target. Carried like SGR state (a link can
+   *  span styled segments and wrapped lines) and closed only by an empty
+   *  OSC 8, never by an SGR reset, per the hyperlink spec. */
+  link?: string;
 }
 
 export interface AnsiSegment {
@@ -51,7 +55,7 @@ export function hasAnsi(text: string): boolean {
 }
 
 export function stripAnsi(text: string): string {
-  return text.replace(ANY_CSI, "");
+  return text.replace(ANY_OSC, "").replace(ANY_CSI, "");
 }
 
 /** Collapse `\r` repaints: within each `\n`-separated line, drop
@@ -230,18 +234,35 @@ function applySgr(style: AnsiStyle, params: number[]): AnsiStyle {
  *  per-line parse cache must thread the carried style through explicitly.
  *  Non-SGR CSI sequences and `\r` repaints are stripped/collapsed first. */
 export function parseAnsiFrom(text: string, initial: AnsiStyle): { segs: AnsiSegment[]; exit: AnsiStyle } {
-  const cleaned = collapseCarriageReturns(text).replace(NON_SGR_CSI, "");
+  const cleaned = collapseCarriageReturns(text);
   const segs: AnsiSegment[] = [];
   let last = 0;
   let cur: AnsiStyle = { ...initial };
-  for (const m of cleaned.matchAll(SGR)) {
+  for (const m of cleaned.matchAll(TOKEN)) {
     const idx = m.index ?? 0;
     if (idx > last) {
       segs.push({ text: cleaned.slice(last, idx), style: { ...cur } });
     }
-    const raw = m[1] ?? "";
-    const params = raw === "" ? [] : raw.split(";").map((s) => Number(s));
-    cur = applySgr(cur, params);
+    if (m[1] !== undefined) {
+      // OSC. An `8;params;uri` payload opens (non-empty uri) or closes
+      // (empty uri) a hyperlink; every other payload is dropped.
+      const payload = m[1];
+      if (payload.startsWith("8;")) {
+        const uri = payload.slice(payload.indexOf(";", 2) + 1);
+        cur = { ...cur };
+        if (uri) cur.link = uri;
+        else delete cur.link;
+      }
+    } else if (m[2] !== undefined) {
+      // SGR. A reset clears colors/attributes but must not close an open
+      // hyperlink: OSC 8 state is orthogonal to SGR.
+      const raw = m[2];
+      const params = raw === "" ? [] : raw.split(";").map((s) => Number(s));
+      const link = cur.link;
+      cur = applySgr(cur, params);
+      if (link !== undefined && cur.link === undefined) cur.link = link;
+    }
+    // Other CSI (cursor movement, erase): dropped.
     last = idx + m[0].length;
   }
   if (last < cleaned.length) {
