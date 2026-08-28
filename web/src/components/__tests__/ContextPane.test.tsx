@@ -38,7 +38,9 @@ describe("ContextPane", () => {
       inflight: false,
     });
     render(<ContextPane sessionId="s1" session={session("2026-08-21T11:00:00Z")} />);
-    expect(await screen.findByText(/Last ask: fix the login bug/)).toBeTruthy();
+    // The "Last ask:" opener renders as a labeled lede, not raw text.
+    expect(await screen.findByText("fix the login bug")).toBeTruthy();
+    expect(screen.getByText("Last ask")).toBeTruthy();
     expect(refreshMock).not.toHaveBeenCalled();
   });
 

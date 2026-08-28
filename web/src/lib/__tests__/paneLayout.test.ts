@@ -147,19 +147,41 @@ describe("usePaneLayout migration + persistence", () => {
       }),
     );
 
-  it("migrates the v1 layout to per-dock tabs", () => {
+  it("migrates the v1 layout to per-dock tabs (plus the ensured context tab)", () => {
     localStorage.setItem(
       "aoe-pane-layout",
       JSON.stringify({ diff: { open: true, dock: "right" }, terminal: { open: true, dock: "bottom" } }),
     );
     const { layout: l } = hook().current;
-    expect([dockTabs(l, "right"), dockTabs(l, "bottom")]).toEqual([["diff"], ["terminal:0"]]);
+    expect([dockTabs(l, "right"), dockTabs(l, "bottom")]).toEqual([["diff", "context"], ["terminal:0"]]);
   });
 
-  it("migrates the legacy collapsed flag to empty docks", () => {
+  it("migrates the legacy collapsed flag to empty docks except the ensured context tab", () => {
     localStorage.setItem("aoe-right-collapsed", "1");
     const { layout: l } = hook().current;
-    expect([l.right, l.bottom]).toEqual([[], []]);
+    expect([dockTabs(l, "right"), l.bottom]).toEqual([["context"], []]);
+  });
+
+  it("ensures the context tab as the active right tab on every session (LOCAL PATCH)", () => {
+    const { layout: l } = hook().current;
+    const group = l.right.find((g) => g.tabs.includes("context"));
+    expect(group?.active).toBe("context");
+  });
+
+  it("adds context to a stored layout that predates the pane", () => {
+    persistV2([{ tabs: ["diff"], active: "diff" }]);
+    expect(dockTabs(hook().current.layout, "right")).toEqual(["diff", "context"]);
+  });
+
+  it("does not resurrect an explicitly closed context tab, and reopen clears the ledger", () => {
+    const result = hook();
+    act(() => result.current.closeTab("context"));
+    expect(dockTabs(result.current.layout, "right")).not.toContain("context");
+    // Still closed after a reload (the ledger persisted with the layout).
+    const reloaded = hook();
+    expect(dockTabs(reloaded.current.layout, "right")).not.toContain("context");
+    act(() => reloaded.current.openTab("context", "right"));
+    expect(dockTabs(reloaded.current.layout, "right")).toContain("context");
   });
 
   it("keeps terminals and collapse state per session and persists them", () => {
@@ -199,7 +221,7 @@ describe("usePaneLayout migration + persistence", () => {
   it("drops tab ids duplicated across docks or within a group on load", () => {
     persistV2([{ tabs: ["diff", "diff", "terminal:0"], active: "diff" }], [{ tabs: ["diff"], active: "diff" }]);
     const { layout: l } = hook().current;
-    expect([dockTabs(l, "right"), dockTabs(l, "bottom")]).toEqual([["diff", "terminal:0"], []]);
+    expect([dockTabs(l, "right"), dockTabs(l, "bottom")]).toEqual([["diff", "terminal:0", "context"], []]);
   });
 
   it("loads multiple persisted groups per dock without merging them", () => {
@@ -208,7 +230,7 @@ describe("usePaneLayout migration + persistence", () => {
       { tabs: ["terminal:0"], active: "terminal:0" },
     ]);
     expect(groups(hook().current.layout)).toEqual([
-      [["diff"], "diff"],
+      [["diff", "context"], "context"],
       [["terminal:0"], "terminal:0"],
     ]);
   });
@@ -217,9 +239,9 @@ describe("usePaneLayout migration + persistence", () => {
     localStorage.setItem("aoe-right-collapsed", "1");
     const result = hook();
     act(() => result.current.toggleKind("terminal", "right"));
-    expect(dockTabs(result.current.layout, "right")).toEqual(["terminal:0"]);
+    expect(dockTabs(result.current.layout, "right")).toEqual(["context", "terminal:0"]);
     act(() => result.current.toggleKind("terminal", "right"));
-    expect(dockTabs(result.current.layout, "right")).toEqual([]);
+    expect(dockTabs(result.current.layout, "right")).toEqual(["context"]);
   });
 });
 
@@ -235,12 +257,12 @@ describe("usePaneLayout outside a repository (#4574)", () => {
     );
 
   it.each([
-    // [outside, autoOpenTerminalPane, seeded tabs]
-    [false, true, ["diff", "terminal:0"]],
+    // [outside, autoOpenTerminalPane, seeded tabs]; context is ensured on every session (LOCAL PATCH).
+    [false, true, ["diff", "terminal:0", "context"]],
     // Not yet known: Diff waits for the Session row.
-    [null, true, ["terminal:0"]],
-    [true, true, ["terminal:0"]],
-    [true, false, []],
+    [null, true, ["terminal:0", "context"]],
+    [true, true, ["terminal:0", "context"]],
+    [true, false, ["context"]],
   ])("outside=%s terminal=%s seeds %o, whatever autoOpenDiffPane says", (outside, terminal, expected) => {
     seededTemplate();
     localStorage.setItem(

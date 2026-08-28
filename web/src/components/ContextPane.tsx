@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { RefreshCw } from "lucide-react";
 import { getTerminalContext, refreshTerminalContext, type TerminalContextResult } from "../lib/api";
 import type { SessionResponse } from "../lib/types";
@@ -19,6 +19,77 @@ function isStale(res: TerminalContextResult, idleEnteredAt: string | null): bool
   if (!res.text) return true;
   if (!idleEnteredAt || !res.generated_at) return false;
   return new Date(idleEnteredAt).getTime() > new Date(res.generated_at).getTime();
+}
+
+/** Render inline `code` backtick spans as mono chips; everything else plain. */
+function inlineCode(text: string): ReactNode {
+  const parts = text.split(/(`[^`]+`)/);
+  if (parts.length === 1) return text;
+  return parts.map((p, i) =>
+    p.startsWith("`") && p.endsWith("`") && p.length > 2 ? (
+      <code key={i} className="font-mono text-[11px] bg-surface-800 border border-surface-700/40 rounded px-1 py-px">
+        {p.slice(1, -1)}
+      </code>
+    ) : (
+      p
+    ),
+  );
+}
+
+/**
+ * Structured rendering of the recap: the "Last ask:" opener becomes a
+ * labeled lede, "- " lines a real bullet list, the rest paragraphs, with
+ * backtick spans as code chips. The recap prompt asks for exactly this
+ * shape, so no markdown engine is needed; any line the parse does not
+ * recognize still renders as a paragraph.
+ */
+function Recap({ text }: { text: string }) {
+  const lines = text.split("\n");
+  const blocks: ReactNode[] = [];
+  let bullets: string[] = [];
+  let key = 0;
+  const flushBullets = () => {
+    if (bullets.length === 0) return;
+    blocks.push(
+      <ul key={key++} className="space-y-1.5 pl-4 list-disc marker:text-text-dim">
+        {bullets.map((b, i) => (
+          <li key={i} className="text-[12.5px] leading-relaxed text-text-secondary">
+            {inlineCode(b)}
+          </li>
+        ))}
+      </ul>,
+    );
+    bullets = [];
+  };
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+    const ask = /^last ask:\s*/i.exec(line);
+    if (ask && blocks.length === 0 && bullets.length === 0) {
+      blocks.push(
+        <div key={key++}>
+          <div className="text-[10px] font-medium uppercase tracking-wider text-text-dim mb-1">Last ask</div>
+          <div className="text-[13px] font-medium leading-snug text-text-primary">
+            {inlineCode(line.slice(ask[0].length))}
+          </div>
+        </div>,
+      );
+      continue;
+    }
+    const bullet = /^[-•*]\s+/.exec(line);
+    if (bullet) {
+      bullets.push(line.slice(bullet[0].length));
+      continue;
+    }
+    flushBullets();
+    blocks.push(
+      <p key={key++} className="text-[12.5px] leading-relaxed text-text-secondary">
+        {inlineCode(line)}
+      </p>,
+    );
+  }
+  flushBullets();
+  return <div className="space-y-3">{blocks}</div>;
 }
 
 /**
@@ -127,9 +198,9 @@ export function ContextPane({ sessionId, session }: Props) {
         {error ? (
           <span className="text-sm text-status-error">{error}</span>
         ) : result?.text ? (
-          <div className="text-[13px] leading-relaxed text-text-primary whitespace-pre-wrap">
-            {result.text}
-            {generating && <div className="mt-2 text-[11px] text-text-dim">Refreshing...</div>}
+          <div>
+            <Recap text={result.text} />
+            {generating && <div className="mt-3 text-[11px] text-text-dim">Refreshing...</div>}
           </div>
         ) : generating ? (
           <span className="text-sm text-text-dim">Reading the session...</span>
