@@ -170,6 +170,11 @@ export function useLiveTerminal(
     if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
     if (countdownRef.current) clearInterval(countdownRef.current);
     retryCountRef.current = 0;
+    // INITIAL_STATE says reading:false; the ref must agree, or the new
+    // connection keeps re-widening its capture window to the full 4000
+    // lines (the frame handler trusts the ref) while the UI believes it
+    // is at the live edge and offers no way back.
+    readingRef.current = false;
     setState(() => INITIAL_STATE);
 
     let disposed = false;

@@ -40,6 +40,21 @@ function styleKey(s: AnsiStyle): string {
   return `${s.fg ?? ""}|${s.bg ?? ""}|${+!!s.bold}${+!!s.dim}${+!!s.italic}${+!!s.underline}${+!!s.inverse}|${s.link ?? ""}`;
 }
 
+// Entry styles are almost always cache-hit `exit` objects threaded from
+// the previous line, so their key strings can be memoized by identity.
+// Without this, styleKey built a fresh string per line per frame, on
+// cache hits too - at a 4000-line window and capture cadence that alone
+// was megabytes per second of string churn per mounted terminal.
+const STYLE_KEYS = new WeakMap<AnsiStyle, string>();
+function styleKeyOf(s: AnsiStyle): string {
+  let k = STYLE_KEYS.get(s);
+  if (k === undefined) {
+    k = styleKey(s);
+    STYLE_KEYS.set(s, k);
+  }
+  return k;
+}
+
 /**
  * Frame-to-frame parse cache for [`ansiToLines`]-equivalent output.
  *
@@ -59,8 +74,12 @@ function styleKey(s: AnsiStyle): string {
  * output and identities.
  */
 export class LineParseCache {
-  private live = new Map<string, CachedLine>();
-  private prev = new Map<string, CachedLine>();
+  // Nested by (entry-style key, raw line) rather than one concatenated
+  // string key: the concat allocated a full copy of every line per frame
+  // even when every lookup hit. The raw-line inner keys are the split()
+  // substrings the frame already produced.
+  private live = new Map<string, Map<string, CachedLine>>();
+  private prev = new Map<string, Map<string, CachedLine>>();
 
   lines(content: string): AnsiSegment[][] {
     this.prev = this.live;
@@ -69,15 +88,18 @@ export class LineParseCache {
     const lines: AnsiSegment[][] = [];
     let entry: AnsiStyle = {};
     for (const r of raw) {
-      // NUL separator: it appears in neither a style key (CSS color
-      // strings) nor capture-pane text, so the key cannot be ambiguous.
-      const key = styleKey(entry) + "\u0000" + r;
-      let hit = this.live.get(key) ?? this.prev.get(key);
+      const sk = styleKeyOf(entry);
+      let bucket = this.live.get(sk);
+      if (!bucket) {
+        bucket = new Map();
+        this.live.set(sk, bucket);
+      }
+      let hit = bucket.get(r) ?? this.prev.get(sk)?.get(r);
       if (!hit) {
         const parsed = parseAnsiFrom(r, entry);
         hit = { segs: parsed.segs, exit: parsed.exit };
       }
-      this.live.set(key, hit);
+      bucket.set(r, hit);
       lines.push(hit.segs);
       entry = hit.exit;
     }

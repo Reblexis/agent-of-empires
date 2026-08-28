@@ -1525,6 +1525,22 @@ export function MobileLiveTerminal({
     return () => document.removeEventListener("visibilitychange", sync);
   }, [active, reading, setCadence]);
 
+  // A hidden pane cannot scroll, so it has no path back to the live edge:
+  // every reading-mode exit is an event on the scroller. Left alone, a
+  // terminal parked mid-scrollback keeps a full 4000-line capture window
+  // streaming ~800KB frames at idle cadence for as long as it stays
+  // mounted (kept-alive terminals stack up to 50 of these). Snap back to
+  // live the moment the pane stops being the active surface; the reader
+  // is not looking at it anyway. An effect on purpose: the "event" is the
+  // parent hiding this pane, which no handler in this component sees, and
+  // the parent owns neither the reading state nor the capture window.
+  useEffect(() => {
+    // eslint-disable-next-line react-you-might-not-need-an-effect/no-event-handler
+    if (!active && reading) {
+      returnToLive(rowsRef.current * LIVE_WINDOW_SCREENS);
+    }
+  }, [active, reading, returnToLive]);
+
   // --- bottom pinning ---------------------------------------------------------
   useLayoutEffect(() => {
     // Refresh the cursor anchor before pinning so this commit pins
@@ -1797,7 +1813,17 @@ export function MobileLiveTerminal({
   // mounted too: a bottom scroll can flip out of reading before React observes
   // the final scrollTop, and the capture may be either spacer-backed or a full
   // history frame. In both cases the transition must have real rows to paint.
-  let mountedRanges: Array<{ start: number; end: number }> = [{ start: 0, end: visibleRowCount }];
+  // Unmeasured fallback (pre-first-layout, or the pane is display:none -
+  // the desktop diff/file viewer hides the terminal subtree with `hidden`,
+  // which zeroes clientHeight and disables the real virtualization below).
+  // End-anchored and capped: without the cap, a reading-mode terminal
+  // parked behind the viewer reconciled all 4000 rows (~20k DOM nodes) at
+  // frame cadence, invisibly. The tail is what matters when the pane next
+  // becomes visible; scrolling re-measures and restores the real ranges.
+  const FALLBACK_MOUNT_CAP = 400;
+  let mountedRanges: Array<{ start: number; end: number }> = [
+    { start: Math.max(0, visibleRowCount - FALLBACK_MOUNT_CAP), end: visibleRowCount },
+  ];
   if (view.height > 0 && lineH > 0) {
     const overscan = Math.ceil(view.height / lineH);
     const firstVisible = Math.floor(view.top / lineH) - effectiveSpacerLines;
