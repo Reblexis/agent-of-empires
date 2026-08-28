@@ -186,18 +186,22 @@ function evictOldestPersistedAcpState(currentKey: string): boolean {
       if (k === currentKey) continue;
       const raw = window.localStorage.getItem(k);
       if (raw === null) continue;
-      try {
-        const parsed = JSON.parse(raw) as PersistedEntry | null;
-        if (!parsed || typeof parsed.savedAt !== "number" || Number.isNaN(parsed.savedAt)) {
-          if (firstCorruptKey === null) firstCorruptKey = k;
-          continue;
-        }
-        if (parsed.savedAt < oldestTime) {
-          oldestTime = parsed.savedAt;
-          oldestKey = k;
-        }
-      } catch {
+      // `savedAt` is the first property `persistState` writes, so it can
+      // be read from the entry's prefix without `JSON.parse`ing the whole
+      // multi-MB blob - this scan runs on the quota-exceeded path, where
+      // parsing every sibling entry per failed write froze the tab. An
+      // entry that does not match the prefix (unparseable, or a foreign
+      // key order that never came from `persistState`) keeps the corrupt
+      // classification and is evicted first, same as before.
+      const m = /^\{"savedAt":(\d+),/.exec(raw);
+      if (!m) {
         if (firstCorruptKey === null) firstCorruptKey = k;
+        continue;
+      }
+      const savedAt = Number(m[1]);
+      if (savedAt < oldestTime) {
+        oldestTime = savedAt;
+        oldestKey = k;
       }
     }
     const victim = firstCorruptKey ?? oldestKey;
@@ -233,12 +237,26 @@ function toPersistedState(state: AcpState): AcpState {
   };
 }
 
+/** Serialized entries above this size are not persisted at all. A
+ *  transcript this large cannot fit the per-origin quota alongside its
+ *  siblings anyway, so writing it would only fail, trigger eviction and
+ *  fail again - and reload replays from the server regardless. Dropping
+ *  the stale smaller entry keeps a reload from hydrating an old prefix
+ *  of a session we know has moved far past it. */
+const MAX_PERSIST_BYTES = 2 * 1024 * 1024;
+
 function persistState(sessionId: string, state: AcpState): void {
   const key = storageKey(sessionId);
   const body = JSON.stringify({
     savedAt: Date.now(),
     state: toPersistedState(state),
   } satisfies PersistedEntry);
+  if (body.length > MAX_PERSIST_BYTES) {
+    dropPersistedState(sessionId);
+    setQueueCount(sessionId, state.queuedPrompts.length);
+    setRateLimit(sessionId, state.rateLimit);
+    return;
+  }
   if (safeSetItem(key, body)) {
     setQueueCount(sessionId, state.queuedPrompts.length);
     setRateLimit(sessionId, state.rateLimit);
@@ -261,7 +279,10 @@ export const __test = {
   persistState,
   loadPersistedState,
   evictOldestPersistedAcpState,
+  schedulePersist,
+  flushPendingPersists,
   STORAGE_KEY_PREFIX,
+  MAX_PERSIST_BYTES,
 };
 
 function loadPersistedState(sessionId: string): AcpState | undefined {
@@ -376,6 +397,39 @@ function cacheGet(sessionId: string): AcpState | undefined {
   return undefined;
 }
 
+// The daemon broadcasts `reduced_state` after every event, and
+// `applyReducedState` always returns a fresh object, so `cacheSet` runs at
+// the full event rate of a working agent. Serializing an entire transcript
+// (tens of MB on a long session) at that rate was the dashboard's largest
+// source of allocation churn - multi-GB tabs after a day - so the
+// localStorage mirror is debounced: the in-memory cache and listeners stay
+// synchronous, only the stringify+write coalesces. `pagehide` flushes so
+// the tab-eviction path this mirror exists for still sees the last state.
+const PERSIST_DEBOUNCE_MS = 1_000;
+const pendingPersists = new Map<string, AcpState>();
+let persistTimer: ReturnType<typeof setTimeout> | null = null;
+
+function flushPendingPersists(): void {
+  if (persistTimer !== null) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+  }
+  const entries = [...pendingPersists.entries()];
+  pendingPersists.clear();
+  for (const [id, state] of entries) persistState(id, state);
+}
+
+function schedulePersist(sessionId: string, state: AcpState): void {
+  pendingPersists.set(sessionId, state);
+  if (persistTimer === null) {
+    persistTimer = setTimeout(flushPendingPersists, PERSIST_DEBOUNCE_MS);
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener("pagehide", flushPendingPersists);
+}
+
 function cacheSet(sessionId: string, value: AcpState): void {
   stateCache.delete(sessionId);
   stateCache.set(sessionId, value);
@@ -384,7 +438,7 @@ function cacheSet(sessionId: string, value: AcpState): void {
     if (oldest === undefined) break;
     stateCache.delete(oldest);
   }
-  persistState(sessionId, value);
+  schedulePersist(sessionId, value);
   notifyStateListeners(sessionId);
 }
 
@@ -482,11 +536,15 @@ type ReplayPageResponse = {
 };
 
 export function clearAcpCache(sessionId?: string): void {
+  // Discard any debounced persist too, or the flush would resurrect the
+  // entry this call just dropped.
   if (sessionId === undefined) {
+    pendingPersists.clear();
     stateCache.clear();
     dropAllPersistedState();
     clearQueueCount();
   } else {
+    pendingPersists.delete(sessionId);
     stateCache.delete(sessionId);
     dropPersistedState(sessionId);
     clearQueueCount(sessionId);

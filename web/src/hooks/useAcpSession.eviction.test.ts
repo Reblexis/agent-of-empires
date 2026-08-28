@@ -271,3 +271,74 @@ describe("persistState strips attachment-bearing queued rows (#1833)", () => {
     expect(parsed.state.queuedPrompts[0]?.id).toBe("q1");
   });
 });
+
+describe("persistState skips oversized states instead of fighting the quota", () => {
+  it("drops the stale entry and writes nothing when the body exceeds the cap", () => {
+    // A state entry from earlier in the session.
+    window.localStorage.setItem(
+      `${STORAGE_KEY_PREFIX}sess-huge`,
+      JSON.stringify({ savedAt: Date.now(), state: emptyAcpState() }),
+    );
+    const state = {
+      ...emptyAcpState(),
+      activity: [{ id: "r1", kind: "message" as const, text: "x".repeat(__test.MAX_PERSIST_BYTES) }],
+    };
+
+    expect(() => persistState("sess-huge", state)).not.toThrow();
+
+    // The stale smaller entry is gone (a reload must not hydrate an old
+    // prefix of a session known to have moved far past it), and the
+    // oversized body was never written.
+    expect(window.localStorage.getItem(`${STORAGE_KEY_PREFIX}sess-huge`)).toBeNull();
+  });
+
+  it("does not evict siblings for an oversized write", () => {
+    window.localStorage.setItem(
+      `${STORAGE_KEY_PREFIX}sess-old`,
+      JSON.stringify({ savedAt: Date.now() - 86_400_000, state: emptyAcpState() }),
+    );
+    const state = {
+      ...emptyAcpState(),
+      activity: [{ id: "r1", kind: "message" as const, text: "x".repeat(__test.MAX_PERSIST_BYTES) }],
+    };
+
+    persistState("sess-huge", state);
+
+    expect(window.localStorage.getItem(`${STORAGE_KEY_PREFIX}sess-old`)).not.toBeNull();
+  });
+});
+
+describe("persist debounce", () => {
+  it("coalesces schedulePersist bursts into one write per session at the trailing edge", () => {
+    vi.useFakeTimers();
+    try {
+      const setItem = vi.spyOn(Storage.prototype, "setItem");
+      const a = { ...emptyAcpState(), lastSeq: 1 };
+      const b = { ...emptyAcpState(), lastSeq: 2 };
+      __test.schedulePersist("sess-debounce", a);
+      __test.schedulePersist("sess-debounce", b);
+      // Nothing hits storage until the debounce window elapses.
+      expect(setItem.mock.calls.filter(([k]) => k === `${STORAGE_KEY_PREFIX}sess-debounce`)).toHaveLength(0);
+
+      vi.runOnlyPendingTimers();
+
+      const writes = setItem.mock.calls.filter(([k]) => k === `${STORAGE_KEY_PREFIX}sess-debounce`);
+      expect(writes).toHaveLength(1);
+      // The last scheduled state wins.
+      const parsed = JSON.parse(writes[0]![1] as string) as { state: { lastSeq: number } };
+      expect(parsed.state.lastSeq).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("flushPendingPersists writes immediately (the pagehide path)", () => {
+    const state = { ...emptyAcpState(), lastSeq: 7 };
+    __test.schedulePersist("sess-flush", state);
+    __test.flushPendingPersists();
+    const raw = window.localStorage.getItem(`${STORAGE_KEY_PREFIX}sess-flush`);
+    expect(raw).not.toBeNull();
+    const parsed = JSON.parse(raw!) as { state: { lastSeq: number } };
+    expect(parsed.state.lastSeq).toBe(7);
+  });
+});

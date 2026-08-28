@@ -1,7 +1,12 @@
 import { useCallback, useMemo, useState } from "react";
 
 import type { ActivityRow } from "../lib/acpTypes";
-import { DEFAULT_HISTORY_WINDOW, HISTORY_WINDOW_STEP, historyWindow } from "../lib/acpHistoryWindow";
+import {
+  DEFAULT_HISTORY_WINDOW,
+  HISTORY_WINDOW_STEP,
+  MAX_AUTO_HISTORY_WINDOW,
+  historyWindow,
+} from "../lib/acpHistoryWindow";
 
 export interface HistoryWindowState {
   /** The recent slice of `activity` to render. */
@@ -46,9 +51,12 @@ export function useHistoryWindow(
   } else if (activity.length !== anchorLen) {
     // Grow the window by exactly the rows added so the start index holds
     // and on-screen rows don't fold. A shrink (retention trim) just
-    // resyncs the anchor; the smaller set renders whole.
+    // resyncs the anchor; the smaller set renders whole. Automatic growth
+    // stops at MAX_AUTO_HISTORY_WINDOW so a session parked on screen
+    // cannot grow the DOM without bound; a window the user grew past the
+    // cap via "Load earlier" holds its size rather than shrinking.
     if (activity.length > anchorLen) {
-      setVisibleRows((v) => v + (activity.length - anchorLen));
+      setVisibleRows((v) => Math.min(v + (activity.length - anchorLen), Math.max(v, MAX_AUTO_HISTORY_WINDOW)));
     }
     setAnchorLen(activity.length);
   }

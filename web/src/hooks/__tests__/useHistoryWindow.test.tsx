@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 
 import type { ActivityRow } from "../../lib/acpTypes";
-import { DEFAULT_HISTORY_WINDOW } from "../../lib/acpHistoryWindow";
+import { DEFAULT_HISTORY_WINDOW, MAX_AUTO_HISTORY_WINDOW } from "../../lib/acpHistoryWindow";
 import { useHistoryWindow } from "../useHistoryWindow";
 
 function transcript(turns: number, perTurn: number): ActivityRow[] {
@@ -65,6 +65,29 @@ describe("useHistoryWindow", () => {
     // landed too.
     expect(ids).toContain(topBefore);
     expect(ids).toContain("nu-4");
+  });
+
+  it("caps automatic growth so a parked live session cannot grow the DOM without bound", () => {
+    const activity = transcript(100, 1); // 200 rows
+    const { result, rerender } = renderHook(({ a }) => useHistoryWindow("s1", a, false), {
+      initialProps: { a: activity },
+    });
+    // Stream ten more 200-row batches, far past the automatic cap.
+    let current = activity;
+    for (let batch = 0; batch < 10; batch += 1) {
+      current = current.concat(transcript(100, 1).map((r) => ({ ...r, id: `b${batch}-${r.id}` })));
+      rerender({ a: current });
+    }
+    expect(current.length).toBeGreaterThan(MAX_AUTO_HISTORY_WINDOW);
+    // The window stops at the cap instead of tracking the transcript 1:1,
+    // and the newest row still renders.
+    expect(result.current.windowedActivity.length).toBeLessThanOrEqual(MAX_AUTO_HISTORY_WINDOW);
+    expect(result.current.windowedActivity.at(-1)?.id).toBe(current.at(-1)!.id);
+    // "Load earlier" still reaches past the cap.
+    expect(result.current.canLoadEarlier).toBe(true);
+    const before = result.current.windowedActivity.length;
+    act(() => result.current.loadEarlier());
+    expect(result.current.windowedActivity.length).toBeGreaterThan(before);
   });
 
   it("resets the window to recent when the session changes", () => {
