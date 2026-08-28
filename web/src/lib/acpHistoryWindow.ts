@@ -11,6 +11,16 @@ export const DEFAULT_HISTORY_WINDOW = 150;
 /** Extra rows revealed per "Load earlier" activation. */
 export const HISTORY_WINDOW_STEP = 150;
 
+/** Ceiling on how far live appends can grow the window on their own.
+ *  Without it, a session left on screen grows `visibleRows` 1:1 with the
+ *  transcript (see useHistoryWindow), the render start freezes at its
+ *  first-paint value, and every row streamed since open stays in the
+ *  DOM - a parked busy session reaches GB-scale DOM overnight. An
+ *  explicit "Load earlier" may still exceed this; only automatic growth
+ *  is capped, so at worst a reader parked more than this many rows up
+ *  sees the top of the window fold as new turns land. */
+export const MAX_AUTO_HISTORY_WINDOW = 600;
+
 /** User turns anchor the window's top so it never opens on a dangling
  *  mid-turn assistant fragment. Typed diff-comment turns count too. */
 function isUserTurnBoundary(row: ActivityRow): boolean {
