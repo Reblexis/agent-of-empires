@@ -68,6 +68,58 @@ describe("frameStream", () => {
     inflater.dispose();
   });
 
+  it("survives byte-at-a-time delivery (header and body split across every boundary)", async () => {
+    const deflate = makeDeflater();
+    const frames: string[] = [];
+    const inflater = createFrameInflater(
+      (f) => frames.push(f),
+      () => {},
+    );
+    const f1 = JSON.stringify({ type: "frame", content: "abc\n".repeat(300) });
+    const f2 = JSON.stringify({ type: "frame", content: "def\n".repeat(7) });
+    const compressed = new Uint8Array(Buffer.concat([await deflate(f1), await deflate(f2)]));
+    for (let i = 0; i < compressed.length; i += 1) {
+      inflater.push(toArrayBuffer(compressed.subarray(i, i + 1)));
+    }
+    await vi.waitFor(() => expect(frames).toEqual([f1, f2]));
+    inflater.dispose();
+  });
+
+  it("drains several records that arrive in one push", async () => {
+    const deflate = makeDeflater();
+    const frames: string[] = [];
+    const inflater = createFrameInflater(
+      (f) => frames.push(f),
+      () => {},
+    );
+    const expected = [];
+    const parts: Uint8Array[] = [];
+    for (let i = 0; i < 5; i += 1) {
+      const f = JSON.stringify({ type: "frame", seq: i, content: `row ${i}\n` });
+      expected.push(f);
+      parts.push(await deflate(f));
+    }
+    inflater.push(toArrayBuffer(new Uint8Array(Buffer.concat(parts))));
+    await vi.waitFor(() => expect(frames).toEqual(expected));
+    inflater.dispose();
+  });
+
+  it("handles a large low-entropy frame whose inflate output spans many chunks", async () => {
+    // ~2MB of repetitive plaintext inflates from a few KB of deflate input
+    // into dozens of DecompressionStream output chunks; the record must
+    // reassemble exactly once, whole.
+    const deflate = makeDeflater();
+    const frames: string[] = [];
+    const inflater = createFrameInflater(
+      (f) => frames.push(f),
+      () => {},
+    );
+    const f1 = JSON.stringify({ type: "frame", content: "the same line of scrollback\n".repeat(75_000) });
+    inflater.push(toArrayBuffer(await deflate(f1)));
+    await vi.waitFor(() => expect(frames).toEqual([f1]), { timeout: 10_000 });
+    inflater.dispose();
+  });
+
   it("reports a corrupt stream once via onError", async () => {
     const onError = vi.fn();
     const inflater = createFrameInflater(() => {}, onError);

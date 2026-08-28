@@ -348,6 +348,11 @@ function AppContent({
   // every one of its sessions is trashed, and Restore/Delete then cover all of
   // them. See #2533.
   const trashedWorkspaces = useMemo(() => workspaces.filter(workspaceIsTrashed), [workspaces]);
+  // Memoized for identity, not speed: TerminalSessionStack keys a Map and
+  // an effect off this prop, and an inline filter handed it a fresh array
+  // on every App render - which the 3s session poll forces anyway, so the
+  // stack re-derived per-session state for 150 sessions each tick.
+  const terminalSessions = useMemo(() => sessions.filter((session) => session.view !== "structured"), [sessions]);
 
   // Remember the active session and restore it on a PWA relaunch (#2103).
   useLastSessionRestore({ activeSessionId, sessions, sessionsLoaded });
@@ -1905,7 +1910,7 @@ function AppContent({
                   ) : (
                     <TerminalSessionStack
                       activeSessionId={activeSessionId!}
-                      sessions={sessions.filter((session) => session.view !== "structured")}
+                      sessions={terminalSessions}
                       persistent={webSettings.persistentTerminals}
                       maxPersistentTerminals={webSettings.maxPersistentTerminals}
                     />
