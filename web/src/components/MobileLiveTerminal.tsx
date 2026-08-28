@@ -1758,6 +1758,29 @@ export function MobileLiveTerminal({
     handleCompositionEnd,
   ]);
 
+  // Paste rescue: a Ctrl+V that fires while nothing editable owns the caret
+  // still belongs to the terminal the user is looking at. Clicking around the
+  // pane (ending a selection, clicking a rendered link, clicking chrome)
+  // drops focus from the hidden input, and the next paste then lands on
+  // <body> and silently vanishes - the "paste sometimes does nothing" report.
+  // Route those strays here and take the focus back so the next paste hits
+  // the normal path. Agent surface only (bottomAlign) and only while active,
+  // so a paired shell or a background pane never double-consumes one paste;
+  // any focused input/textarea/contenteditable (composer, dialogs, the
+  // terminal's own hidden input) keeps its paste untouched.
+  useEffect(() => {
+    if (!active || !bottomAlign) return;
+    const onDocPaste = (e: ClipboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t === inputRef.current) return;
+      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      handlePaste(e);
+      inputRef.current?.focus();
+    };
+    document.addEventListener("paste", onDocPaste);
+    return () => document.removeEventListener("paste", onDocPaste);
+  }, [active, bottomAlign, handlePaste, inputRef]);
+
   // The cursor is rendered inline by Row (see below): this is the visual row
   // to box, and the column within it. -1 means draw nothing.
   const cursorRow = connected && !reading ? live.row : -1;

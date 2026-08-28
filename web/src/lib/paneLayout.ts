@@ -148,11 +148,26 @@ export function removeTab(layout: DockLayout, tabId: TabId): DockLayout {
     // Prefer the tab that shifted into this slot, else the new last tab.
     group.active = group.tabs[at.index] ?? group.tabs[group.tabs.length - 1] ?? null;
   }
-  if (tabId.startsWith("plugin:") && !next.closedPlugins.includes(tabId)) {
+  // Context rides the same "user closed it, do not re-add" ledger as plugin
+  // tabs: the auto-add passes (syncPluginTabs, ensureContextTab) must not
+  // resurrect an explicitly closed tab on the next render.
+  if ((tabId.startsWith("plugin:") || tabId === "context") && !next.closedPlugins.includes(tabId)) {
     next.closedPlugins.push(tabId);
   }
   pruneEmpty(next, at.dock);
   return next;
+}
+
+/** LOCAL PATCH: the Context pane opens by default as the ACTIVE right-dock
+ *  tab of every session, including stored layouts that predate the pane, so
+ *  re-orienting never needs a per-session click. Applied at both layout
+ *  resolution sites (render and mutate) so the displayed and persisted
+ *  layouts agree. An explicit close is remembered in `closedPlugins` until
+ *  the tab is reopened (addTab clears the ledger entry). */
+export function ensureContextTab(layout: DockLayout): DockLayout {
+  if (layout.closedPlugins.includes("context")) return layout;
+  if (findTab(layout, "context")) return layout;
+  return addTab(layout, "right", "context", true);
 }
 
 export function setActive(layout: DockLayout, dock: DockLocation, tabId: TabId): DockLayout {
@@ -292,7 +307,9 @@ function defaultTemplate(): DockLayout {
     const tabId = p.id === "terminal" ? terminalTabId(0) : p.id;
     l = addTab(l, p.defaultDock, tabId, false);
   }
-  return l;
+  // LOCAL PATCH: context is the tab a session opens on (see ensureContextTab);
+  // the recap is what re-orients, diff/terminal are a click away.
+  return setActive(l, "right", "context");
 }
 
 function migrateTemplate(): DockLayout {
@@ -482,8 +499,10 @@ export function usePaneLayout(sessionId: string | null): PaneLayoutApi {
   const layout = useMemo(
     () =>
       sessionId
-        ? (store.sessions[sessionId] ??
-          seedLayout(store.template, { diff: autoOpenDiffPane, terminal: autoOpenTerminalPane }))
+        ? ensureContextTab(
+            store.sessions[sessionId] ??
+              seedLayout(store.template, { diff: autoOpenDiffPane, terminal: autoOpenTerminalPane }),
+          )
         : emptyDockLayout(),
     [store, sessionId, autoOpenDiffPane, autoOpenTerminalPane],
   );
@@ -499,9 +518,10 @@ export function usePaneLayout(sessionId: string | null): PaneLayoutApi {
         // (and re-render every consumer) on any unrelated web-setting change,
         // and omitting it would stale-seed. See #3035.
         const prefs = getWebSettingsSnapshot();
-        const current =
+        const current = ensureContextTab(
           s.sessions[sessionId] ??
-          seedLayout(s.template, { diff: prefs.autoOpenDiffPane, terminal: prefs.autoOpenTerminalPane });
+            seedLayout(s.template, { diff: prefs.autoOpenDiffPane, terminal: prefs.autoOpenTerminalPane }),
+        );
         const updated = fn(current);
         if (updated === current && sessionId in s.sessions) return s;
         return { ...s, sessions: { ...s.sessions, [sessionId]: updated } };

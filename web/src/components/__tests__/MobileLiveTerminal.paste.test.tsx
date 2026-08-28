@@ -116,6 +116,32 @@ describe("MobileLiveTerminal paste", () => {
     expect(sendData).toHaveBeenCalledWith("\x1b[200~hello world\x1b[201~");
   });
 
+  it("rescues a paste that fires with no editable focused (focus fell to body)", () => {
+    // Clicking around the pane (ending a selection, clicking a link) drops
+    // focus from the hidden input; the next Ctrl+V then fires on <body> and
+    // used to vanish silently. The document-level rescue routes it to the
+    // terminal and refocuses the input.
+    const { input, sendData } = renderTerm();
+    input.blur();
+    fireEvent.paste(document.body, {
+      clipboardData: { getData: (t: string) => (t === "text/plain" ? "stray paste" : "") },
+    });
+    expect(sendData).toHaveBeenCalledWith("\x1b[200~stray paste\x1b[201~");
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("does not steal a paste aimed at another editable element", () => {
+    const { sendData } = renderTerm();
+    const other = document.createElement("input");
+    document.body.appendChild(other);
+    other.focus();
+    fireEvent.paste(other, {
+      clipboardData: { getData: (t: string) => (t === "text/plain" ? "for the input" : "") },
+    });
+    expect(sendData).not.toHaveBeenCalled();
+    other.remove();
+  });
+
   it("uploads a pasted image and bracketed-pastes the returned host path (#2678)", async () => {
     const upload = vi.fn().mockResolvedValue("/repo/.aoe-pasted-images/aoe-paste-x.png");
     const { input, sendData } = renderTerm(upload);

@@ -208,21 +208,69 @@ describe("pane layout pure ops", () => {
 });
 
 describe("usePaneLayout migration + persistence", () => {
-  it("migrates the v1 expanded layout to terminal:0 + diff tabs", () => {
+  it("migrates the v1 expanded layout to terminal:0 + diff tabs (plus the ensured context tab)", () => {
     localStorage.setItem(
       "aoe-pane-layout",
       JSON.stringify({ diff: { open: true, dock: "right" }, terminal: { open: true, dock: "bottom" } }),
     );
     const { result } = renderHook(() => usePaneLayout("s1"));
-    expect(dockTabs(result.current.layout, "right")).toEqual(["diff"]);
+    expect(dockTabs(result.current.layout, "right")).toEqual(["diff", "context"]);
     expect(dockTabs(result.current.layout, "bottom")).toEqual(["terminal:0"]);
   });
 
-  it("migrates the legacy collapsed flag (1 = both docks empty)", () => {
+  it("migrates the legacy collapsed flag (1 = docks empty except the ensured context tab)", () => {
     localStorage.setItem("aoe-right-collapsed", "1");
     const { result } = renderHook(() => usePaneLayout("s1"));
-    expect(result.current.layout.right).toEqual([]);
+    expect(dockTabs(result.current.layout, "right")).toEqual(["context"]);
     expect(result.current.layout.bottom).toEqual([]);
+  });
+
+  it("ensures the context tab as the active right tab on every session (LOCAL PATCH)", () => {
+    const { result } = renderHook(() => usePaneLayout("s1"));
+    expect(dockTabs(result.current.layout, "right")).toContain("context");
+    const group = result.current.layout.right.find((g) => g.tabs.includes("context"))!;
+    expect(group.active).toBe("context");
+  });
+
+  it("adds context to a stored layout that predates the pane", () => {
+    // A pre-context v2 store: session s1 has only diff in the right dock.
+    localStorage.setItem(
+      "aoe-pane-layout-v2",
+      JSON.stringify({
+        version: 2,
+        template: {
+          right: [],
+          bottom: [],
+          nextTerminalIndex: 1,
+          closedPlugins: [],
+          collapsed: { right: false, bottom: false },
+        },
+        sessions: {
+          s1: {
+            right: [{ tabs: ["diff"], active: "diff" }],
+            bottom: [],
+            nextTerminalIndex: 1,
+            closedPlugins: [],
+            collapsed: { right: false, bottom: false },
+          },
+        },
+      }),
+    );
+    const { result } = renderHook(() => usePaneLayout("s1"));
+    expect(dockTabs(result.current.layout, "right")).toEqual(["diff", "context"]);
+  });
+
+  it("does not resurrect an explicitly closed context tab, and reopen clears the ledger", () => {
+    const { result } = renderHook(() => usePaneLayout("s1"));
+    act(() => result.current.closeTab("context"));
+    expect(dockTabs(result.current.layout, "right")).not.toContain("context");
+
+    // Still closed after a reload (the ledger persisted with the layout).
+    const reloaded = renderHook(() => usePaneLayout("s1"));
+    expect(dockTabs(reloaded.result.current.layout, "right")).not.toContain("context");
+
+    act(() => reloaded.result.current.openTab("context", "right"));
+    expect(dockTabs(reloaded.result.current.layout, "right")).toContain("context");
   });
 
   it("keeps terminal tab sets independent per session and persists", () => {
@@ -297,7 +345,7 @@ describe("usePaneLayout migration + persistence", () => {
       }),
     );
     const { result } = renderHook(() => usePaneLayout("s1"));
-    expect(dockTabs(result.current.layout, "right")).toEqual(["diff", "terminal:0"]);
+    expect(dockTabs(result.current.layout, "right")).toEqual(["diff", "terminal:0", "context"]);
     expect(dockTabs(result.current.layout, "bottom")).toEqual([]);
   });
 
@@ -318,7 +366,7 @@ describe("usePaneLayout migration + persistence", () => {
       }),
     );
     const { result } = renderHook(() => usePaneLayout("s1"));
-    expect(dockTabs(result.current.layout, "right")).toEqual(["diff", "terminal:0"]);
+    expect(dockTabs(result.current.layout, "right")).toEqual(["diff", "terminal:0", "context"]);
   });
 
   it("loads multiple persisted groups per dock without merging them", () => {
@@ -342,7 +390,7 @@ describe("usePaneLayout migration + persistence", () => {
     );
     const { result } = renderHook(() => usePaneLayout("s1"));
     expect(result.current.layout.right.length).toBe(2);
-    expect(result.current.layout.right[0]!.tabs).toEqual(["diff"]);
+    expect(result.current.layout.right[0]!.tabs).toEqual(["diff", "context"]);
     expect(result.current.layout.right[1]!.tabs).toEqual(["terminal:0"]);
   });
 
@@ -350,9 +398,9 @@ describe("usePaneLayout migration + persistence", () => {
     localStorage.setItem("aoe-right-collapsed", "1"); // start empty
     const { result } = renderHook(() => usePaneLayout("s1"));
     act(() => result.current.toggleKind("terminal", "right"));
-    expect(dockTabs(result.current.layout, "right")).toEqual(["terminal:0"]);
+    expect(dockTabs(result.current.layout, "right")).toEqual(["context", "terminal:0"]);
     act(() => result.current.toggleKind("terminal", "right"));
-    expect(dockTabs(result.current.layout, "right")).toEqual([]);
+    expect(dockTabs(result.current.layout, "right")).toEqual(["context"]);
   });
 });
 
