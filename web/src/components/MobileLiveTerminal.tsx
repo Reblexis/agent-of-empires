@@ -81,6 +81,15 @@ const SHRINK_DELAY_MS = 1500;
  *  below the server's fast-cadence window bound (screen * 4) so live echo
  *  stays at the tight interval. */
 const LIVE_WINDOW_SCREENS = 2;
+
+// Which mounted live terminal the user last interacted with. A session can
+// show two at once (the agent pane plus the right-dock paired shell), and a
+// paste that arrives while no editable is focused has to reach the one the
+// user is actually working in. Without this the agent pane always claimed it,
+// so pasting into the paired terminal silently typed into the agent instead.
+// Module scope (not context) because the two instances are siblings under
+// different docks and the value is read inside a DOM event handler.
+const lastInteractedTerminal: { id: symbol | null } = { id: null };
 /** Forward-mode touch scroll gain: pane lines scrolled per line-height of
  *  finger travel. The full-screen app redraws after a network round trip, so
  *  a large gain makes the delayed response race ahead of the user's finger.
@@ -469,6 +478,13 @@ export function MobileLiveTerminal({
   bottomAlign,
   keyboardOpen,
 }: MobileLiveTerminalProps) {
+  // Stable identity for the "which terminal did the user last touch" registry
+  // that arbitrates stray pastes between the agent pane and the paired shell.
+  const [instanceId] = useState(() => Symbol("live-terminal"));
+  const instanceIdRef = useRef(instanceId);
+  const markInteracted = useCallback(() => {
+    lastInteractedTerminal.id = instanceId;
+  }, [instanceId]);
   const { settings, update } = useWebSettings();
   // The live view now renders on desktop too, so it honors the right font-size
   // setting per device: the desktop terminal size on a fine pointer, the
@@ -861,6 +877,10 @@ export function MobileLiveTerminal({
   useEffect(
     () => () => {
       if (shrinkTimerRef.current) clearTimeout(shrinkTimerRef.current);
+      // Release the stray-paste claim when this terminal goes away (paired
+      // tab closed, session switched), so the claim falls back to the agent
+      // pane rather than being held by a terminal that no longer exists.
+      if (lastInteractedTerminal.id === instanceIdRef.current) lastInteractedTerminal.id = null;
     },
     [],
   );
@@ -1778,24 +1798,44 @@ export function MobileLiveTerminal({
   // still belongs to the terminal the user is looking at. Clicking around the
   // pane (ending a selection, clicking a rendered link, clicking chrome)
   // drops focus from the hidden input, and the next paste then lands on
-  // <body> and silently vanishes - the "paste sometimes does nothing" report.
-  // Route those strays here and take the focus back so the next paste hits
-  // the normal path. Agent surface only (bottomAlign) and only while active,
-  // so a paired shell or a background pane never double-consumes one paste;
-  // any focused input/textarea/contenteditable (composer, dialogs, the
-  // terminal's own hidden input) keeps its paste untouched.
+  // <body> instead - dropped outright, or (with two terminals mounted) typed
+  // into the wrong one.
+  //
+  // Exactly one mounted terminal may claim such a paste: the one the user
+  // last interacted with, falling back to the agent pane before any
+  // interaction is recorded. Any focused input/textarea/contenteditable
+  // (composer, dialogs, the terminal's own hidden input) keeps its paste.
+  const claimsStrayPaste = useCallback(
+    () => (lastInteractedTerminal.id ? lastInteractedTerminal.id === instanceId : bottomAlign),
+    [bottomAlign, instanceId],
+  );
   useEffect(() => {
-    if (!active || !bottomAlign) return;
+    if (!active) return;
+    const isEditable = (t: HTMLElement | null) =>
+      !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
     const onDocPaste = (e: ClipboardEvent) => {
       const t = e.target as HTMLElement | null;
-      if (t === inputRef.current) return;
-      if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
+      if (t === inputRef.current || isEditable(t) || !claimsStrayPaste()) return;
       handlePaste(e);
       inputRef.current?.focus();
     };
+    // Focusing the hidden input during the Ctrl+V keydown makes the browser
+    // deliver the paste straight to it, which is the path that also works
+    // where a stray paste event would not fire at all. Verified against real
+    // Firefox and Chromium.
+    const onDocKeyDown = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.key?.toLowerCase() !== "v") return;
+      const t = e.target as HTMLElement | null;
+      if (t === inputRef.current || isEditable(t) || !claimsStrayPaste()) return;
+      inputRef.current?.focus();
+    };
     document.addEventListener("paste", onDocPaste);
-    return () => document.removeEventListener("paste", onDocPaste);
-  }, [active, bottomAlign, handlePaste, inputRef]);
+    document.addEventListener("keydown", onDocKeyDown, true);
+    return () => {
+      document.removeEventListener("paste", onDocPaste);
+      document.removeEventListener("keydown", onDocKeyDown, true);
+    };
+  }, [active, claimsStrayPaste, handlePaste, inputRef]);
 
   // The cursor is rendered inline by Row (see below): this is the visual row
   // to box, and the column within it. -1 means draw nothing.
@@ -1879,6 +1919,10 @@ export function MobileLiveTerminal({
         onScroll={onScroll}
         onWheel={onWheel}
         onClick={focusInputOnTap}
+        // Any pointer press in this pane makes it the terminal a stray paste
+        // belongs to. Capture phase so it records even when the press is
+        // consumed below (forward-mode drags, selection drags).
+        onPointerDownCapture={markInteracted}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={endPointerForward}
@@ -2037,6 +2081,7 @@ export function MobileLiveTerminal({
         // documented off switch; color guards select-all artifacts.
         style={{ fontSize: "16px", caretColor: "transparent", color: "transparent" }}
         onFocus={() => {
+          markInteracted();
           setFocused(true);
           onInputFocusChange(true);
         }}

@@ -71,6 +71,41 @@ function renderTerm(uploadPastedImage = vi.fn().mockResolvedValue(null)) {
   return { input: inputRef.current!, sendData, uploadPastedImage };
 }
 
+// Render one terminal instance and expose its scroller + hidden input, for
+// tests that need two mounted terminals at once.
+function renderTermInstance({ bottomAlign }: { bottomAlign: boolean }) {
+  const inputRef = createRef<HTMLTextAreaElement>();
+  const sendData = vi.fn();
+  const { container } = render(
+    <MobileLiveTerminal
+      frame={frame}
+      connected
+      active
+      reading={false}
+      sendResize={vi.fn()}
+      setWindow={vi.fn()}
+      setCadence={vi.fn()}
+      enterReading={vi.fn()}
+      returnToLive={vi.fn()}
+      sendData={sendData}
+      uploadPastedImage={vi.fn().mockResolvedValue(null)}
+      forwardWheel={vi.fn()}
+      forwardButton={vi.fn()}
+      ctrlActiveRef={createRef<boolean>() as React.RefObject<boolean>}
+      clearCtrl={vi.fn()}
+      inputRef={inputRef}
+      onInputFocusChange={vi.fn()}
+      bottomAlign={bottomAlign}
+      keyboardOpen={false}
+    />,
+  );
+  return {
+    input: inputRef.current!,
+    sendData,
+    scroller: container.querySelector("[data-live-terminal] > div") as HTMLElement,
+  };
+}
+
 // A clipboard item wrapping a File, as clipboardData.items exposes it.
 function imageItem(file: File): DataTransferItem {
   return {
@@ -127,6 +162,40 @@ describe("MobileLiveTerminal paste", () => {
       clipboardData: { getData: (t: string) => (t === "text/plain" ? "stray paste" : "") },
     });
     expect(sendData).toHaveBeenCalledWith("\x1b[200~stray paste\x1b[201~");
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("routes a stray paste to the terminal the user last touched, not always the agent", () => {
+    // Two terminals are mounted at once (agent pane + right-dock paired
+    // shell). A paste with focus on <body> used to always land in the agent,
+    // so pasting while working in the paired shell typed into the wrong one.
+    const agent = renderTermInstance({ bottomAlign: true });
+    const paired = renderTermInstance({ bottomAlign: false });
+
+    // Touch the paired terminal, then paste with nothing focused.
+    fireEvent.pointerDown(paired.scroller, { pointerType: "mouse", button: 0 });
+    paired.input.blur();
+    fireEvent.paste(document.body, {
+      clipboardData: { getData: (t: string) => (t === "text/plain" ? "to paired" : "") },
+    });
+    expect(paired.sendData).toHaveBeenCalledWith("\x1b[200~to paired\x1b[201~");
+    expect(agent.sendData).not.toHaveBeenCalledWith("\x1b[200~to paired\x1b[201~");
+
+    // Touching the agent pane hands the claim back.
+    fireEvent.pointerDown(agent.scroller, { pointerType: "mouse", button: 0 });
+    agent.input.blur();
+    fireEvent.paste(document.body, {
+      clipboardData: { getData: (t: string) => (t === "text/plain" ? "to agent" : "") },
+    });
+    expect(agent.sendData).toHaveBeenCalledWith("\x1b[200~to agent\x1b[201~");
+    expect(paired.sendData).not.toHaveBeenCalledWith("\x1b[200~to agent\x1b[201~");
+  });
+
+  it("focuses the terminal input on a stray Ctrl+V so the browser delivers the paste there", () => {
+    const { input } = renderTerm();
+    input.blur();
+    expect(document.activeElement).not.toBe(input);
+    fireEvent.keyDown(document.body, { key: "v", ctrlKey: true });
     expect(document.activeElement).toBe(input);
   });
 
