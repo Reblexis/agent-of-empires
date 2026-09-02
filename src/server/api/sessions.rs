@@ -6356,6 +6356,30 @@ pub async fn ensure_session(
     };
 
     if !needs_restart {
+        // Selecting a session is a "use" for the LRU live cap
+        // (`session.hibernate_max_live`): stamp last_accessed_at in memory
+        // and on disk so merely viewing a session keeps it out of the
+        // hibernation tail. Also the wake-refresh the user expects: a
+        // clicked session ranks newest from that moment.
+        {
+            let mut instances = state.instances.write().await;
+            if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
+                inst.touch_last_accessed();
+            }
+        }
+        let id_for_save = id.clone();
+        let profile_for_save = instance.effective_profile();
+        let file_watch = state.file_watch.clone();
+        tokio::task::spawn_blocking(move || {
+            if let Ok(storage) = Storage::new(&profile_for_save, file_watch) {
+                let _ = storage.update(|all, _groups| {
+                    if let Some(disk_inst) = all.iter_mut().find(|i| i.id == id_for_save) {
+                        disk_inst.touch_last_accessed();
+                    }
+                    Ok(())
+                });
+            }
+        });
         return (StatusCode::OK, Json(serde_json::json!({"status": "alive"}))).into_response();
     }
 
@@ -6405,10 +6429,31 @@ pub async fn ensure_session(
 
     match restart_result {
         Ok(Ok((started, outcome))) => {
-            let mut instances = state.instances.write().await;
-            if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
-                apply_post_restart_sync(inst, &sync_base, &started);
+            {
+                let mut instances = state.instances.write().await;
+                if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
+                    apply_post_restart_sync(inst, &sync_base, &started);
+                    // A wake from hibernation: the restart cascade does not
+                    // touch `idle_dormant_since`, and a live pane behind a
+                    // still-dormant row would be skipped by the status
+                    // poller forever. touch_last_accessed clears the marker
+                    // and stamps the LRU rank in one move.
+                    inst.touch_last_accessed();
+                }
             }
+            let id_for_save = id.clone();
+            let profile_for_save = sync_base.effective_profile();
+            let file_watch = state.file_watch.clone();
+            tokio::task::spawn_blocking(move || {
+                if let Ok(storage) = Storage::new(&profile_for_save, file_watch) {
+                    let _ = storage.update(|all, _groups| {
+                        if let Some(disk_inst) = all.iter_mut().find(|i| i.id == id_for_save) {
+                            disk_inst.touch_last_accessed();
+                        }
+                        Ok(())
+                    });
+                }
+            });
             let resume_outcome = match &outcome {
                 crate::session::StartOutcome::Resumed => "resumed",
                 crate::session::StartOutcome::ResumeFailed { .. } => "resume_failed",

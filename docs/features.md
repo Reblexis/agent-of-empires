@@ -103,6 +103,8 @@ Each session reports `Running`, `Waiting`, `Idle`, or `Error` based on tmux pane
 
 Set `session.auto_stop_idle_secs` and a plain tmux session that sits `Idle` past the threshold is stopped automatically, leaving a restartable `Stopped` row. Off by default; never stops an attached or recently used session; runs from both the TUI and `aoe serve`. Agent workers use the separate `acp.auto_stop_idle_secs` knob.
 
+Set `session.hibernate_max_live` and at most that many plain sessions keep a live agent process at once: the least-recently-used idle ones are hibernated (tmux torn down, row kept in the list as dormant) and wake with the agent's conversation resumed the moment you select them. Busy sessions never count against being kept, so the live set can exceed the cap while agents are working. Off by default; enforced by the `aoe serve` daemon.
+
 [Configuration: session section](guides/configuration.md#session)
 
 ### Session resume

@@ -1764,9 +1764,10 @@ impl Instance {
     /// deliberate Stop also sets `idle_dormant_since` (see `stop_session`),
     /// so `Status::Stopped` must win here and keep showing the neutral
     /// "Stopped" dot; only a non-stopped row carrying the dormant marker
-    /// (the idle-reaper's output) presents as dormant. The reaper only ever
-    /// marks structured rows, so this is structured-only in practice. See
-    /// #2250 and `idle_dormant_since`.
+    /// (a reaper's output) presents as dormant. Both reapers mark rows this
+    /// way: the structured-view idle reaper (#1689) and the plain-session
+    /// LRU cap (`session.hibernate_max_live`). See #2250 and
+    /// `idle_dormant_since`.
     pub fn is_shown_dormant(&self) -> bool {
         self.is_idle_dormant() && self.status != Status::Stopped
     }
@@ -6681,6 +6682,46 @@ impl Instance {
         }
     }
 
+    /// Tear down this session's tmux and sandbox for hibernation (the LRU
+    /// cap, `session.hibernate_max_live`): identical teardown to [`stop`],
+    /// but the row is committed back as `Idle` rather than `Stopped`, so it
+    /// renders as dormant (the caller already persisted `idle_dormant_since`
+    /// via `claim_hibernate`) and `/ensure` treats a click as a normal
+    /// restart-with-resume. On teardown failure the commit is `Error`, and
+    /// the caller must clear the dormant marker so the row is not blocked.
+    pub fn hibernate_stop(&self) -> Result<()> {
+        let profile = self.effective_profile();
+        let storage = super::storage::Storage::new(&profile, self.resolve_file_watch())
+            .context("failed to open lifecycle lock storage")?;
+        let _lifecycle_lock = storage
+            .acquire_instance_lifecycle_lock(&self.id)
+            .context("failed to acquire instance hibernate lock")?;
+        let mut lifecycle = self.clone();
+        lifecycle.acquire_lifecycle_reservation(&storage, LifecycleOperation::Stop, None)?;
+        let teardown = self.kill_locked().and_then(|()| {
+            crate::session::worktree_edit::stop_sandbox_container(&self.id, self.is_sandboxed())
+        });
+        match teardown {
+            Ok(()) => {
+                lifecycle.commit_lifecycle_status(
+                    &storage,
+                    LifecycleOperation::Stop,
+                    Status::Idle,
+                )?;
+                crate::hooks::cleanup_hook_status_dir(&self.id);
+                Ok(())
+            }
+            Err(error) => {
+                let _ = lifecycle.commit_lifecycle_status(
+                    &storage,
+                    LifecycleOperation::Stop,
+                    Status::Error,
+                );
+                Err(error)
+            }
+        }
+    }
+
     /// Update status using pre-fetched pane metadata to avoid per-instance
     /// subprocess spawns. Falls back to subprocess calls if metadata is missing.
     ///
@@ -6805,6 +6846,15 @@ impl Instance {
             if self.status == Status::Error {
                 self.status = Status::Idle;
             }
+            return;
+        }
+
+        // Hibernated plain sessions (the LRU cap, `session.hibernate_max_live`)
+        // have their tmux torn down on purpose, same as archived rows above:
+        // probing would only manufacture a spurious "tmux session is gone"
+        // Error. Any wake path (ensure, start, user touch) clears
+        // `idle_dormant_since`, and polling resumes on the next tick.
+        if self.is_idle_dormant() {
             return;
         }
 
@@ -10079,6 +10129,32 @@ mod tests {
 
         assert_eq!(stored.status, Status::Running);
         assert_eq!(stored.idle_entered_at, src.idle_entered_at);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn hibernated_plain_session_is_not_probed_into_error() {
+        // A hibernated session's tmux is gone ON PURPOSE (the LRU cap,
+        // `session.hibernate_max_live`): the status poller must skip it the
+        // way it skips archived rows, or every hibernated session decays to
+        // a red "tmux session is gone" Error within one poll tick and the
+        // dormant glyph never shows.
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.status = Status::Idle;
+        inst.mark_idle_dormant();
+        let _cache = force_session_absent();
+
+        inst.update_status_with_metadata(None, None);
+
+        assert_eq!(
+            inst.status,
+            Status::Idle,
+            "a dormant row keeps its status instead of decaying to Error"
+        );
+        assert!(
+            inst.last_error.is_none(),
+            "no tmux-gone error may be recorded for a deliberate teardown"
+        );
     }
 
     #[test]
