@@ -118,13 +118,18 @@ pub fn hibernate_candidates(
 /// file lock, so concurrent reapers (a standalone TUI and an `aoe serve`
 /// daemon on the same state file) cannot double-park it.
 ///
-/// Re-reads the session inside the lock and re-checks that it is still a
-/// parkable live row (plain, not archived/trashed, `Idle`, not already
-/// dormant). The claim is `mark_idle_dormant()` - persisted BEFORE the
-/// caller kills tmux, so a daemon restart between mark and kill cannot
-/// resurrect a half-parked session. Returns `Ok(None)` when no longer
-/// eligible (peer reaper won, user woke it, it started working, or it is
-/// gone).
+/// Re-reads the session inside the lock and refuses anything the disk
+/// marks as disqualifying: structured, archived, trashed, already dormant,
+/// visibly working (`Running`/`Waiting`/...), or mid-lifecycle (an active
+/// reservation means an ensure/restart/stop is in flight). It deliberately
+/// does NOT require the disk status to equal `Idle`: candidate selection
+/// already saw a fresh in-memory `Idle`, while the on-disk status lags (the
+/// 2s poller does not persist every transition), so demanding equality
+/// silently skips every stale row forever. The claim is
+/// `mark_idle_dormant()` - persisted BEFORE the caller kills tmux, so a
+/// daemon restart between mark and kill cannot resurrect a half-parked
+/// session. Returns `Ok(None)` when disqualified (peer reaper won, user
+/// woke it, it started working, or it is gone).
 pub fn claim_hibernate(
     profile: &str,
     file_watch: Arc<FileWatchService>,
@@ -139,7 +144,15 @@ pub fn claim_hibernate(
             || inst.is_archived()
             || inst.is_trashed()
             || inst.is_idle_dormant()
-            || inst.status != Status::Idle
+            || inst.lifecycle_reservation.is_some()
+            || matches!(
+                inst.status,
+                Status::Running
+                    | Status::Waiting
+                    | Status::Starting
+                    | Status::Creating
+                    | Status::Deleting
+            )
         {
             return Ok(None);
         }
@@ -309,6 +322,35 @@ mod tests {
             Status::Idle,
             "hibernation must not masquerade as a deliberate Stop"
         );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn claim_parks_despite_stale_disk_status() {
+        // The candidate was selected from the fresh in-memory snapshot; the
+        // on-disk row's status lags (the 2s poller does not persist every
+        // transition), so a stale Error/Stopped on disk must not veto the
+        // claim - only genuinely disqualifying disk state may (working,
+        // mid-lifecycle, dormant, archived). Without this, every session
+        // whose disk row went stale is silently skipped forever and the
+        // fleet never shrinks to the cap.
+        let temp = tempfile::tempdir().unwrap();
+        let _env = crate::session::test_support::isolate_home(temp.path());
+
+        let mut inst = plain("stale-disk", Status::Idle, 1000);
+        inst.status = Status::Error; // what the disk remembers
+        let id = inst.id.clone();
+        let storage = Storage::new_unwatched("test-profile").unwrap();
+        storage
+            .update(|instances, _groups| {
+                instances.push(inst);
+                Ok(())
+            })
+            .unwrap();
+
+        let got = claim_hibernate("test-profile", FileWatchService::noop(), &id).unwrap();
+        assert!(got.is_some(), "a stale disk status must not block parking");
+        assert!(storage.load().unwrap()[0].is_idle_dormant());
     }
 
     #[test]
