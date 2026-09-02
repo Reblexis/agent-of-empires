@@ -130,6 +130,11 @@ pub fn is_recovery_candidate(inst: &Instance) -> bool {
         && !inst.is_snoozed()
         && !inst.is_trashed()
         && inst.status != super::Status::Stopped
+        // A hibernated session (the LRU live cap) has its tmux gone on
+        // purpose; recovering it would resurrect it on every daemon
+        // restart and defeat the cap. Waking clears the marker and
+        // restores eligibility, same shape as Stopped/snoozed.
+        && !inst.is_idle_dormant()
         && inst.agent_session_id != inst.resume_probe_failed_sid
         && should_attempt_resume(inst.agent_session_id.as_deref(), &inst.tool)
 }
@@ -830,6 +835,33 @@ mod tests {
         assert!(
             is_recovery_candidate(&inst),
             "transitioning off Stopped (e.g. user reopens) must restore recovery eligibility"
+        );
+    }
+
+    /// A hibernated session (the LRU live cap) has its tmux torn down on
+    /// purpose and stays Idle + dormant. Startup recovery sees a dead pane
+    /// on a resume-capable agent and would respawn it - resurrecting every
+    /// hibernated session on each daemon restart and leaving a contradictory
+    /// Starting+dormant row. The dormant marker must exclude it from
+    /// recovery, exactly like Stopped; waking (which clears the marker)
+    /// restores eligibility.
+    #[test]
+    fn dormant_instance_is_not_recovery_candidate() {
+        let mut inst = Instance::new("dormant", "/tmp/test");
+        inst.agent_session_id = Some("44444444-4444-4444-8444-444444444444".into());
+        assert!(
+            is_recovery_candidate(&inst),
+            "baseline: claude + valid sid is a recovery candidate"
+        );
+        inst.mark_idle_dormant();
+        assert!(
+            !is_recovery_candidate(&inst),
+            "a hibernated (dormant) session must not be resurrected by startup recovery"
+        );
+        inst.idle_dormant_since = None;
+        assert!(
+            is_recovery_candidate(&inst),
+            "waking a dormant session restores recovery eligibility"
         );
     }
 
