@@ -13,6 +13,7 @@ pub mod auth;
 pub mod callback;
 pub(crate) mod create_progress;
 pub(crate) mod disk_watch;
+pub(crate) mod hibernate;
 pub(crate) mod idle_reap;
 pub(crate) mod ip_discovery;
 pub mod live_ws;

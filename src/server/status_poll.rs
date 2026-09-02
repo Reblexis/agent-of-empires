@@ -4,6 +4,7 @@ use crate::session::Instance;
 use crate::session::Status;
 use std::sync::Arc;
 
+use super::hibernate::hibernate_lru_sessions;
 use super::idle_reap::reap_idle_sessions;
 use super::reload::{
     apply_tick_status_decisions, load_all_instances, observed_transitions,
@@ -131,6 +132,7 @@ pub(super) async fn status_poll_loop(state: Arc<AppState>) {
         std::collections::HashSet::new();
     let mut acp_reap_cadence = acp_reconciler::ReapCadence::default();
     let mut last_session_idle_reap: Option<std::time::Instant> = None;
+    let mut last_session_hibernate: Option<std::time::Instant> = None;
     // Loop-local, single-owner sleep-inhibit assertion (single global toggle, so one slot
     // for the whole daemon).
     let mut sleep_inhibitor: Option<Box<dyn crate::process::SleepInhibit>> = None;
@@ -273,6 +275,8 @@ pub(super) async fn status_poll_loop(state: Arc<AppState>) {
             .await;
 
             reap_idle_sessions(&state, &mut last_session_idle_reap).await;
+
+            hibernate_lru_sessions(&state, &mut last_session_hibernate).await;
 
             update_sleep_inhibit(
                 &state,

@@ -153,6 +153,14 @@ impl Instance {
             return;
         }
 
+        // Hibernated plain sessions (the LRU cap, `session.hibernate_max_live`) have their tmux
+        // torn down on purpose, same as archived rows: probing would only manufacture a
+        // spurious "tmux session is gone" Error. Any wake path (ensure, start, user touch) clears
+        // `idle_dormant_since`, and polling resumes on the next tick.
+        if self.is_idle_dormant() {
+            return;
+        }
+
         // A peer process is launching this row and has not created its pane yet; the owner's
         // commit or failure write decides the outcome.
         if self.has_fresh_launch_reservation(Utc::now()) {
@@ -1555,6 +1563,32 @@ Esc to cancel \u{b7} Tab to amend \u{b7} ctrl+e to explain\n\
             inst.status,
             Status::Error,
             "death outranks a protected wrapper and title"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn hibernated_plain_session_is_not_probed_into_error() {
+        // A hibernated session's tmux is gone ON PURPOSE (the LRU cap,
+        // `session.hibernate_max_live`): the status poller must skip it the
+        // way it skips archived rows, or every hibernated session decays to
+        // a red "tmux session is gone" Error within one poll tick and the
+        // dormant glyph never shows.
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.status = Status::Idle;
+        inst.mark_idle_dormant();
+        let _cache = force_session_absent();
+
+        inst.update_status_with_metadata(None, None);
+
+        assert_eq!(
+            inst.status,
+            Status::Idle,
+            "a dormant row keeps its status instead of decaying to Error"
+        );
+        assert!(
+            inst.last_error.is_none(),
+            "no tmux-gone error may be recorded for a deliberate teardown"
         );
     }
 }

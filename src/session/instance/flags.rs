@@ -92,7 +92,8 @@ impl Instance {
     }
 
     /// Whether this session should render as "dormant" (worker auto-stopped for inactivity,
-    /// resumable) rather than with its raw `status`.
+    /// resumable) rather than with its raw `status`. Two reapers mark rows this way: the
+    /// structured-view idle reaper and the plain-session LRU cap (`session.hibernate_max_live`).
     pub fn is_shown_dormant(&self) -> bool {
         self.is_idle_dormant() && self.status != Status::Stopped
     }

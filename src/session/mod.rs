@@ -18,6 +18,7 @@ pub mod deletion;
 pub(crate) mod environment;
 pub mod fork;
 mod groups;
+pub mod hibernate;
 pub mod idle_reap;
 pub mod import;
 mod instance;

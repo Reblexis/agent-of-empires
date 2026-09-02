@@ -391,6 +391,24 @@ impl Instance {
     /// Stop the session and its sandbox container under the same lifecycle
     /// lock used by launch/restart.
     pub fn stop(&self) -> Result<()> {
+        self.stop_committing(Status::Stopped)
+    }
+
+    /// Tear down this session's tmux and sandbox for hibernation (the LRU
+    /// cap, `session.hibernate_max_live`): the same teardown as [`Self::stop`],
+    /// including the final flush of the pane's published conversation, but
+    /// the row is committed back as `Idle` rather than `Stopped`, so it
+    /// renders as dormant (the caller already persisted `idle_dormant_since`
+    /// via `claim_hibernate`) and `/ensure` treats a click as a normal
+    /// restart-with-resume. On teardown failure the commit is `Error`, and
+    /// the caller must clear the dormant marker so the row is not blocked.
+    pub fn hibernate_stop(&self) -> Result<()> {
+        self.stop_committing(Status::Idle)
+    }
+
+    /// The shared body of [`Self::stop`] and [`Self::hibernate_stop`]: tear
+    /// down, then commit `committed` on success or `Error` on failure.
+    fn stop_committing(&self, committed: Status) -> Result<()> {
         let profile = self.effective_profile();
         let storage = crate::session::storage::Storage::new(&profile, self.resolve_file_watch())
             .context("failed to open lifecycle lock storage")?;
@@ -406,7 +424,7 @@ impl Instance {
         lifecycle.acquire_lifecycle_reservation(
             &storage,
             LifecycleOperation::Stop,
-            Some(Status::Stopped),
+            Some(committed),
         )?;
         self.stop_poller();
         let teardown = (|| {
@@ -439,11 +457,7 @@ impl Instance {
         })();
         match teardown {
             Ok(()) => {
-                lifecycle.commit_lifecycle_status(
-                    &storage,
-                    LifecycleOperation::Stop,
-                    Status::Stopped,
-                )?;
+                lifecycle.commit_lifecycle_status(&storage, LifecycleOperation::Stop, committed)?;
                 crate::hooks::cleanup_hook_status_dir(&self.id);
                 Ok(())
             }
@@ -463,6 +477,35 @@ impl Instance {
 mod tests {
 
     use super::*;
+
+    /// Hibernation (the LRU cap) is the stop teardown with the row kept
+    /// `Idle`: a hibernated row must render dormant and wake through
+    /// `/ensure`, never masquerade as a deliberate Stop.
+    #[test]
+    #[serial_test::serial]
+    fn hibernate_stop_tears_down_like_stop_but_keeps_the_row_idle() {
+        let temp = tempfile::tempdir().unwrap();
+        let _home = crate::session::test_support::isolate_app_dir_at(temp.path());
+        let profile = "hibernate-stop-keeps-idle";
+        let storage = crate::session::storage::Storage::new_unwatched(profile).unwrap();
+        let mut inst = Instance::new("Hibernated", "/tmp/hibernate-stop");
+        inst.source_profile = profile.to_string();
+        inst.status = Status::Idle;
+        inst.mark_idle_dormant();
+        storage
+            .update(|instances, _| {
+                instances.push(inst.clone());
+                Ok(())
+            })
+            .unwrap();
+
+        inst.hibernate_stop().unwrap();
+
+        let stored = storage.load().unwrap();
+        assert_eq!(stored[0].status, Status::Idle);
+        assert!(stored[0].is_idle_dormant(), "the dormant marker survives");
+        assert!(stored[0].lifecycle_reservation.is_none());
+    }
 
     #[test]
     #[serial_test::serial]
