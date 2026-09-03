@@ -27,6 +27,12 @@ Sandbox config and conversation stores are staged per AoE instance, including cu
 
 `agent_detect_as` controls status detection and ACP adapter inheritance, not terminal execution identity. Direct built-in commands identify their native agent independently. Opaque wrappers need the explicit contract described below for explicit resume or fork and capture from shared stores.
 
+## How the conversation ID stays correct
+
+AoE's own one-shot agent runs (the smart-rename title and the conversation summary) never execute in a session's project directory. They run in an isolated scratch directory (`<AoE config dir>/oneshot` on the host, `/tmp` inside a sandbox), so their throwaway transcripts are never written beside a session's real conversation in the agent's store. The prompts carry everything the run needs, so the project directory is not needed.
+
+Without this, a title or summary job could be mistaken for the session's conversation, and resuming the session would resume the title job.
+
 ## Execution identity and wrappers
 
 A conflicting built-in tool and command, such as tool `claude` with command `codex`, is rejected for managed resume and fork. An opaque wrapper requires both `session.agent_execution_as` and `session.agent_config_dir` in trusted global or profile configuration. This asserts that the wrapper invokes that native agent, forwards native arguments unchanged, and uses only the declared store and working-directory/filesystem context. Repository overrides are refused because a repository must not grant itself access to another native conversation store.

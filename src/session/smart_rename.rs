@@ -208,7 +208,8 @@ const MAX_TITLE_CHARS: usize = 60;
 const MAX_TITLE_WORDS: usize = 8;
 
 /// Instruction prefix sent to the agent.
-const INSTRUCTION: &str = "Generate a concise 3 to 5 word title summarizing the following task. \
+pub(crate) const INSTRUCTION: &str =
+    "Generate a concise 3 to 5 word title summarizing the following task. \
 The transcript may begin with the CLI tool's startup banner, welcome message, tips, or help \
 text; ignore that boilerplate and title the user's actual request and the work done, never the \
 tool's own introduction. \
@@ -568,6 +569,37 @@ fn last_error_line(bytes: &[u8]) -> Option<String> {
     Some(truncate_bytes(line, 300).to_string())
 }
 
+/// Working directory for every HOST one-shot (`claude -p` for smart-rename and the
+/// conversation summary). Claude keys its transcript store by cwd
+/// (`~/.claude/projects/<encoded-cwd>/`), so a one-shot run in a session's own cwd drops a
+/// throwaway transcript beside that session's real conversation, where a title job was once
+/// adopted as the session's conversation (resuming the session then resumed the title job).
+/// One-shots run here instead, so their transcripts land in a directory no session ever runs
+/// in. The prompts are self-contained (the transcript is passed inline), so the project cwd
+/// was never needed. Contract: docs/guides/session-resume.md.
+pub(crate) fn oneshot_cwd() -> String {
+    let dir = crate::session::get_app_dir()
+        .map(|d| d.join("oneshot"))
+        .unwrap_or_else(|_| std::env::temp_dir().join("aoe-oneshot"));
+    let _ = std::fs::create_dir_all(&dir);
+    dir.to_string_lossy().into_owned()
+}
+
+/// In-container analogue of [`oneshot_cwd`] for sandboxed sessions: the exec'd one-shot must
+/// not run in the session's project dir. `/tmp` exists in every image.
+pub(crate) const ONESHOT_CONTAINER_WORKDIR: &str = "/tmp";
+
+/// The opening text of each aoe one-shot prompt. A transcript or rollout whose first user
+/// message starts with one of these is never a tab's conversation
+/// ([`crate::session::pointer_guard::conversation_is_oneshot`]), even if a caller forgets
+/// [`oneshot_cwd`]. Sourced from the prompt builders' own constants so the two cannot drift.
+pub(crate) fn oneshot_prompt_prefixes() -> Vec<&'static str> {
+    vec![
+        INSTRUCTION,
+        crate::session::conversation_summary::INSTRUCTION,
+    ]
+}
+
 /// Where a one-shot runs for this session: the argv to spawn and the host working directory to
 /// spawn it in (empty for a container, whose workdir comes from the `exec` itself).
 pub(crate) struct OneshotTarget {
@@ -580,14 +612,15 @@ pub(crate) struct OneshotTarget {
 pub(crate) async fn resolve_oneshot_target(
     session_id: &str,
     sandboxed: bool,
-    container_workdir: &str,
-    project_path: &str,
+    _container_workdir: &str,
+    _project_path: &str,
     argv: Vec<String>,
 ) -> Option<OneshotTarget> {
     if !sandboxed {
+        // Never the project path: see `oneshot_cwd`.
         return Some(OneshotTarget {
             argv,
-            cwd: project_path.to_string(),
+            cwd: oneshot_cwd(),
         });
     }
     // `docker inspect` blocks; keep it off the caller's runtime thread, mirroring
@@ -607,7 +640,8 @@ pub(crate) async fn resolve_oneshot_target(
     };
     match probe {
         crate::containers::Probe::Running => Some(OneshotTarget {
-            argv: container.build_exec_argv(container_workdir, &argv),
+            // Not the session workdir: see `ONESHOT_CONTAINER_WORKDIR`.
+            argv: container.build_exec_argv(ONESHOT_CONTAINER_WORKDIR, &argv),
             cwd: String::new(),
         }),
         crate::containers::Probe::NotRunning => {
@@ -1993,13 +2027,36 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn oneshot_target_runs_on_the_host_only_for_host_sessions() {
+        // `oneshot_cwd` derives from the app dir, i.e. from HOME/XDG env that
+        // sibling tests swap under the process-global env guard. Hold that
+        // guard here too, and assert the contract structurally rather than
+        // against a second `oneshot_cwd()` call that could race a peer's
+        // swapped HOME.
+        let temp = tempfile::tempdir().unwrap();
+        let _env = crate::session::test_support::isolate_home(temp.path());
         let argv = vec!["claude".to_string(), "-p".to_string(), "hi".to_string()];
         let target = resolve_oneshot_target("abc123", false, "/workspace", "/repo", argv.clone())
             .await
             .expect("host target");
         assert_eq!(target.argv, argv, "a host one-shot must not be wrapped");
-        assert_eq!(target.cwd, "/repo");
+        // Never the project dir: a one-shot transcript written there sits
+        // beside the session's real conversation.
+        assert_ne!(target.cwd, "/repo");
+        let cwd = std::path::Path::new(&target.cwd);
+        assert!(cwd.is_absolute(), "got {}", target.cwd);
+        assert!(
+            cwd.file_name().and_then(|n| n.to_str()) == Some("oneshot")
+                || cwd.file_name().and_then(|n| n.to_str()) == Some("aoe-oneshot"),
+            "isolated scratch dir expected, got {}",
+            target.cwd
+        );
+        assert!(
+            cwd.starts_with(temp.path()) || cwd.starts_with(std::env::temp_dir()),
+            "under the (isolated) app dir or temp dir, got {}",
+            target.cwd
+        );
         assert!(
             resolve_oneshot_target("nosuchsession", true, "/workspace", "/repo", argv)
                 .await
@@ -2145,6 +2202,41 @@ mod tests {
 
 I'll look at the auth redirect logic now.
 Patched the race in auth.rs and added a regression test.";
+
+    #[test]
+    #[serial_test::serial]
+    fn oneshot_cwd_is_isolated_from_any_project_path() {
+        // The whole point: a one-shot transcript must never land in a
+        // session's Claude project dir. The scratch dir is absolute, stable
+        // across calls, and not some project the user works in.
+        let temp = tempfile::tempdir().unwrap();
+        let _env = crate::session::test_support::isolate_home(temp.path());
+        let a = oneshot_cwd();
+        let b = oneshot_cwd();
+        assert_eq!(a, b, "one-shot cwd must be stable");
+        assert!(std::path::Path::new(&a).is_absolute());
+        assert!(
+            a.ends_with("oneshot") || a.ends_with("aoe-oneshot"),
+            "got {a}"
+        );
+        assert!(std::path::Path::new(&a).is_dir(), "created on demand");
+    }
+
+    #[test]
+    fn oneshot_prompt_prefixes_match_the_prompt_builders() {
+        let prefixes = oneshot_prompt_prefixes();
+        assert!(build_prompt("do the thing").starts_with(prefixes[0]));
+        assert!(
+            crate::session::conversation_summary::build_summary_prompt(None, "delta")
+                .starts_with(prefixes[1])
+        );
+        for p in &prefixes {
+            assert!(
+                p.len() >= 40,
+                "prefix too short to be discriminating: {p:?}"
+            );
+        }
+    }
 
     #[test]
     fn strip_agent_banner_drops_only_the_claude_startup_box() {
