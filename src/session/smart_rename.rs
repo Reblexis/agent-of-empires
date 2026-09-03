@@ -267,7 +267,8 @@ const MAX_TITLE_WORDS: usize = 8;
 /// Instruction prefix sent to the agent. Constrains the output so the sanitizer
 /// has the least possible work to do; anything off-format is rejected, never
 /// salvaged.
-const INSTRUCTION: &str = "Generate a concise 3 to 5 word title summarizing the following task. \
+pub(crate) const INSTRUCTION: &str =
+    "Generate a concise 3 to 5 word title summarizing the following task. \
 The transcript may begin with the CLI tool's startup banner, welcome message, tips, or help \
 text; ignore that boilerplate and title the user's actual request and the work done, never the \
 tool's own introduction. \
@@ -547,6 +548,44 @@ pub(crate) async fn run_oneshot(
 /// Where a one-shot runs for this session: the argv to spawn and the host
 /// working directory to spawn it in (empty for a container, whose workdir comes
 /// from the `exec` itself).
+/// Working directory for every HOST one-shot (`claude -p` for smart-rename,
+/// context recap, conversation summary). Claude keys its transcript store by
+/// cwd (`~/.claude/projects/<encoded-cwd>/`), and the session-id poller's
+/// disk-scan fallback adopts the newest transcript in the SESSION's project
+/// dir. A one-shot run in the session's own cwd therefore drops a throwaway
+/// transcript exactly where the poller looks, and the session's stored
+/// conversation pointer gets overwritten with a title/recap job (resuming
+/// the session then resumes the title job). One-shots run here instead, so
+/// their transcripts land in a directory no session poller ever scans. The
+/// prompts are self-contained (the transcript is passed inline), so the
+/// project cwd was never needed.
+pub(crate) fn oneshot_cwd() -> String {
+    let dir = crate::session::get_app_dir()
+        .map(|d| d.join("oneshot"))
+        .unwrap_or_else(|_| std::env::temp_dir().join("aoe-oneshot"));
+    let _ = std::fs::create_dir_all(&dir);
+    dir.to_string_lossy().into_owned()
+}
+
+/// In-container analogue of [`oneshot_cwd`] for sandboxed sessions: the
+/// sandboxed poller scans the container's project dir, so the exec'd
+/// one-shot must run somewhere else. `/tmp` exists in every image.
+pub(crate) const ONESHOT_CONTAINER_WORKDIR: &str = "/tmp";
+
+/// The opening text of each aoe one-shot prompt. The session-id poller's
+/// disk scan refuses any transcript whose first user message starts with one
+/// of these, so a one-shot can never be mistaken for a session's conversation
+/// even if a caller forgets [`oneshot_cwd`]. Sourced from the prompt
+/// builders' own constants so the two cannot drift.
+pub(crate) fn oneshot_prompt_prefixes() -> Vec<&'static str> {
+    let mut v = vec![INSTRUCTION, crate::session::terminal_context::INSTRUCTION];
+    // The conversation summary only exists in serve builds (#2808); the
+    // TUI-only build still guards against the two one-shots it can run.
+    #[cfg(feature = "serve")]
+    v.push(crate::session::conversation_summary::INSTRUCTION);
+    v
+}
+
 pub(crate) struct OneshotTarget {
     pub argv: Vec<String>,
     pub cwd: String,
@@ -565,14 +604,16 @@ pub(crate) struct OneshotTarget {
 pub(crate) async fn resolve_oneshot_target(
     session_id: &str,
     sandboxed: bool,
-    container_workdir: &str,
+    _container_workdir: &str,
     project_path: &str,
     argv: Vec<String>,
 ) -> Option<OneshotTarget> {
     if !sandboxed {
+        // Never the project path: see `oneshot_cwd`.
+        let _ = project_path;
         return Some(OneshotTarget {
             argv,
-            cwd: project_path.to_string(),
+            cwd: oneshot_cwd(),
         });
     }
     // `docker inspect` blocks; keep it off the caller's runtime thread, mirroring
@@ -592,7 +633,8 @@ pub(crate) async fn resolve_oneshot_target(
     };
     match probe {
         crate::containers::Probe::Running => Some(OneshotTarget {
-            argv: container.build_exec_argv(container_workdir, &argv),
+            // Not the session workdir: see `ONESHOT_CONTAINER_WORKDIR`.
+            argv: container.build_exec_argv(ONESHOT_CONTAINER_WORKDIR, &argv),
             cwd: String::new(),
         }),
         crate::containers::Probe::NotRunning => {
@@ -1857,13 +1899,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn host_session_spawns_the_agent_binary_in_the_project_dir() {
+    async fn host_session_spawns_the_agent_binary_unwrapped_outside_the_project_dir() {
         let argv = vec!["claude".to_string(), "-p".to_string(), "hi".to_string()];
         let target = resolve_oneshot_target("abc123", false, "/workspace", "/repo", argv.clone())
             .await
             .expect("host target");
         assert_eq!(target.argv, argv, "a host one-shot must not be wrapped");
-        assert_eq!(target.cwd, "/repo");
+        // Never the project dir: a one-shot transcript written there is
+        // adopted by the session-id poller as the session's conversation.
+        assert_ne!(target.cwd, "/repo");
+        assert_eq!(target.cwd, oneshot_cwd());
     }
 
     #[tokio::test]
@@ -2413,6 +2458,43 @@ Rewrote the getting-started section and fixed two broken links.";
 
  ⚠ 3 MCP servers need authentication · run /mcp";
         assert_eq!(strip_agent_banner(banner_only, "claude"), banner_only);
+    }
+
+    #[test]
+    fn oneshot_cwd_is_isolated_from_any_project_path() {
+        // The whole point: a one-shot transcript must never land in a
+        // session's Claude project dir. The scratch dir is absolute, stable
+        // across calls, and not some project the user works in.
+        let a = oneshot_cwd();
+        let b = oneshot_cwd();
+        assert_eq!(a, b, "one-shot cwd must be stable");
+        assert!(std::path::Path::new(&a).is_absolute());
+        assert!(
+            a.ends_with("oneshot") || a.ends_with("aoe-oneshot"),
+            "got {a}"
+        );
+        assert!(std::path::Path::new(&a).is_dir(), "created on demand");
+    }
+
+    #[test]
+    fn oneshot_prompt_prefixes_match_the_prompt_builders() {
+        let prefixes = oneshot_prompt_prefixes();
+        assert!(build_prompt("do the thing").starts_with(prefixes[0]));
+        assert!(
+            crate::session::terminal_context::build_context_prompt("scrollback")
+                .starts_with(prefixes[1])
+        );
+        #[cfg(feature = "serve")]
+        assert!(
+            crate::session::conversation_summary::build_summary_prompt(None, "delta")
+                .starts_with(prefixes[2])
+        );
+        for p in &prefixes {
+            assert!(
+                p.len() >= 40,
+                "prefix too short to be discriminating: {p:?}"
+            );
+        }
     }
 
     #[test]

@@ -40,6 +40,17 @@ The list only shows conversations worth importing: AoE's own Claude sessions are
 
 This reads the existing conversation in place; the original session keeps existing and is not copied.
 
+## How the conversation ID stays correct
+
+The observed ID comes from the `session_id` sidecar that AoE's Claude hook writes for the running session (see [adding-agents](../development/adding-agents.md)). When that sidecar is missing or stale, for example in the moments after a restart before Claude's `SessionStart` hook has fired, AoE falls back to the newest transcript in the session's Claude project directory (`~/.claude/projects/<encoded-cwd>/`).
+
+Two rules keep that fallback from adopting the wrong conversation:
+
+- AoE's own one-shot Claude runs (the smart-rename title, the context recap, the conversation summary) never execute in the session's project directory. They run in an isolated scratch directory (`<AoE config dir>/oneshot` on the host, `/tmp` inside a sandbox), so their throwaway transcripts are written where no session is ever scanned.
+- The fallback scan refuses any transcript whose first user message is one of those one-shot prompts, even if it is the newest file and even if it is the currently recorded ID. A recorded ID that turns out to be a one-shot is treated as corruption and the real transcript is looked up instead.
+
+Without these, a title or recap job could be mistaken for the session's conversation, and resuming the session would resume the title job.
+
 ## Disabling
 
 There is no toggle. To start fresh once, use `set-session-id ""`. To drop the persisted state entirely, delete the session and recreate it.
