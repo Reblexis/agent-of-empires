@@ -1899,7 +1899,15 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn host_session_spawns_the_agent_binary_unwrapped_outside_the_project_dir() {
+        // `oneshot_cwd` derives from the app dir, i.e. from HOME/XDG env that
+        // sibling tests swap under the process-global env guard. Hold that
+        // guard here too, and assert the contract structurally rather than
+        // against a second `oneshot_cwd()` call that could race a peer's
+        // swapped HOME (that race made this test flake in the full suite).
+        let temp = tempfile::tempdir().unwrap();
+        let _env = crate::session::test_support::isolate_home(temp.path());
         let argv = vec!["claude".to_string(), "-p".to_string(), "hi".to_string()];
         let target = resolve_oneshot_target("abc123", false, "/workspace", "/repo", argv.clone())
             .await
@@ -1908,7 +1916,19 @@ mod tests {
         // Never the project dir: a one-shot transcript written there is
         // adopted by the session-id poller as the session's conversation.
         assert_ne!(target.cwd, "/repo");
-        assert_eq!(target.cwd, oneshot_cwd());
+        let cwd = std::path::Path::new(&target.cwd);
+        assert!(cwd.is_absolute(), "got {}", target.cwd);
+        assert!(
+            cwd.file_name().and_then(|n| n.to_str()) == Some("oneshot")
+                || cwd.file_name().and_then(|n| n.to_str()) == Some("aoe-oneshot"),
+            "isolated scratch dir expected, got {}",
+            target.cwd
+        );
+        assert!(
+            cwd.starts_with(temp.path()) || cwd.starts_with(std::env::temp_dir()),
+            "under the (isolated) app dir or temp dir, got {}",
+            target.cwd
+        );
     }
 
     #[tokio::test]
