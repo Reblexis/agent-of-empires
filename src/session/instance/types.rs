@@ -204,6 +204,14 @@ pub(crate) enum ResumeIntent {
     /// so later restarts resume the child's own id with a plain `--resume`.
     #[serde(rename = "Fork")]
     Fork { from: String },
+    /// One-shot cross-agent fork seed: on the next (first) launch, start a
+    /// fresh conversation of THIS session's agent and hand it a prompt
+    /// pointing at `from`, a conversation belonging to `source_tool`. Nothing
+    /// is resumed: the two agents' transcripts are not interchangeable, so the
+    /// new agent reads the old one's file instead. Auto-promotes to `Default`
+    /// after that launch, like `Cleared` and `Fork`.
+    #[serde(rename = "Handoff")]
+    Handoff { source_tool: String, from: String },
 }
 
 impl ResumeIntent {

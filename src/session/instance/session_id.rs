@@ -78,7 +78,10 @@ impl Instance {
                 self.agent_session_id = Some(sid.clone());
                 return (Some(sid), true);
             }
-            ResumeIntent::Cleared => {
+            // A cross-agent handoff is a brand-new conversation for this
+            // agent (it reads the other agent's transcript rather than
+            // resuming it), so it acquires an id exactly like a cleared one.
+            ResumeIntent::Cleared | ResumeIntent::Handoff { .. } => {
                 self.agent_session_id = None;
                 self.resume_probe_failed_sid = None;
                 // The transcript belonged to the conversation being dropped.
@@ -751,7 +754,11 @@ impl Instance {
             };
         }
         match &self.resume_intent {
-            ResumeIntent::Cleared => TerminalContextResume::ForcedFresh,
+            // A handoff starts a brand-new conversation for this agent; the
+            // parent's transcript reaches it as a prompt, not as a resume.
+            ResumeIntent::Cleared | ResumeIntent::Handoff { .. } => {
+                TerminalContextResume::ForcedFresh
+            }
             ResumeIntent::Fork { .. } => TerminalContextResume::ForkPending,
             ResumeIntent::Use(_) => {
                 if self.terminal_resume_explicit_target_invalid() {

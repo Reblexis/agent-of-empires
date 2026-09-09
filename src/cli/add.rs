@@ -389,36 +389,64 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         // inherit the parent's; when they did and it differs, reject rather than
         // launch a cross-agent fork.
         let user_chose_tool = args.tool.is_some() || args.command.is_some();
+        // Naming a different agent forks ACROSS agents: the captured id is
+        // agent-shaped, so there is nothing for the new agent to resume. It
+        // starts fresh with a prompt pointing at the parent's transcript
+        // instead, which only works when AoE can find that transcript and the
+        // new agent takes a prompt on its command line.
         if user_chose_tool && resolved_tool != source.tool {
-            bail!(
-                "Cannot fork session '{}' (agent '{}') as agent '{}': a fork must use the parent's \
-                 agent. Drop --tool/--cmd to inherit it, or fork a session created with '{}'.",
-                source.title,
-                source.tool,
-                resolved_tool,
-                resolved_tool
-            );
+            crate::session::handoff::cross_agent_handoff(&source.tool, &resolved_tool).map_err(
+                |denied| match denied {
+                    crate::session::handoff::HandoffDenied::SourceNotSupported => anyhow::anyhow!(
+                        "Cannot fork session '{}' (agent '{}') as agent '{}': AoE can only hand \
+                         over a claude or codex conversation, whose transcript it can locate.",
+                        source.title,
+                        source.tool,
+                        resolved_tool
+                    ),
+                    crate::session::handoff::HandoffDenied::TargetNotSupported => anyhow::anyhow!(
+                        "Cannot fork session '{}' (agent '{}') as agent '{}': '{}' takes no prompt \
+                         on its command line, so the handoff instruction could not reach it. \
+                         Cross-agent forks run between claude and codex.",
+                        source.title,
+                        source.tool,
+                        resolved_tool,
+                        resolved_tool
+                    ),
+                },
+            )?;
+            let parent_agent_session_id = source.agent_session_id.clone().filter(|s| !s.is_empty()).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Nothing to hand over: session '{}' has no captured agent session yet. Start a conversation in it first.",
+                    source.title
+                )
+            })?;
+            Some(crate::session::ForkSeed::CrossAgent {
+                source_tool: source.tool.clone(),
+                parent_agent_session_id,
+            })
+        } else {
+            if !user_chose_tool {
+                resolved_tool = source.tool.clone();
+            }
+            let parent_agent_session_id = source.agent_session_id.clone();
+            let seed = crate::session::fork::terminal_fork_seed(
+                &resolved_tool,
+                parent_agent_session_id.as_deref(),
+                crate::session::capture::generate_session_uuid(),
+            )
+            .map_err(|denied| match denied {
+                crate::session::ForkDenied::AgentCannotFork => anyhow::anyhow!(
+                    "Agent '{}' does not support forking. Forkable agents: claude, codex, opencode.",
+                    resolved_tool
+                ),
+                crate::session::ForkDenied::NoParentSession => anyhow::anyhow!(
+                    "Nothing to fork: session '{}' has no captured agent session yet. Start a conversation in it first.",
+                    source.title
+                ),
+            })?;
+            Some(seed)
         }
-        if !user_chose_tool {
-            resolved_tool = source.tool.clone();
-        }
-        let parent_agent_session_id = source.agent_session_id.clone();
-        let seed = crate::session::fork::terminal_fork_seed(
-            &resolved_tool,
-            parent_agent_session_id.as_deref(),
-            crate::session::capture::generate_session_uuid(),
-        )
-        .map_err(|denied| match denied {
-            crate::session::ForkDenied::AgentCannotFork => anyhow::anyhow!(
-                "Agent '{}' does not support forking. Forkable agents: claude, codex, opencode.",
-                resolved_tool
-            ),
-            crate::session::ForkDenied::NoParentSession => anyhow::anyhow!(
-                "Nothing to fork: session '{}' has no captured agent session yet. Start a conversation in it first.",
-                source.title
-            ),
-        })?;
-        Some(seed)
     } else {
         None
     };
@@ -905,6 +933,17 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             } => {
                 instance.agent_session_id = Some(child_session_id);
                 instance.resume_intent = crate::session::ResumeIntent::Fork {
+                    from: parent_agent_session_id,
+                };
+            }
+            crate::session::ForkSeed::CrossAgent {
+                source_tool,
+                parent_agent_session_id,
+            } => {
+                // No id to pre-pin: the target agent starts its own
+                // conversation and AoE captures the id it mints.
+                instance.resume_intent = crate::session::ResumeIntent::Handoff {
+                    source_tool,
                     from: parent_agent_session_id,
                 };
             }

@@ -288,12 +288,12 @@ impl Instance {
         expected_prior_intent: ResumeIntent,
     ) -> SidPersistOutcome {
         let new_sid = self.agent_session_id.clone();
-        // Cleared and Fork are one-shot launch directives. Use stays durable
+        // Cleared, Fork and Handoff are one-shot launch directives. Use stays durable
         // only when no pane-scoped capture backend can observe a later `/new`;
         // capture-backed agents hand ownership back to their poller.
         let promote_one_shot = matches!(
             expected_prior_intent,
-            ResumeIntent::Cleared | ResumeIntent::Fork { .. }
+            ResumeIntent::Cleared | ResumeIntent::Fork { .. } | ResumeIntent::Handoff { .. }
         ) || matches!(expected_prior_intent, ResumeIntent::Use(_))
             && self.launch_has_session_publisher();
         // OMP seeds its poller with the in-memory sid. Keeping the pin there
@@ -803,6 +803,36 @@ mod tests {
         assert_eq!(
             disk.agent_session_id.as_deref(),
             Some("019342ab-1234-7def-8901-abcdef012345")
+        );
+
+        // A cross-agent handoff is one-shot for the same reason: the prompt
+        // pointing at the other agent's transcript must not be re-sent on
+        // every restart of this session.
+        let mut crossed = Instance::new("Crossed", "/tmp/x");
+        crossed.tool = "codex".into();
+        crossed.source_profile = profile.into();
+        crossed.agent_session_id = Some("019342cc-3333-7ccc-8ccc-cccccccccccc".into());
+        crossed.resume_intent = ResumeIntent::Handoff {
+            source_tool: "claude".into(),
+            from: "019342aa-2222-7eee-8fff-aaaabbbbcccc".into(),
+        };
+        let crossed_on_disk = crossed.clone();
+        storage
+            .update(|i, g| {
+                i.push(crossed_on_disk.clone());
+                *g = crate::session::GroupTree::new_with_groups(i, &[]).get_all_groups();
+                Ok(())
+            })
+            .unwrap();
+        let crossed_prior = crossed.resume_intent.clone();
+        let crossed_sid = crossed.agent_session_id.clone();
+        let _ = crossed.persist_session_id(profile, crossed_sid.as_deref(), crossed_prior);
+        let reloaded = storage.load().unwrap();
+        let crossed_disk = reloaded.iter().find(|i| i.id == crossed.id).unwrap();
+        assert_eq!(
+            crossed_disk.resume_intent,
+            ResumeIntent::Default,
+            "Handoff must auto-promote so the handoff prompt is sent once, not on every restart"
         );
     }
 

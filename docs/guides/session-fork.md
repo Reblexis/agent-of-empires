@@ -26,7 +26,34 @@ aoe add --fork-from <session-id-or-title>
 
 This creates a terminal session that resumes the source's conversation and then runs independently.
 
-The fork inherits the parent's agent by default, so you normally omit `--tool` / `--cmd`. If you do pass one, it must match the parent's agent: a captured conversation is agent-specific, so forking a Claude session as Codex is rejected rather than run against the wrong agent. Because a fork must run in the parent's working directory and filesystem to resolve the prior conversation, `--fork-from` cannot be combined with `--worktree` / `--new-branch`, `--sandbox` / `--sandbox-image`, or a `--cmd` that already carries its own `--resume` flags.
+The fork inherits the parent's agent by default, so you normally omit `--tool` / `--cmd`. Passing a different agent forks across agents; see below. Because a fork must run in the parent's working directory and filesystem to resolve the prior conversation, `--fork-from` cannot be combined with `--worktree` / `--new-branch`, `--sandbox` / `--sandbox-image`, or a `--cmd` that already carries its own `--resume` flags.
+
+## Forking across agents
+
+Passing a different `--tool` forks the conversation onto the other agent:
+
+```sh
+aoe add --fork-from <session-id-or-title> --tool codex
+```
+
+A captured conversation is agent-specific: a Claude session id means nothing to Codex,
+so this is not a native fork. AoE instead starts a **fresh session of the target agent
+in the parent's working directory, seeded with a prompt that points it at the parent's
+transcript file** and tells it to read that first and carry on. The new agent starts by
+catching up rather than by asking you what to do.
+
+Supported in both directions between `claude` and `codex`, the two agents whose
+transcripts AoE can locate on disk. Any other pairing is refused with the agent names,
+as is a source session that has not captured a conversation id yet. A cross-agent fork
+is a CLI flow: the TUI and web fork actions stay same-agent.
+
+The seeded prompt names the `continue-claude-session` / `continue-codex-session` skill
+when the target agent has one installed, and always names the transcript path, so an
+agent without that skill can still read the file directly.
+
+Because the target agent starts a brand-new conversation, none of the parent's context
+window comes across: only what is written in the transcript. Long sessions therefore
+hand over their history, not their working memory.
 
 ## What gets inherited
 
@@ -47,7 +74,8 @@ Forking only reads the parent's conversation. The parent session and its transcr
 
 Forking needs an agent that can branch a conversation:
 
-- **Terminal sessions**: claude, codex, and opencode.
+- **Terminal sessions**: claude, codex, and opencode. Cross-agent forks are limited to
+  claude and codex.
 - **Structured (ACP) sessions**: the Claude adapter (`claude-agent-acp`).
 
 Resume-only agents (such as gemini, vibe, and copilot) and agents without resume enabled in AoE (such as cursor, droid, kiro, and qwen) cannot fork. For those, the Fork option is hidden or refused.

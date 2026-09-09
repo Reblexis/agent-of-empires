@@ -171,10 +171,10 @@ fn seed_claude_parent(h: &TuiTestHarness, project: &std::path::Path, title: &str
     parent_agent_id.to_string()
 }
 
-/// Forking a claude parent while explicitly selecting a DIFFERENT agent is
-/// refused: a captured id is agent-specific, so handing a Claude id to another
-/// agent's resume would fail or resume garbage. With no `--tool`/`--cmd`, the
-/// fork inherits the parent's agent and succeeds.
+/// Forking a claude parent onto an agent that takes no prompt argument is
+/// refused: the cross-agent path replaces the (impossible) resume with a
+/// seeded prompt, and gemini has nowhere for that prompt to go. With no
+/// `--tool`/`--cmd`, the fork inherits the parent's agent and succeeds.
 #[test]
 #[parallel]
 fn fork_from_mismatched_tool_is_refused_but_inherits_when_unset() {
@@ -200,8 +200,8 @@ fn fork_from_mismatched_tool_is_refused_but_inherits_when_unset() {
     );
     let stderr = String::from_utf8_lossy(&mismatched.stderr);
     assert!(
-        stderr.contains("must use the parent's agent"),
-        "expected a parent-agent-mismatch message, got: {stderr}"
+        stderr.contains("takes no prompt on its command line"),
+        "expected a cross-agent handoff refusal naming the missing prompt argument, got: {stderr}"
     );
 
     // No --tool/--cmd: inherits the parent's agent (claude) and succeeds.
@@ -652,5 +652,54 @@ fn fork_from_unforkable_agent_is_refused() {
     assert!(
         stderr.contains("does not support forking"),
         "expected a 'does not support forking' message, got: {stderr}"
+    );
+}
+
+/// Forking a claude parent as codex is a CROSS-AGENT fork: codex cannot resume
+/// a Claude conversation, so AoE seeds a fresh codex session with a one-shot
+/// `Handoff` intent naming the parent's transcript. The child must therefore
+/// carry no pre-pinned agent id (codex mints its own) and must record the
+/// source agent alongside the parent id.
+#[test]
+#[parallel]
+fn fork_from_other_agent_seeds_a_handoff() {
+    let mut h = TuiTestHarness::new("fork_cli_cross_agent");
+    let project = h.project_path();
+    h.install_path_command("codex");
+    let parent_agent_id = seed_claude_parent(&h, &project, "CrossParent");
+
+    let out = h.run_cli(&[
+        "add",
+        project.to_str().unwrap(),
+        "--tool",
+        "codex",
+        "-t",
+        "CrossChild",
+        "--fork-from",
+        "CrossParent",
+    ]);
+    assert!(
+        out.status.success(),
+        "cross-agent fork must succeed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let sessions = read_sessions(&h);
+    let child = session_by_title(&sessions, "CrossChild");
+    assert_eq!(child["tool"].as_str(), Some("codex"));
+    assert_eq!(child["resume_intent"]["kind"].as_str(), Some("Handoff"));
+    assert_eq!(
+        child["resume_intent"]["value"]["source_tool"].as_str(),
+        Some("claude"),
+        "the handoff must record which agent's transcript it points at: {child}"
+    );
+    assert_eq!(
+        child["resume_intent"]["value"]["from"].as_str(),
+        Some(parent_agent_id.as_str()),
+        "the handoff must name the parent conversation: {child}"
+    );
+    assert!(
+        child["agent_session_id"].as_str().is_none_or(str::is_empty),
+        "a cross-agent fork pins no id: codex mints its own conversation: {child}"
     );
 }

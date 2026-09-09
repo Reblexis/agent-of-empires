@@ -24,6 +24,22 @@ pub(super) struct PreparedLaunch {
     pub(super) expected_prior_omp_generation: Option<String>,
 }
 
+/// Append a cross-agent handoff's initial prompt, as the positional argument
+/// it has to be: after every flag, once per launch. The intent is one-shot, so
+/// it is gone by the next launch (`sid_persist` promotes it to `Default`).
+/// Silent for every other resume intent.
+fn append_handoff_prompt(inst: &Instance, cmd: &mut String) {
+    let ResumeIntent::Handoff { source_tool, from } = &inst.resume_intent else {
+        return;
+    };
+    let transcript = dirs::home_dir().and_then(|home| {
+        crate::session::handoff::locate_transcript(source_tool, from, &inst.project_path, &home)
+    });
+    let prompt = crate::session::handoff::handoff_prompt(source_tool, from, transcript.as_deref());
+    cmd.push(' ');
+    cmd.push_str(&shell_escape(&prompt));
+}
+
 /// Append yolo-mode flags or environment variables to a launch command.
 fn apply_yolo_mode(cmd: &mut String, yolo: &crate::agents::YoloMode, is_sandboxed: bool) {
     match yolo {
@@ -465,6 +481,7 @@ impl Instance {
                 self.pi_extension_launched = true;
             }
             let is_existing = self.apply_session_flags(&mut tool_cmd, "sandboxed")?;
+            append_handoff_prompt(self, &mut tool_cmd);
             apply_agent_launch_env(&mut tool_cmd, agent);
 
             let sandbox = self
@@ -612,6 +629,7 @@ impl Instance {
                         }
                     }
                     let is_existing = self.apply_session_flags(&mut cmd, "host agent")?;
+                    append_handoff_prompt(self, &mut cmd);
                     apply_agent_launch_env(&mut cmd, agent);
                     let raw_command = format!("{}{}", env_prefix, cmd);
                     let command = if let Some(plan) = omp_capture_plan.as_ref() {
@@ -642,6 +660,7 @@ impl Instance {
                 }
             }
             let is_existing = self.apply_session_flags(&mut cmd, "host custom")?;
+            append_handoff_prompt(self, &mut cmd);
             apply_agent_launch_env(&mut cmd, agent);
             let raw_command = format!("{}{}", env_prefix, cmd);
             let command = if let Some(plan) = omp_capture_plan.as_ref() {
@@ -1077,6 +1096,44 @@ mod tests {
         // OpenCode: resume the parent session and add --fork. agent mints new id.
         let oc = build_fork_flags("opencode", "parent-id", "ignored-child");
         assert_eq!(oc, "--session parent-id --fork");
+    }
+
+    #[test]
+    fn handoff_intent_appends_a_single_quoted_prompt_and_no_parent_resume() {
+        // A cross-agent fork hands the transcript over in a prompt: the parent
+        // id must appear as text inside one argv entry, never as a resume
+        // selector the new agent could not honour anyway.
+        let mut inst = Instance::new("Crossed", "/tmp/x");
+        inst.tool = "codex".to_string();
+        inst.resume_intent = ResumeIntent::Handoff {
+            source_tool: "claude".to_string(),
+            from: "11111111-2222-3333-4444-555555555555".to_string(),
+        };
+        let mut cmd = "codex".to_string();
+        inst.apply_session_flags(&mut cmd, "test").unwrap();
+        append_handoff_prompt(&inst, &mut cmd);
+        assert!(
+            cmd.starts_with("codex '") && cmd.ends_with('\''),
+            "the prompt must be one shell-quoted trailing argument: {cmd}"
+        );
+        for needle in [
+            "continue-claude-session",
+            "11111111-2222-3333-4444-555555555555",
+        ] {
+            assert!(cmd.contains(needle), "{needle:?} missing from {cmd}");
+        }
+        assert!(
+            !cmd.contains("fork ") && !cmd.contains("resume"),
+            "nothing is resumed across agents: {cmd}"
+        );
+
+        // Every other intent leaves the command alone.
+        let mut plain = Instance::new("Plain", "/tmp/x");
+        plain.tool = "codex".to_string();
+        plain.resume_intent = ResumeIntent::Cleared;
+        let mut plain_cmd = "codex".to_string();
+        append_handoff_prompt(&plain, &mut plain_cmd);
+        assert_eq!(plain_cmd, "codex");
     }
 
     #[test]

@@ -834,6 +834,18 @@ pub fn build_instance(
                     from: parent_agent_session_id,
                 };
             }
+            crate::session::ForkSeed::CrossAgent {
+                source_tool,
+                parent_agent_session_id,
+            } => {
+                // Nothing to pin: the new agent cannot resume the other's
+                // conversation, so it mints its own and reads the parent's
+                // transcript through the one-shot Handoff prompt instead.
+                instance.resume_intent = crate::session::ResumeIntent::Handoff {
+                    source_tool,
+                    from: parent_agent_session_id,
+                };
+            }
             crate::session::ForkSeed::Structured {
                 parent_acp_session_id,
             } => {
