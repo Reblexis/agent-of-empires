@@ -152,6 +152,22 @@ impl SessionResponse {
             // The create-time guard calls the same classifier, so the web
             // "Fork" affordance and server-side acceptance cannot drift.
             acp_can_fork: agent_is_structured_fork_capable(&inst.tool, inst.agent_name.as_deref()),
+            // Only offered once there is a conversation to hand over: the
+            // handoff prompt points the new agent at the source transcript, and
+            // an uncaptured session has none. `create.rs` re-checks both, so
+            // the control and the create cannot drift.
+            handoff_targets: if inst
+                .agent_session_id
+                .as_deref()
+                .is_some_and(|s| !s.trim().is_empty())
+            {
+                crate::session::handoff::handoff_targets(&inst.tool)
+                    .into_iter()
+                    .map(str::to_string)
+                    .collect()
+            } else {
+                Vec::new()
+            },
             // Same agent resolution as `acp_agent` above; computed once here so
             // the web dashboard and native TUI stop mirroring the gate.
             keeps_context: crate::agents::acp_transcript_cli_resumable(

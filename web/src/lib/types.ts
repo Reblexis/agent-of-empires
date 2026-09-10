@@ -189,6 +189,13 @@ export interface SessionResponse {
    *  Absent (read as not-forkable) for terminal sessions and non-forkable
    *  agents. */
   acp_can_fork?: boolean;
+  /** The agents this session's conversation can be handed to: a fresh session
+   *  of that agent, seeded with a prompt pointing at this session's transcript
+   *  (no agent can resume another's conversation). Server-computed, non-empty
+   *  only when AoE can find this agent's transcript AND a conversation has been
+   *  captured, so the "continue in <agent>" control renders straight from it.
+   *  Absent (read as empty) when the handoff is not available. */
+  handoff_targets?: string[];
   /** True when this is a Claude Code session AND the user has enabled
    *  Claude's fullscreen renderer (`tui: "fullscreen"` in
    *  ~/.claude/settings.json). The mobile rendering path uses this to
@@ -591,6 +598,11 @@ export interface CreateSessionRequest {
    *  new session continues that conversation independently; the original is
    *  untouched. Server picks terminal vs structured from `view` + tool. */
   fork_from?: string;
+  /** Hand an existing session's conversation to a DIFFERENT agent: the AoE
+   *  session id to take over from (not the agent's captured id, which the
+   *  server resolves itself). `tool` must be one of that session's
+   *  `handoff_targets`. Mutually exclusive with `fork_from`. */
+  handoff_from_session?: string;
 }
 
 /** A discoverable existing Claude Code session on disk, returned by

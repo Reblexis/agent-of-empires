@@ -598,6 +598,7 @@ mod workspace_ordering_tests {
             acp_session_id: None,
             acp_agent: None,
             acp_can_fork: false,
+            handoff_targets: Vec::new(),
             keeps_context: false,
             clear_aliases: Vec::new(),
             claude_fullscreen: false,

@@ -44,8 +44,15 @@ catching up rather than by asking you what to do.
 
 Supported in both directions between `claude` and `codex`, the two agents whose
 transcripts AoE can locate on disk. Any other pairing is refused with the agent names,
-as is a source session that has not captured a conversation id yet. A cross-agent fork
-is a CLI flow: the TUI and web fork actions stay same-agent.
+as is a source session that has not captured a conversation id yet.
+
+### From the web dashboard
+
+While a session is open, the header carries a **continue in `<agent>`** button. One
+click does the same thing: a new session of that agent in this directory, seeded from
+this conversation, opened for you. This session keeps running. The button appears only
+when the handoff is actually available (`handoff_targets` on the session API), so it
+never offers a dead end. The TUI's own fork action stays same-agent.
 
 The seeded prompt names the `continue-claude-session` / `continue-codex-session` skill
 when the target agent has one installed, and always names the transcript path, so an

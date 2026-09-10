@@ -387,6 +387,13 @@ pub struct SessionResponse {
     /// non-forkable agents.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub acp_can_fork: bool,
+    /// The agents this session's conversation can be handed to, for the web
+    /// "continue in <agent>" control. Non-empty only when AoE can locate this
+    /// agent's transcript AND the session has captured a conversation to hand
+    /// over, so a client can render the control straight from this list
+    /// without recomputing the gate. Omitted when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub handoff_targets: Vec<String>,
     /// Whether switching this session between terminal and structured view
     /// preserves the conversation (only claude pairings share one
     /// CLI-resumable transcript). Server-owned via

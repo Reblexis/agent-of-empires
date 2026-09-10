@@ -45,6 +45,19 @@ pub(crate) fn cross_agent_handoff(
     Ok(())
 }
 
+/// The agents this tool's conversation can be handed to, for a UI that offers
+/// the switch. Empty when nothing can take it (so the affordance hides).
+pub(crate) fn handoff_targets(source_tool: &str) -> Vec<&'static str> {
+    if !source_supported(source_tool) {
+        return Vec::new();
+    }
+    crate::agents::AGENTS
+        .iter()
+        .filter(|a| a.accepts_prompt_argument && a.name != source_tool)
+        .map(|a| a.name)
+        .collect()
+}
+
 /// The transcript file for a captured session id, when it is already on disk.
 /// `home` is the user's home directory. Returns `None` when the agent has not
 /// written the file yet, in which case the prompt falls back to the bare id.
@@ -134,6 +147,25 @@ mod tests {
                 expected,
                 "{source} -> {target}"
             );
+        }
+    }
+
+    #[test]
+    fn targets_are_the_other_prompt_taking_agents() {
+        assert_eq!(handoff_targets("claude"), vec!["codex"]);
+        assert_eq!(handoff_targets("codex"), vec!["claude"]);
+        // Nothing to hand over from an agent whose transcript AoE cannot find.
+        assert!(handoff_targets("opencode").is_empty());
+        // Every offered target must actually be accepted by the gate, so a UI
+        // built from this list cannot offer a create the server then refuses.
+        for source in ["claude", "codex"] {
+            for target in handoff_targets(source) {
+                assert_eq!(
+                    cross_agent_handoff(source, target),
+                    Ok(()),
+                    "{source}->{target}"
+                );
+            }
         }
     }
 
