@@ -15,6 +15,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render } from "@testing-library/react";
 
 import { TopBar } from "../TopBar";
+import { createSession } from "../../lib/api";
+import { requestOpenSession } from "../../lib/sessionRoute";
+
+vi.mock("../../lib/api", () => ({ createSession: vi.fn() }));
+vi.mock("../../lib/sessionRoute", () => ({ requestOpenSession: vi.fn() }));
 import type { SessionResponse, Workspace } from "../../lib/types";
 
 afterEach(() => {
@@ -100,6 +105,55 @@ describe("TopBar", () => {
     });
     expect(getByText("offline")).toBeTruthy();
     expect(getByLabelText("Debug build")).toBeTruthy();
+  });
+
+  // The handoff button is the one-click "continue this session in the other
+  // agent" control: visible only when the server says a handoff is possible,
+  // and it creates a session of that agent seeded from this one, then opens it.
+  it("offers the handoff button only when the server lists a target", () => {
+    const workspace = { id: "w1", name: "W" } as unknown as Workspace;
+    const base = {
+      id: "s1",
+      project_path: "/src/demo",
+      group_path: "demo",
+      tool: "claude",
+    } as unknown as SessionResponse;
+
+    const withoutTarget = renderTopBar({
+      activeWorkspace: workspace,
+      activeSession: base,
+    });
+    expect(withoutTarget.queryByTestId("topbar-handoff")).toBeNull();
+    cleanup();
+
+    const { getByTestId } = renderTopBar({
+      activeWorkspace: workspace,
+      activeSession: { ...base, handoff_targets: ["codex"] } as SessionResponse,
+    });
+    expect(getByTestId("topbar-handoff").getAttribute("aria-label")).toBe("Continue in codex");
+  });
+
+  it("hands the session over to the named agent and opens the new one", async () => {
+    vi.mocked(createSession).mockResolvedValue({ ok: true, session: { id: "s2" } as SessionResponse });
+    const { getByTestId } = renderTopBar({
+      activeWorkspace: { id: "w1", name: "W" } as unknown as Workspace,
+      activeSession: {
+        id: "s1",
+        project_path: "/src/demo",
+        group_path: "demo",
+        tool: "claude",
+        handoff_targets: ["codex"],
+      } as unknown as SessionResponse,
+    });
+    fireEvent.click(getByTestId("topbar-handoff"));
+    await vi.waitFor(() => expect(createSession).toHaveBeenCalled());
+    expect(vi.mocked(createSession).mock.calls[0][0]).toMatchObject({
+      path: "/src/demo",
+      tool: "codex",
+      view: "terminal",
+      handoff_from_session: "s1",
+    });
+    await vi.waitFor(() => expect(requestOpenSession).toHaveBeenCalledWith("s2"));
   });
 
   it("exposes a Tips entry in the overflow menu that fires onOpenTips", () => {
