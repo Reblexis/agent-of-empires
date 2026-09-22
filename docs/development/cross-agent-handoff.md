@@ -30,3 +30,5 @@ The release binary was installed and the dashboard service restarted on 2026-09-
 Dashboard handoffs explicitly request `yolo_mode: true` for either target, independently of the source session's setting. Codex receives `--dangerously-bypass-approvals-and-sandbox`, and Claude receives `--dangerously-skip-permissions`. The new session persists this setting for subsequent restarts; the source session's setting is unchanged.
 
 Before the change, both unit cases failed on the missing bypass request and both live browser cases failed on the missing launch flag. After the request change, all eight header tests pass, as do frontend type checking, build, formatting, lint, and coverage-matrix validation. No Rust behavior was changed.
+
+Both browser cases pass against the optimized local (`dev-release`) binary: each target receives its full bypass flag, the child stores `yolo_mode: true`, and the source remains unchanged. This binary was installed and the dashboard restarted on 2026-09-22 with all existing tmux sessions preserved.
