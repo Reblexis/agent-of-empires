@@ -149,6 +149,8 @@ Supported in both directions between `claude` and `codex`, the two agents whose 
 
 While a session is open in the web dashboard, the header carries a **continue in `<agent>`** button. One click does the same thing: a new session of that agent in this directory, seeded from this conversation, opened for you. This session keeps running. The button appears only when the handoff is actually available (`handoff_targets` on the session API), so it never offers a dead end. The TUI's own fork action stays same-agent. CityHall mode does not accept cross-agent handoffs, matching its restriction on forks and imports.
 
+The dashboard handoff always enables full permission bypass for the new session, independently of the source session and configured default. Codex launches with `--dangerously-bypass-approvals-and-sandbox`; Claude launches with `--dangerously-skip-permissions`. This choice persists for later restarts.
+
 The seeded prompt names the `continue-claude-session` / `continue-codex-session` skill and includes the transcript path when located, otherwise the source conversation id. The target uses the skill when installed and otherwise reads the transcript directly.
 
 Because the target agent starts a brand-new conversation, none of the parent's context window comes across: only what is written in the transcript. Long sessions therefore hand over their history, not their working memory.

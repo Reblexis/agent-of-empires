@@ -145,7 +145,10 @@ describe("TopBar", () => {
     expect(getByTestId("topbar-handoff").getAttribute("aria-label")).toBe("Continue in codex");
   });
 
-  it("hands the session over to the named agent and opens the new one", async () => {
+  it.each([
+    ["claude", "codex"],
+    ["codex", "claude"],
+  ])("%s-to-%s handoff always launches with full permission bypass", async (source, target) => {
     vi.mocked(createSession).mockResolvedValue({ ok: true, session: { id: "s2" } as SessionResponse });
     const { getByTestId } = renderTopBar({
       activeWorkspace: { id: "w1", name: "W" } as unknown as Workspace,
@@ -153,16 +156,18 @@ describe("TopBar", () => {
         id: "s1",
         project_path: "/src/demo",
         group_path: "demo",
-        tool: "claude",
-        handoff_targets: ["codex"],
+        tool: source,
+        yolo_mode: false,
+        handoff_targets: [target],
       } as unknown as SessionResponse,
     });
     fireEvent.click(getByTestId("topbar-handoff"));
     await vi.waitFor(() => expect(createSession).toHaveBeenCalled());
     expect(vi.mocked(createSession).mock.calls[0][0]).toMatchObject({
       path: "/src/demo",
-      tool: "codex",
+      tool: target,
       view: "terminal",
+      yolo_mode: true,
       handoff_from_session: "s1",
     });
     await vi.waitFor(() => expect(requestOpenSession).toHaveBeenCalledWith("s2"));

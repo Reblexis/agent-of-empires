@@ -25,6 +25,12 @@ The live browser test uses isolated storage and stub agent executables. It check
 
 The release binary was installed and the dashboard service restarted on 2026-09-22. All 15 pre-existing tmux sessions remained present. An authenticated browser check of the installed dashboard confirmed the `Continue in codex` button on an existing Claude session. The integration is included in the pushed `local-defaults` branch.
 
+## Full permission bypass on 2026-09-22
+
+Dashboard handoffs explicitly request `yolo_mode: true` for either target, independently of the source session's setting. Codex receives `--dangerously-bypass-approvals-and-sandbox`, and Claude receives `--dangerously-skip-permissions`. The new session persists this setting for subsequent restarts; the source session's setting is unchanged.
+
+Before the change, both unit cases failed on the missing bypass request and both live browser cases failed on the missing launch flag. After the request change, all eight header tests pass, as do frontend type checking, build, formatting, lint, and coverage-matrix validation. No Rust behavior was changed.
+
 ## Port to v1.21.0
 
 Upstream v1.21.0 has no cross-agent fork (its fork guide merged into [session resume](../guides/session-resume.md#forking-a-session) and refuses a child under another agent), so the feature was ported onto its split session and API modules. `Handoff` is a fresh launch everywhere upstream special-cases `Cleared`: it targets no conversation, is not a managed resume, and is promoted to `Default` once the launch is recorded. The persisted `resume_intent` wire shape is unchanged, so rows the local build wrote keep loading. The prompt is appended after every launch flag. The CLI takes the handoff path only for a pairing the gate accepts; any other different tool keeps upstream's same-agent fork, refused at launch, so a custom tool that resolves to the parent's agent still forks natively.
