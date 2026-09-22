@@ -55,6 +55,11 @@ when the handoff is actually available (`handoff_targets` on the session API), s
 never offers a dead end. The TUI's own fork action stays same-agent. CityHall mode
 does not accept cross-agent handoffs, matching its restriction on forks and imports.
 
+The dashboard handoff always enables full permission bypass for the new session,
+independently of the source session and configured default. Codex launches with
+`--dangerously-bypass-approvals-and-sandbox`; Claude launches with
+`--dangerously-skip-permissions`. This choice persists for later restarts.
+
 The seeded prompt names the `continue-claude-session` / `continue-codex-session` skill
 and includes the transcript path when located, otherwise the source conversation id.
 The target uses the skill when installed and otherwise reads the transcript directly.

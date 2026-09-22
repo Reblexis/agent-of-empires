@@ -112,6 +112,7 @@ export function TopBar({
         group: activeSession.group_path || undefined,
         profile: activeSession.profile || undefined,
         handoff_from_session: activeSession.id,
+        yolo_mode: true,
       });
       if (result.ok && result.session) requestOpenSession(result.session.id);
       else reportError(result.error ?? `Could not continue this session in ${handoffTarget}.`);

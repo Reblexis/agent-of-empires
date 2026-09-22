@@ -11,6 +11,7 @@
     },
     {
       "id": "sessions.cross-agent-handoff-live",
+      "description": "Both handoff directions launch with full permission bypass and preserve the source session.",
       "kind": "live-playwright",
       "risk": "high",
       "specs": ["tests/live/session-handoff.spec.ts"],
