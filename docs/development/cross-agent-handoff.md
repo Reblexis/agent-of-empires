@@ -31,6 +31,8 @@ Dashboard handoffs explicitly request `yolo_mode: true` for either target, indep
 
 Before the change, both unit cases failed on the missing bypass request and both live browser cases failed on the missing launch flag. After the request change, all eight header tests pass, as do frontend type checking, build, formatting, lint, and coverage-matrix validation. No Rust behavior was changed.
 
+Both browser cases pass against the optimized local (`dev-release`) binary: each target receives its full bypass flag, the child stores `yolo_mode: true`, and the source remains unchanged. This binary was installed and the dashboard restarted on 2026-09-22 with all existing tmux sessions preserved.
+
 ## Port to v1.21.0
 
 Upstream v1.21.0 has no cross-agent fork (its fork guide merged into [session resume](../guides/session-resume.md#forking-a-session) and refuses a child under another agent), so the feature was ported onto its split session and API modules. `Handoff` is a fresh launch everywhere upstream special-cases `Cleared`: it targets no conversation, is not a managed resume, and is promoted to `Default` once the launch is recorded. The persisted `resume_intent` wire shape is unchanged, so rows the local build wrote keep loading. The prompt is appended after every launch flag. The CLI takes the handoff path only for a pairing the gate accepts; any other different tool keeps upstream's same-agent fork, refused at launch, so a custom tool that resolves to the parent's agent still forks natively.
