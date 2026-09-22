@@ -575,6 +575,14 @@ pub(crate) enum ResumeIntent {
     /// so later restarts resume the child's own id with a plain `--resume`.
     #[serde(rename = "Fork")]
     Fork { from: String },
+    /// One-shot cross-agent fork seed: on the next (first) launch, start a
+    /// fresh conversation of THIS session's agent and hand it a prompt
+    /// pointing at `from`, a conversation belonging to `source_tool`. Nothing
+    /// is resumed: the two agents' transcripts are not interchangeable, so the
+    /// new agent reads the old one's file instead. Auto-promotes to `Default`
+    /// after that launch, like `Cleared` and `Fork`.
+    #[serde(rename = "Handoff")]
+    Handoff { source_tool: String, from: String },
 }
 
 impl ResumeIntent {
@@ -1186,6 +1194,22 @@ pub struct Instance {
     /// constructions remain functional without an explicit injection.
     #[serde(skip, default)]
     pub(crate) file_watch: Option<std::sync::Arc<crate::file_watch::FileWatchService>>,
+}
+
+/// Append a cross-agent handoff's initial prompt, as the positional argument
+/// it has to be: after every flag, once per launch. The intent is one-shot, so
+/// it is gone by the next launch (`sid_persist` promotes it to `Default`).
+/// Silent for every other resume intent.
+fn append_handoff_prompt(inst: &Instance, cmd: &mut String) {
+    let ResumeIntent::Handoff { source_tool, from } = &inst.resume_intent else {
+        return;
+    };
+    let transcript = dirs::home_dir().and_then(|home| {
+        crate::session::handoff::locate_transcript(source_tool, from, &inst.project_path, &home)
+    });
+    let prompt = crate::session::handoff::handoff_prompt(source_tool, from, transcript.as_deref());
+    cmd.push(' ');
+    cmd.push_str(&shell_escape(&prompt));
 }
 
 /// Append yolo-mode flags or environment variables to a launch command.
@@ -2982,7 +3006,7 @@ impl Instance {
                 self.agent_session_id = Some(sid.clone());
                 return (Some(sid), true);
             }
-            ResumeIntent::Cleared => {
+            ResumeIntent::Cleared | ResumeIntent::Handoff { .. } => {
                 self.agent_session_id = None;
                 self.resume_probe_failed_sid = None;
                 let session_id = self.fresh_launch_session_id(preassign_opencode);
@@ -4407,6 +4431,7 @@ impl Instance {
             }
 
             let is_existing = self.apply_session_flags(&mut tool_cmd, "sandboxed");
+            append_handoff_prompt(self, &mut tool_cmd);
             apply_agent_launch_env(&mut tool_cmd, agent);
 
             let sandbox = self
@@ -4744,6 +4769,7 @@ impl Instance {
                         }
                     }
                     let is_existing = self.apply_session_flags(&mut cmd, "host agent");
+                    append_handoff_prompt(self, &mut cmd);
                     apply_agent_launch_env(&mut cmd, agent);
                     let raw_command = format!("{}{}", env_prefix, cmd);
                     let command = if let Some(plan) = omp_capture_plan.as_ref() {
@@ -4771,6 +4797,7 @@ impl Instance {
                 }
             }
             let is_existing = self.apply_session_flags(&mut cmd, "host custom");
+            append_handoff_prompt(self, &mut cmd);
             apply_agent_launch_env(&mut cmd, agent);
             let raw_command = format!("{}{}", env_prefix, cmd);
             let command = if let Some(plan) = omp_capture_plan.as_ref() {
@@ -5022,7 +5049,10 @@ impl Instance {
         // Use and stays authoritative (see #2708).
         let promote_one_shot = matches!(
             expected_prior_intent,
-            ResumeIntent::Cleared | ResumeIntent::Fork { .. } | ResumeIntent::Use(_)
+            ResumeIntent::Cleared
+                | ResumeIntent::Fork { .. }
+                | ResumeIntent::Handoff { .. }
+                | ResumeIntent::Use(_)
         );
 
         let instance_id = self.id.clone();
@@ -11478,6 +11508,44 @@ mod tests {
     }
 
     #[test]
+    fn handoff_intent_appends_a_single_quoted_prompt_and_no_parent_resume() {
+        // A cross-agent fork hands the transcript over in a prompt: the parent
+        // id must appear as text inside one argv entry, never as a resume
+        // selector the new agent could not honour anyway.
+        let mut inst = Instance::new("Crossed", "/tmp/x");
+        inst.tool = "codex".to_string();
+        inst.resume_intent = ResumeIntent::Handoff {
+            source_tool: "claude".to_string(),
+            from: "11111111-2222-3333-4444-555555555555".to_string(),
+        };
+        let mut cmd = "codex".to_string();
+        inst.apply_session_flags(&mut cmd, "test");
+        append_handoff_prompt(&inst, &mut cmd);
+        assert!(
+            cmd.starts_with("codex '") && cmd.ends_with('\''),
+            "the prompt must be one shell-quoted trailing argument: {cmd}"
+        );
+        for needle in [
+            "continue-claude-session",
+            "11111111-2222-3333-4444-555555555555",
+        ] {
+            assert!(cmd.contains(needle), "{needle:?} missing from {cmd}");
+        }
+        assert!(
+            !cmd.contains("fork ") && !cmd.contains("resume"),
+            "nothing is resumed across agents: {cmd}"
+        );
+
+        // Every other intent leaves the command alone.
+        let mut plain = Instance::new("Plain", "/tmp/x");
+        plain.tool = "codex".to_string();
+        plain.resume_intent = ResumeIntent::Cleared;
+        let mut plain_cmd = "codex".to_string();
+        append_handoff_prompt(&plain, &mut plain_cmd);
+        assert_eq!(plain_cmd, "codex");
+    }
+
+    #[test]
     fn fork_command_inserts_codex_subcommand_after_binary() {
         // codex fork must sit right after the binary, before other flags,
         // mirroring how codex `resume` is inserted as a subcommand.
@@ -14799,6 +14867,35 @@ mod tests {
                 disk.agent_session_id.as_deref(),
                 Some("019342ab-1234-7def-8901-abcdef012345")
             );
+            // A cross-agent handoff is one-shot for the same reason: the prompt
+            // pointing at the other agent's transcript must not be re-sent on
+            // every restart of this session.
+            let mut crossed = Instance::new("Crossed", "/tmp/x");
+            crossed.tool = "codex".into();
+            crossed.source_profile = profile.into();
+            crossed.agent_session_id = Some("019342cc-3333-7ccc-8ccc-cccccccccccc".into());
+            crossed.resume_intent = ResumeIntent::Handoff {
+                source_tool: "claude".into(),
+                from: "019342aa-2222-7eee-8fff-aaaabbbbcccc".into(),
+            };
+            let crossed_on_disk = crossed.clone();
+            storage
+                .update(|i, g| {
+                    i.push(crossed_on_disk.clone());
+                    *g = crate::session::GroupTree::new_with_groups(i, &[]).get_all_groups();
+                    Ok(())
+                })
+                .unwrap();
+            let crossed_prior = crossed.resume_intent.clone();
+            let crossed_sid = crossed.agent_session_id.clone();
+            let _ = crossed.persist_session_id(profile, crossed_sid.as_deref(), crossed_prior);
+            let reloaded = storage.load().unwrap();
+            let crossed_disk = reloaded.iter().find(|i| i.id == crossed.id).unwrap();
+            assert_eq!(
+            crossed_disk.resume_intent,
+            ResumeIntent::Default,
+            "Handoff must auto-promote so the handoff prompt is sent once, not on every restart"
+        );
         }
 
         #[test]

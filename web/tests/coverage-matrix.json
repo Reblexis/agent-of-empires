@@ -3,6 +3,27 @@
   "description": "Surface/flow coverage matrix for the agent-of-empires web dashboard. Every component file under web/src/components/** must appear in at least one entry's `components` list (covered, deferred, or out-of-scope), or in coverage-matrix.exempt.json. CI validates this on every PR via tests/validate-coverage-matrix.mjs.",
   "surfaces": [
     {
+      "id": "app-shell.context-pane",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/components/__tests__/ContextPane.test.tsx"],
+      "components": ["web/src/components/ContextPane.tsx"]
+    },
+    {
+      "id": "sessions.cross-agent-handoff-live",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": ["tests/live/session-handoff.spec.ts"],
+      "components": ["web/src/components/TopBar.tsx"]
+    },
+    {
+      "id": "sessions.cross-agent-handoff",
+      "kind": "vitest",
+      "risk": "high",
+      "specs": ["src/components/__tests__/TopBar.test.tsx"],
+      "components": ["web/src/components/TopBar.tsx"]
+    },
+    {
       "id": "terminal.paired-shell",
       "kind": "vitest",
       "risk": "medium",

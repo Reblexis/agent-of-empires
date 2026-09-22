@@ -1,4 +1,5 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
+import { ArrowLeftRight } from "lucide-react";
 import type { SessionResponse, Workspace } from "../lib/types";
 import { PaletteTriggerPill } from "./PaletteTriggerPill";
 import { OverflowMenu, type OverflowItem } from "./OverflowMenu";
@@ -7,6 +8,9 @@ import { PluginStatusBarSegments } from "./plugin/PluginSlots";
 import { ActivityBar } from "./ActivityBar";
 import type { PaneDisplay } from "./Dock";
 import { useWebSettings } from "../hooks/useWebSettings";
+import { createSession } from "../lib/api";
+import { requestOpenSession } from "../lib/sessionRoute";
+import { reportError } from "../lib/toastBus";
 
 interface Props {
   activeWorkspace: Workspace | undefined;
@@ -89,6 +93,33 @@ export function TopBar({
   const { settings: webSettings } = useWebSettings();
   const hideWordmark = sidebarColumnVisible && webSettings.sidebarCompact;
 
+  // "Continue in <agent>": hand this session's conversation to the other agent.
+  // No agent can resume another's transcript, so the server starts a fresh
+  // session of the target seeded with a prompt pointing at this one's
+  // transcript, and we open it. This session keeps running, untouched.
+  // `handoff_targets` is server-computed and empty unless a conversation has
+  // actually been captured, so the button never offers a dead end.
+  const handoffTarget = activeSession?.handoff_targets?.[0];
+  const [handingOff, setHandingOff] = useState(false);
+  const handleHandoff = async () => {
+    if (!activeSession || !handoffTarget || handingOff) return;
+    setHandingOff(true);
+    try {
+      const result = await createSession({
+        path: activeSession.project_path,
+        tool: handoffTarget,
+        view: "terminal",
+        group: activeSession.group_path || undefined,
+        profile: activeSession.profile || undefined,
+        handoff_from_session: activeSession.id,
+      });
+      if (result.ok && result.session) requestOpenSession(result.session.id);
+      else reportError(result.error ?? `Could not continue this session in ${handoffTarget}.`);
+    } finally {
+      setHandingOff(false);
+    }
+  };
+
   return (
     <header {...tourAnchor(TOUR_ANCHORS.topbar)} className="h-12 bg-surface-850 flex items-stretch shrink-0">
       {/* LEFT ZONE — widens to the sidebar column when it's visible so the
@@ -169,6 +200,20 @@ export function TopBar({
             <span className="w-1.5 h-1.5 rounded-full bg-status-error animate-pulse" />
             offline
           </span>
+        )}
+
+        {activeWorkspace && activeSession && handoffTarget && (
+          <button
+            onClick={() => void handleHandoff()}
+            disabled={handingOff}
+            data-testid="topbar-handoff"
+            className="h-8 px-2 flex items-center gap-1.5 cursor-pointer rounded-md transition-colors text-text-secondary hover:text-text-primary hover:bg-surface-700/50 disabled:opacity-50 disabled:cursor-wait"
+            title={`Continue this session in ${handoffTarget}: starts a ${handoffTarget} session here that reads this conversation first. This one keeps running.`}
+            aria-label={`Continue in ${handoffTarget}`}
+          >
+            <ArrowLeftRight className="h-3.5 w-3.5 shrink-0" />
+            <span className="font-mono text-[11px] leading-none">{handoffTarget}</span>
+          </button>
         )}
 
         {activeWorkspace && activeSession && (
