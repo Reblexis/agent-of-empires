@@ -324,23 +324,49 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     let fork_seed: Option<crate::session::ForkSeed> = if let Some(fork_ref) = &args.fork_from {
         let source = super::resolve_session(fork_ref, &instances)?;
         let user_chose_tool = args.tool.is_some() || args.command.is_some();
-        if !user_chose_tool {
-            resolved_tool = source.tool.clone();
+        // Naming a different agent that can take this conversation forks
+        // ACROSS agents: the captured id is agent-shaped, so there is nothing
+        // for the new agent to resume. It starts fresh with a prompt pointing
+        // at the parent's transcript instead, which only works when AoE can
+        // find that transcript and the new agent takes a prompt on its command
+        // line. Any other tool takes the same-agent path, whose launch refuses
+        // a child that resolves to a different native agent.
+        let crosses_agents = user_chose_tool
+            && resolved_tool != source.tool
+            && crate::session::handoff::cross_agent_handoff(&source.tool, &resolved_tool).is_ok();
+        if crosses_agents {
+            let parent_agent_session_id = crate::session::handoff::handoff_parent_session_id(
+                source,
+            )
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Nothing to hand over: session '{}' has no captured agent session yet. Start a conversation in it first.",
+                    source.title
+                )
+            })?;
+            Some(crate::session::ForkSeed::CrossAgent {
+                source_tool: source.tool.clone(),
+                parent_agent_session_id,
+            })
+        } else {
+            if !user_chose_tool {
+                resolved_tool = source.tool.clone();
+            }
+            // One rule on both surfaces: a row whose native identity cannot be
+            // resolved names no conversation a fork could carry, so it is not a
+            // candidate here either, exactly as the REST election drops it.
+            let parent_ref = source.fork_parent_ref().unwrap_or(None);
+            let seed = crate::session::fork::terminal_fork_seed(
+                parent_ref,
+                crate::session::capture::generate_session_uuid(),
+                source.is_sandboxed(),
+            )
+            .map_err(|denied| {
+                let profile = source.effective_profile();
+                anyhow::Error::msg(denied.user_message(&source.title, &source.id, &profile))
+            })?;
+            Some(seed)
         }
-        // One rule on both surfaces: a row whose native identity cannot be
-        // resolved names no conversation a fork could carry, so it is not a
-        // candidate here either, exactly as the REST election drops it.
-        let parent_ref = source.fork_parent_ref().unwrap_or(None);
-        let seed = crate::session::fork::terminal_fork_seed(
-            parent_ref,
-            crate::session::capture::generate_session_uuid(),
-            source.is_sandboxed(),
-        )
-        .map_err(|denied| {
-            let profile = source.effective_profile();
-            anyhow::Error::msg(denied.user_message(&source.title, &source.id, &profile))
-        })?;
-        Some(seed)
     } else {
         None
     };
@@ -760,6 +786,17 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                     from: parent.session_id.clone(),
                 };
                 instance.resume_binding = Some(*parent);
+            }
+            crate::session::ForkSeed::CrossAgent {
+                source_tool,
+                parent_agent_session_id,
+            } => {
+                // No id to pre-pin: the target agent starts its own
+                // conversation and AoE captures the id it mints.
+                instance.resume_intent = crate::session::ResumeIntent::Handoff {
+                    source_tool,
+                    from: parent_agent_session_id,
+                };
             }
             crate::session::ForkSeed::Structured { .. } => {}
         }
@@ -1970,11 +2007,17 @@ mod tests {
                 "claude",
                 "#!/bin/sh\nexit 1\n",
             );
-            let _codex = crate::session::test_support::install_login_shell_path_command(
+            // Not codex: claude and codex hand a conversation over as a
+            // cross-agent fork (`session/handoff.rs`), so the same-agent rule
+            // this test pins is exercised with an agent that cannot take one.
+            let _gemini = crate::session::test_support::install_login_shell_path_command(
                 root.path(),
-                "codex",
+                "gemini",
                 "#!/bin/sh\nexit 1\n",
             );
+            // An earlier test may have cached gemini as missing on this host.
+            let availability = crate::tmux::AgentAvailabilityGuard::capture();
+            availability.seed("gemini", true);
             let project = tempfile::tempdir().unwrap();
             let parent_id = "parent-session-uuid";
             crate::session::Storage::new_unwatched("real")
@@ -2001,7 +2044,7 @@ mod tests {
                 "--fork-from",
                 parent_id,
                 "--tool",
-                "codex",
+                "gemini",
                 "-p",
                 "real",
             ]);
@@ -2010,7 +2053,7 @@ mod tests {
                 .expect_err("a fork under another agent must refuse")
                 .to_string();
             assert!(
-                msg.contains("codex") && msg.contains("claude"),
+                msg.contains("gemini") && msg.contains("claude"),
                 "the refusal must name both agents, got: {msg}"
             );
         }

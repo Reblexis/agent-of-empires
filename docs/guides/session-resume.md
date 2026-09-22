@@ -120,10 +120,10 @@ Structured-view conversations remain managed by ACP. For a Claude terminal hando
 A fork starts a new, independent session from an existing session's conversation, so you can take the same history in a different direction. Only the fork is new: the original session and its transcript are untouched.
 
 - **TUI**: the command palette's **Fork session (resume context, diverge)**, or **Fork session** on a session row's right-click menu. The dialog inherits the source working directory, group, and title. A rejected launch preserves the pending fork instead of silently starting fresh.
-- **Web**: **Fork session** on the sidebar context menu of a forkable session.
+- **Web**: **Fork session** on the sidebar context menu of a forkable session, or the header's **continue in `<agent>`** button to fork onto the other agent ([Forking across agents](#forking-across-agents)).
 - **CLI**: `aoe add --fork-from <session-id-or-title>`.
 
-The fork inherits the parent tool, group, working directory, and conversation binding. A qualified binding has already established the native agent and store through a qualified publication, import, or explicit recovery assertion. A raw or preallocated ID is insufficient; status detection and matching tool labels grant no authority. A raw ID that migration left unqualified is not a reason to refuse: a fork of it launches against the store current configuration resolves, under the same agent the parent row resolves to, because nothing recorded the store or the tool its parent used. A child asked for under another agent is refused before dispatch, whatever it is asked for by name. A conflicting native command or user-supplied resume/fork selector is refused before dispatch whatever the binding, and for a qualified binding so is a different tool, without clearing the pending fork. `--fork-from` cannot be combined with `--worktree` / `--new-branch` or `--sandbox` / `--sandbox-image`.
+The fork inherits the parent tool, group, working directory, and conversation binding. A qualified binding has already established the native agent and store through a qualified publication, import, or explicit recovery assertion. A raw or preallocated ID is insufficient; status detection and matching tool labels grant no authority. A raw ID that migration left unqualified is not a reason to refuse: a fork of it launches against the store current configuration resolves, under the same agent the parent row resolves to, because nothing recorded the store or the tool its parent used. A child asked for under another agent is refused before dispatch, whatever it is asked for by name, unless that agent can take the conversation as a [cross-agent fork](#forking-across-agents). A conflicting native command or user-supplied resume/fork selector is refused before dispatch whatever the binding, and for a qualified binding so is a different tool, without clearing the pending fork. `--fork-from` cannot be combined with `--worktree` / `--new-branch` or `--sandbox` / `--sandbox-image`.
 
 The child gets its own AoE ID and native conversation. The parent row and transcript remain unchanged.
 Current-generation OpenCode store forks validate the returned child in the prepared active store after the short-lived server is stopped, before adoption. Local control requests bypass ambient proxies; provider traffic keeps the selected environment. Shutdown preserves the process group's grace period even if a shim exits first, then escalates and bounds direct-child reaping.
@@ -134,6 +134,26 @@ Automatic recovery still depends on the agent's capture capability and supported
 Forking needs an agent that can branch a conversation: claude, codex, opencode, pi, and prime-agent in the supported managed contexts, and the Claude adapter for structured sessions. Resume-only agents (gemini, vibe, copilot) and agents without resume in AoE (cursor, droid, kiro, qwen) hide or refuse the action.
 
 Pi terminal forks require the same working directory and an attested host `pi` on `PATH` that supports both `--fork` and `--session-id`. AoE assigns the child id before launch. A sandboxed Pi, an unattestable wrapper, or a Pi without either flag refuses the fork rather than creating an untracked conversation. The child copies the parent's saved transcript, starting from the last persisted message. Forking into a new worktree is not supported for Pi.
+
+### Forking across agents
+
+Passing a different `--tool` forks the conversation onto the other agent:
+
+```sh
+aoe add --fork-from <session-id-or-title> --tool codex
+```
+
+A captured conversation is agent-specific: a Claude session id means nothing to Codex, so this is not a native fork. AoE instead starts a **fresh session of the target agent in the parent's working directory, seeded with a prompt that points it at the parent's transcript file** and tells it to read that first and carry on. The new agent starts by catching up rather than by asking you what to do. The prompt is sent on the first launch only; later restarts resume the new agent's own conversation.
+
+Supported in both directions between `claude` and `codex`, the two agents whose transcripts AoE can locate on disk. The conversation handed over is the one the parent would resume next: its explicit resume pin, else its captured id. A parent with none, or one that is itself an unlaunched fork or handoff, is refused with "Nothing to hand over". Any other tool pairing takes the same-agent fork path above, whose launch refuses a different native agent.
+
+While a session is open in the web dashboard, the header carries a **continue in `<agent>`** button. One click does the same thing: a new session of that agent in this directory, seeded from this conversation, opened for you. This session keeps running. The button appears only when the handoff is actually available (`handoff_targets` on the session API), so it never offers a dead end. The TUI's own fork action stays same-agent. CityHall mode does not accept cross-agent handoffs, matching its restriction on forks and imports.
+
+The seeded prompt names the `continue-claude-session` / `continue-codex-session` skill and includes the transcript path when located, otherwise the source conversation id. The target uses the skill when installed and otherwise reads the transcript directly.
+
+Because the target agent starts a brand-new conversation, none of the parent's context window comes across: only what is written in the transcript. Long sessions therefore hand over their history, not their working memory.
+
+Implementation and verification: [cross-agent handoff](../development/cross-agent-handoff.md).
 
 ## Swapping the engine on a restart
 

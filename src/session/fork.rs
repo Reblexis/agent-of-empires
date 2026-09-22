@@ -22,6 +22,13 @@ pub enum ForkSeed {
     /// Structured fork: send ACP `session/fork` against
     /// `parent_acp_session_id`; the adapter mints the child id.
     Structured { parent_acp_session_id: String },
+    /// Cross-agent fork: the target agent cannot resume `parent_agent_session_id`
+    /// (it belongs to `source_tool`), so it starts a fresh conversation seeded
+    /// with a prompt pointing at that transcript. See `session/handoff.rs`.
+    CrossAgent {
+        source_tool: String,
+        parent_agent_session_id: String,
+    },
 }
 
 /// Why a fork was refused, for a user-facing message.

@@ -85,6 +85,15 @@ pub struct CreateSessionBody {
     /// non-ACP agent is rejected rather than silently downgraded.
     #[serde(default)]
     pub fork_from: Option<String>,
+    /// Hand an existing session's conversation to a DIFFERENT agent: the AoE
+    /// session id (not the agent's captured id) to take over from. The server
+    /// reads that session's agent and conversation itself, so the caller
+    /// needs only the id it already has. The new session starts fresh under
+    /// `tool` with a one-shot prompt pointing at the source transcript,
+    /// because no agent can resume another's conversation. `tool` must differ
+    /// from the source's; for the same agent use `fork_from`, which resumes.
+    #[serde(default)]
+    pub handoff_from_session: Option<String>,
     /// Work-queue completion callback, fired when the session reaches Idle,
     /// Waiting, or Error. Must be `http`/`https` and must not resolve to a
     /// loopback/private/link-local address, checked again on every dispatch.
@@ -192,6 +201,36 @@ pub(super) fn resolve_create_fork_seed(
         parents[index].is_sandboxed(),
     )
     .map_err(|denied| (denied, Some(index)))
+}
+
+/// Why a cross-agent handoff create was refused, as the message the caller
+/// sees. `Ok` carries the seed.
+pub(super) fn resolve_handoff_seed(
+    source: Option<&Instance>,
+    target_tool: &str,
+) -> Result<crate::session::ForkSeed, &'static str> {
+    let source = source.ok_or("handoff_from_session names no session AoE knows")?;
+    if source.tool == target_tool {
+        return Err(
+            "handoff_from_session needs a different agent; use fork_from to fork the same one",
+        );
+    }
+    crate::session::handoff::cross_agent_handoff(&source.tool, target_tool).map_err(|denied| {
+        match denied {
+            crate::session::handoff::HandoffDenied::SourceNotSupported => {
+                "AoE can only hand over a claude or codex conversation, whose transcript it can locate"
+            }
+            crate::session::handoff::HandoffDenied::TargetNotSupported => {
+                "that agent takes no prompt on its command line, so the handoff could not reach it"
+            }
+        }
+    })?;
+    let parent = crate::session::handoff::handoff_parent_session_id(source)
+        .ok_or("that session has no conversation yet; start one before handing it over")?;
+    Ok(crate::session::ForkSeed::CrossAgent {
+        source_tool: source.tool.clone(),
+        parent_agent_session_id: parent,
+    })
 }
 
 /// True when a create asks to both import and fork. The two seed from
@@ -723,6 +762,7 @@ pub async fn create_session(
         // Fork and import resume an existing agent session and would bypass the
         // server-derived path and ACP gate, so they are not honored here.
         body.fork_from = None;
+        body.handoff_from_session = None;
         body.import_acp_session_id = None;
         let profile = body
             .profile
@@ -894,6 +934,34 @@ pub async fn create_session(
         }
     }
 
+    // A cross-agent handoff is resolved first: it and `fork_from` are
+    // alternative ways to seed the same session, so sending both is refused.
+    let mut handoff_seed: Option<crate::session::ForkSeed> = None;
+    if let Some(source_id) = body
+        .handoff_from_session
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        if body.fork_from.is_some() {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "fork_invalid",
+                "Cannot set both fork_from and handoff_from_session",
+            );
+        }
+        let seed = {
+            let instances = state.instances.read().await;
+            resolve_handoff_seed(instances.iter().find(|i| i.id == source_id), &body.tool)
+        };
+        match seed {
+            Ok(seed) => handoff_seed = Some(seed),
+            Err(message) => {
+                return api_error(StatusCode::BAD_REQUEST, "handoff_unsupported", message);
+            }
+        }
+    }
+
     // `fork_from` carries the source session's captured id. The seed is
     // resolved ahead of the build so an unforkable terminal agent or missing
     // parent id returns a clean 400. The builder applies it: a structured seed
@@ -973,6 +1041,8 @@ pub async fn create_session(
         }
         None => None,
     };
+    // The handoff seed wins when present; the guard above refuses sending both.
+    let fork_seed = handoff_seed.take().or(fork_seed);
 
     if let Some(url) = body.callback_url.as_deref() {
         if let Err(msg) = crate::server::callback::validate_callback_url(url) {

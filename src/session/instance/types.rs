@@ -159,6 +159,14 @@ pub(crate) enum ResumeIntent {
     /// One-shot fork of `from` into the child id preallocated in `agent_session_id`.
     #[serde(rename = "Fork")]
     Fork { from: String },
+    /// One-shot cross-agent fork seed: on the next (first) launch, start a
+    /// fresh conversation of THIS session's agent and hand it a prompt
+    /// pointing at `from`, a conversation belonging to `source_tool`. Nothing
+    /// is resumed: the two agents' transcripts are not interchangeable, so the
+    /// new agent reads the old one's file instead. Auto-promotes to `Default`
+    /// after that launch, like `Cleared` and `Fork`.
+    #[serde(rename = "Handoff")]
+    Handoff { source_tool: String, from: String },
 }
 
 impl ResumeIntent {
@@ -257,6 +265,15 @@ mod tests {
                     from: "some-parent-id".to_string(),
                 },
                 r#"{"kind":"Fork","value":{"from":"some-parent-id"}}"#,
+            ),
+            // Rows the local build persisted before the upgrade carry this
+            // exact shape, so it must keep loading unchanged.
+            (
+                ResumeIntent::Handoff {
+                    source_tool: "claude".to_string(),
+                    from: "some-parent-id".to_string(),
+                },
+                r#"{"kind":"Handoff","value":{"source_tool":"claude","from":"some-parent-id"}}"#,
             ),
         ] {
             assert_eq!(serde_json::to_string(&intent).unwrap(), wire);

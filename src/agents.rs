@@ -379,6 +379,11 @@ pub struct AgentDef {
     pub session_support: Option<SessionSupport>,
     pub fork_strategy: ForkStrategy,
     pub host_only: bool,
+    /// True when the agent's CLI takes an initial prompt as a positional
+    /// argument (`claude "do the thing"`, `codex "do the thing"`), so AoE can
+    /// hand it work at launch. Only set for agents where that is verified: it
+    /// gates the cross-agent fork target (`session/handoff.rs`).
+    pub accepts_prompt_argument: bool,
     /// Delay before Enter, for agents whose paste-burst detection swallows a fast Enter.
     pub send_keys_enter_delay_ms: u64,
     pub ready_marker: Option<&'static str>,
@@ -595,6 +600,7 @@ const fn agent(name: &'static str, binary: &'static str, install_hint: &'static 
         session_support: None,
         fork_strategy: ForkStrategy::Unsupported,
         host_only: false,
+        accepts_prompt_argument: false,
         send_keys_enter_delay_ms: 0,
         ready_marker: None,
         install_hint,
@@ -626,6 +632,7 @@ pub const AGENTS: &[AgentDef] = &[
             SessionCaptureContext::PaneScoped,
         ),
         fork_strategy: ForkStrategy::ClaudeFork,
+        accepts_prompt_argument: true,
         // Claude's 100ms paste completion window swallows an earlier Enter.
         send_keys_enter_delay_ms: 150,
         permission_response: Some(PermissionResponse {
@@ -713,6 +720,7 @@ pub const AGENTS: &[AgentDef] = &[
             SessionCaptureContext::ManagedExclusiveStore,
         ),
         fork_strategy: ForkStrategy::CodexFork,
+        accepts_prompt_argument: true,
         // Codex's 120ms paste-burst window swallows an earlier Enter.
         send_keys_enter_delay_ms: 150,
         permission_response: Some(PermissionResponse {

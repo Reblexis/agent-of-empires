@@ -136,7 +136,10 @@ impl Instance {
                 self.set_agent_conversation(Some(sid.clone()), self.resume_binding.clone(), path);
                 return (Some(sid), true);
             }
-            ResumeIntent::Cleared => {
+            // A cross-agent handoff is a brand-new conversation for this
+            // agent (it reads the other agent's transcript rather than
+            // resuming it), so it acquires an id exactly like a cleared one.
+            ResumeIntent::Cleared | ResumeIntent::Handoff { .. } => {
                 self.set_agent_conversation(None, None, None);
                 self.resume_probe_failed_sid = None;
                 let session_id = self.fresh_launch_session_id(backend, mint_fresh_id);
@@ -605,7 +608,11 @@ impl Instance {
             (Some(ResumeStaticUnavailable::Command), _) => {
                 TerminalContextResume::CommandUnsupported
             }
-            (None, ResumeIntent::Cleared) => TerminalContextResume::ForcedFresh,
+            // A handoff starts a brand-new conversation for this agent; the
+            // parent's transcript reaches it as a prompt, not as a resume.
+            (None, ResumeIntent::Cleared | ResumeIntent::Handoff { .. }) => {
+                TerminalContextResume::ForcedFresh
+            }
             (None, ResumeIntent::Fork { .. }) => TerminalContextResume::ForkPending,
             (None, ResumeIntent::Use(target)) if !is_valid_session_id(target) => {
                 TerminalContextResume::InvalidTarget

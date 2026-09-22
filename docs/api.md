@@ -91,6 +91,8 @@ When `profile` is omitted, creation uses the server's selected profile or the co
 
 **Dispatcher fields.** `callback_url` receives an HTTP POST when the session transitions to `Waiting`, `Idle`, or `Error`, so a dispatcher need not poll. It must be `http`/`https` and must not resolve to a loopback, private, or link-local address: that is checked at create time and re-resolved before every dispatch, with the approved address pinned for the request so a changed DNS answer cannot redirect it. Delivery is fire-and-forget; failures are logged, not retried. The body is `{"session_id", "old_status", "new_status", "at", "seq"}`, where `seq` is a per-process counter (reset on daemon restart) for discarding out-of-order deliveries. The URL is persisted with the session and never echoed back, but it is stored verbatim: prefer one carrying no credentials and authenticate deliveries another way.
 
+**Handoff.** `handoff_from_session` names an AoE session id whose conversation a different agent, `tool`, takes over as a [cross-agent fork](guides/session-resume.md#forking-across-agents). The server reads that session's agent and conversation itself. It is refused with `400` `handoff_unsupported` for an unknown session, the same agent, a pairing other than claude and codex, or a session with no conversation yet, and with `400` `fork_invalid` alongside `fork_from`. Session responses list the agents a handoff would be accepted for in `handoff_targets`, omitted when empty.
+
 `idempotency_key` (max 200 characters) makes a retry with the same key return the existing session as `200` instead of creating a duplicate, even across a daemon restart. A hard-deleted session releases its key.
 
 ## POST /api/sessions/{id}/send

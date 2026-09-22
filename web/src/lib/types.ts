@@ -85,6 +85,8 @@ export interface SessionResponse {
   clear_aliases?: string[];
   /** The agent implements ACP `session/fork` (resume-only agents do not). */
   acp_can_fork?: boolean;
+  /** Agents this session's conversation can be handed to (server-computed; empty until a conversation exists). */
+  handoff_targets?: string[];
   /** Claude's fullscreen renderer is on, so mobile skips copy-mode scrollback workarounds. */
   claude_fullscreen: boolean;
   workspace_repos: WorkspaceRepoSummary[];
@@ -400,6 +402,9 @@ export interface CreateSessionRequest {
   idempotency_key?: string;
   /** On a retry only: the daemon run the first attempt went to (`create_boot_id`). */
   retry_origin?: string;
+  /** AoE session id whose conversation a DIFFERENT agent (`tool`, one of its
+   *  `handoff_targets`) takes over. Exclusive with `fork_from`. */
+  handoff_from_session?: string;
 }
 
 export interface CreateProgress {
