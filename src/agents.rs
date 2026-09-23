@@ -568,19 +568,22 @@ const QWEN_HOOK_EVENTS: &[HookEvent] = &[
 ];
 
 /// Codex hook events. AoE installs these into `~/.codex/hooks.json`.
+/// `SessionStart` and `UserPromptSubmit` carry `session_id_capture` so the
+/// tab's own Codex process reports its conversation ID (the only source
+/// `codex_poll_fn` reads; see docs/guides/session-resume.md).
 const CODEX_HOOK_EVENTS: &[HookEvent] = &[
     HookEvent {
         name: "SessionStart",
         matcher: None,
         status: Some(HookStatus::Idle),
-        session_id_capture: false,
+        session_id_capture: true,
         waiting_tools: &[],
     },
     HookEvent {
         name: "UserPromptSubmit",
         matcher: None,
         status: Some(HookStatus::Running),
-        session_id_capture: false,
+        session_id_capture: true,
         waiting_tools: &[],
     },
     HookEvent {

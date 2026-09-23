@@ -34,7 +34,7 @@ pub(crate) fn resilient_read_dir(
 }
 
 /// Resolve an agent's home directory, checking an optional env var first.
-fn resolve_agent_home(env_var: Option<&str>, default_subdir: &str) -> Result<PathBuf> {
+pub(crate) fn resolve_agent_home(env_var: Option<&str>, default_subdir: &str) -> Result<PathBuf> {
     if let Some(var) = env_var {
         if let Ok(val) = std::env::var(var) {
             return Ok(PathBuf::from(val));
@@ -58,7 +58,7 @@ fn resolve_agent_home(env_var: Option<&str>, default_subdir: &str) -> Result<Pat
 /// Precedence mirrors [`crate::hooks::agent_settings_path_in`]: the session's
 /// host environment first, then AoE's own env (a var exported in the shell that
 /// launched `aoe` is inherited by the agent too), then `~/.claude`.
-fn claude_home_for_host_environment(host_env: &[String]) -> Result<PathBuf> {
+pub(crate) fn claude_home_for_host_environment(host_env: &[String]) -> Result<PathBuf> {
     match claude_config_dir_override(host_env) {
         Some(dir) => Ok(PathBuf::from(dir)),
         None => resolve_agent_home(None, ".claude"),
@@ -222,7 +222,7 @@ pub(crate) fn claude_host_transcript_confirmed_absent(
 /// prompts (see [`crate::session::smart_rename::oneshot_prompt_prefixes`]).
 /// Reads only the head of the file and the first user message; any parse
 /// trouble is "not a one-shot" so a real transcript is never wrongly hidden.
-fn transcript_is_aoe_oneshot(path: &Path) -> bool {
+pub(crate) fn transcript_is_aoe_oneshot(path: &Path) -> bool {
     use std::io::Read;
     let Ok(mut f) = std::fs::File::open(path) else {
         return false;
@@ -386,18 +386,14 @@ fn read_claude_json_session_id(claude_json: &Path, project_path: &Path) -> Optio
 
 /// Polling closure for Claude Code session tracking on the host filesystem.
 ///
-/// Per tick, in order:
-/// 1. Read `/tmp/aoe-hooks-<euid>/<instance_id>/session_id` (written by Claude's
-///    `SessionStart` / `UserPromptSubmit` hooks). When present and ≤ 5 min
-///    old, return it and skip the disk scan.
-/// 2. Otherwise scan `<config>/projects/<encoded-path>/`, where `<config>` is
-///    the session's profile-scoped Claude config dir (`host_env`), so a
-///    same-cwd peer in another profile is never a candidate. The scan uses
-///    `compose_exclusion(instance_id, extra_excludes)` to skip UUIDs claimed
-///    by peers via tmux env, and the `last_known` mutex to anchor this
-///    closure to its own session even when a peer's jsonl is more recent.
-///    Each successful capture promotes `last_known` so subsequent ticks see
-///    the new anchor.
+/// Reads only the tab's own hook sidecar
+/// (`/tmp/aoe-hooks-<euid>/<instance_id>/session_id`, written by Claude's
+/// `SessionStart` / `UserPromptSubmit` hooks through `AOE_INSTANCE_ID`), at
+/// any age: the launch deletes it, so what is there came from the tab's
+/// current process. With no sidecar the poller reports nothing and the
+/// recorded conversation stays. It never scans the project directory for the
+/// newest transcript: that guess is how tabs adopted each other's and aoe's
+/// one-shot conversations (docs/guides/session-resume.md).
 pub(crate) fn claude_poll_fn(
     project_path: String,
     known_session_id: Option<String>,
@@ -405,44 +401,22 @@ pub(crate) fn claude_poll_fn(
     extra_excludes: HashSet<String>,
     host_env: Vec<String>,
 ) -> impl Fn() -> Option<String> + Send + 'static {
-    let last_known = std::sync::Mutex::new(known_session_id);
+    let _ = (project_path, known_session_id, host_env);
+    hook_sidecar_poll_fn(instance_id, extra_excludes)
+}
+
+/// The tab's own hook-reported conversation, or `None`. Shared by the host
+/// Claude and Codex pollers.
+fn hook_sidecar_poll_fn(
+    instance_id: String,
+    extra_excludes: HashSet<String>,
+) -> impl Fn() -> Option<String> + Send + 'static {
     move || {
-        // Sidecar reads are scoped per-instance: the file lives under
-        // `/tmp/aoe-hooks-<euid>/<instance_id>/` so a sibling instance's hook
-        // writes cannot reach this path, which is why the read skips
-        // `compose_exclusion`. `extra_excludes` is still honored so a
-        // sidecar value matching one of this instance's cleared sids does
-        // not leak through.
-        if let Some(id) = crate::hooks::read_hook_session_id(&instance_id) {
-            if !extra_excludes.contains(&id) {
-                if let Some(validated) = validated_session_id(id) {
-                    if let Ok(mut guard) = last_known.lock() {
-                        *guard = Some(validated.clone());
-                    }
-                    return Some(validated);
-                }
-            }
+        let id = crate::hooks::read_hook_session_id_any_age(&instance_id)?;
+        if extra_excludes.contains(&id) {
+            return None;
         }
-
-        let current_known = last_known.lock().ok().and_then(|g| g.clone());
-        let exclusion = compose_exclusion(&instance_id, &extra_excludes);
-        let captured = capture_claude_session_id(
-            &project_path,
-            current_known.as_deref(),
-            &exclusion,
-            &host_env,
-        )
-        .map_err(|e| tracing::debug!(target: "session.capture", "Claude disk scan failed: {}", e))
-        .ok()
-        .and_then(validated_session_id);
-
-        if let Some(id) = captured.as_ref() {
-            if let Ok(mut guard) = last_known.lock() {
-                *guard = Some(id.clone());
-            }
-        }
-
-        captured
+        validated_session_id(id)
     }
 }
 
@@ -2093,7 +2067,7 @@ fn parse_codex_cwd_from_json(line: &str, filename_uuid: &str) -> Option<String> 
 ///
 /// Codex filenames follow the pattern `rollout-YYYY-MM-DDThh-mm-ss-<uuid>.jsonl`.
 /// The UUID is the last 36 characters of the stem (before `.jsonl`).
-fn extract_codex_uuid_from_filename(path: &Path) -> Option<String> {
+pub(crate) fn extract_codex_uuid_from_filename(path: &Path) -> Option<String> {
     let stem = path.file_stem()?.to_str()?;
     if stem.len() >= 36 {
         let candidate = &stem[stem.len() - 36..];
@@ -2207,21 +2181,18 @@ fn select_codex_session_in_container(
         .ok_or_else(|| anyhow::anyhow!("No Codex session matching container CWD"))
 }
 
-/// Polling closure for Codex CLI session tracking.
+/// Polling closure for Codex CLI session tracking on the host.
+///
+/// Reads only the tab's own hook sidecar, like [`claude_poll_fn`]: Codex's
+/// `SessionStart` / `UserPromptSubmit` hooks report the conversation ID.
+/// It never picks the newest rollout for the project's cwd.
 pub(crate) fn codex_poll_fn(
     project_path: String,
     instance_id: String,
     extra_excludes: HashSet<String>,
 ) -> impl Fn() -> Option<String> + Send + 'static {
-    move || {
-        let exclusion = compose_exclusion(&instance_id, &extra_excludes);
-        capture_codex_session_id(&project_path, &exclusion)
-            .map_err(
-                |e| tracing::debug!(target: "session.capture", "Codex poll capture failed: {}", e),
-            )
-            .ok()
-            .and_then(validated_session_id)
-    }
+    let _ = project_path;
+    hook_sidecar_poll_fn(instance_id, extra_excludes)
 }
 
 /// Polling closure for sandboxed (Docker) Codex session tracking.
@@ -3462,51 +3433,6 @@ mod tests {
                 .unwrap(),
             uuid_fresh
         );
-
-        match old_val {
-            Some(v) => std::env::set_var("CLAUDE_CONFIG_DIR", v),
-            None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
-        }
-    }
-
-    #[test]
-    #[serial]
-    fn test_claude_poll_fn_promotes_last_known_across_polls() {
-        let tmp = tempfile::tempdir().unwrap();
-        let project_dir = tmp.path().join("projects").join("-tmp-myproject");
-        std::fs::create_dir_all(&project_dir).unwrap();
-
-        let uuid_startup = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
-        let uuid_post_fork = "11111111-2222-3333-4444-555555555555";
-        let uuid_sibling = "99999999-8888-7777-6666-555555555555";
-
-        std::fs::write(project_dir.join(format!("{uuid_startup}.jsonl")), "s\n").unwrap();
-        let stale = std::time::SystemTime::now() - Duration::from_secs(600);
-        std::fs::File::options()
-            .write(true)
-            .open(project_dir.join(format!("{uuid_startup}.jsonl")))
-            .unwrap()
-            .set_times(std::fs::FileTimes::new().set_modified(stale))
-            .unwrap();
-        std::fs::write(project_dir.join(format!("{uuid_post_fork}.jsonl")), "f\n").unwrap();
-
-        let old_val = std::env::var("CLAUDE_CONFIG_DIR").ok();
-        std::env::set_var("CLAUDE_CONFIG_DIR", tmp.path());
-
-        let extra_excludes: HashSet<String> = std::iter::once(uuid_sibling.to_string()).collect();
-        let poll = claude_poll_fn(
-            "/tmp/myproject".to_string(),
-            Some(uuid_startup.to_string()),
-            "test-instance-promote-last-known".to_string(),
-            extra_excludes,
-            Vec::new(),
-        );
-
-        assert_eq!(poll().as_deref(), Some(uuid_post_fork));
-
-        std::fs::write(project_dir.join(format!("{uuid_sibling}.jsonl")), "x\n").unwrap();
-
-        assert_eq!(poll().as_deref(), Some(uuid_post_fork));
 
         match old_val {
             Some(v) => std::env::set_var("CLAUDE_CONFIG_DIR", v),
@@ -6682,6 +6608,134 @@ mod tests {
         assert_eq!(id, uuid);
     }
 
+    /// Point the hook sidecar base at a fresh 0700 temp dir for one test.
+    struct HookBase {
+        _tmp: tempfile::TempDir,
+        base: std::path::PathBuf,
+    }
+    impl HookBase {
+        fn new() -> Self {
+            use std::os::unix::fs::PermissionsExt;
+            let tmp = tempfile::tempdir().unwrap();
+            let base = tmp.path().join("aoe-hooks");
+            std::fs::create_dir(&base).unwrap();
+            std::fs::set_permissions(&base, std::fs::Permissions::from_mode(0o700)).unwrap();
+            crate::hooks::override_base_for_test(base.clone());
+            crate::hooks::reset_for_test();
+            Self { _tmp: tmp, base }
+        }
+        fn write_sidecar(&self, instance_id: &str, sid: &str, age: Duration) {
+            use std::os::unix::fs::PermissionsExt;
+            let dir = self.base.join(instance_id);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let path = dir.join("session_id");
+            std::fs::write(&path, sid).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_times(
+                    std::fs::FileTimes::new().set_modified(std::time::SystemTime::now() - age),
+                )
+                .unwrap();
+        }
+    }
+    impl Drop for HookBase {
+        fn drop(&mut self) {
+            crate::hooks::clear_base_override_for_test();
+            crate::hooks::reset_for_test();
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn tab_never_adopts_the_newest_transcript_in_its_folder() {
+        let _hooks = HookBase::new();
+        let tmp = tempfile::tempdir().unwrap();
+        let project_dir = tmp.path().join("projects").join("-tmp-myproject");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let mine = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let neighbours = "11111111-2222-3333-4444-555555555555";
+        std::fs::write(project_dir.join(format!("{mine}.jsonl")), "m\n").unwrap();
+        std::fs::write(project_dir.join(format!("{neighbours}.jsonl")), "n\n").unwrap();
+        let _env = crate::session::test_support::EnvGuard::set(&[(
+            "CLAUDE_CONFIG_DIR",
+            tmp.path().to_path_buf(),
+        )]);
+
+        // No hook has reported since launch (fresh after a reboot): the poller
+        // reports nothing, so the recorded conversation stays put.
+        let poll = claude_poll_fn(
+            "/tmp/myproject".to_string(),
+            Some(mine.to_string()),
+            "tab_never_adopts_newest".to_string(),
+            HashSet::new(),
+            Vec::new(),
+        );
+        assert_eq!(poll(), None);
+        assert_eq!(poll(), None);
+    }
+
+    #[test]
+    #[serial]
+    fn tab_keeps_its_hook_reported_conversation_however_old_the_sidecar() {
+        let hooks = HookBase::new();
+        let sid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        hooks.write_sidecar("tab_old_sidecar", sid, Duration::from_secs(6 * 3600));
+        let poll = claude_poll_fn(
+            "/tmp/myproject".to_string(),
+            None,
+            "tab_old_sidecar".to_string(),
+            HashSet::new(),
+            Vec::new(),
+        );
+        assert_eq!(poll().as_deref(), Some(sid));
+    }
+
+    #[test]
+    #[serial]
+    fn codex_tab_never_adopts_the_newest_rollout_for_its_folder() {
+        let _hooks = HookBase::new();
+        let codex_home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        let day = codex_home.path().join("sessions/2026/09/22");
+        std::fs::create_dir_all(&day).unwrap();
+        let sid = "01a0c993-e5af-7013-b5f4-c673e2ab4d64";
+        std::fs::write(
+            day.join(format!("rollout-2026-09-22T14-45-08-{sid}.jsonl")),
+            format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"{sid}\",\"cwd\":\"{}\"}}}}\n",
+                project.path().display()
+            ),
+        )
+        .unwrap();
+        let _env = crate::session::test_support::EnvGuard::set(&[(
+            "CODEX_HOME",
+            codex_home.path().to_path_buf(),
+        )]);
+        let poll = codex_poll_fn(
+            project.path().to_str().unwrap().to_string(),
+            "codex_never_adopts_newest".to_string(),
+            HashSet::new(),
+        );
+        assert_eq!(poll(), None);
+    }
+
+    #[test]
+    #[serial]
+    fn codex_tab_follows_its_own_hook() {
+        let hooks = HookBase::new();
+        let sid = "01a0c93c-2a86-7d21-8c88-f3ea28e12e53";
+        hooks.write_sidecar("codex_follows_hook", sid, Duration::from_secs(0));
+        let poll = codex_poll_fn(
+            "/tmp/whatever".to_string(),
+            "codex_follows_hook".to_string(),
+            HashSet::new(),
+        );
+        assert_eq!(poll().as_deref(), Some(sid));
+    }
+
     #[test]
     #[serial]
     fn test_claude_poll_fn_reads_hook_sidecar_first() {
@@ -6725,64 +6779,6 @@ mod tests {
             Vec::new(),
         );
         assert_eq!(poll().as_deref(), Some(sidecar_uuid));
-
-        match old_val {
-            Some(v) => std::env::set_var("CLAUDE_CONFIG_DIR", v),
-            None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
-        }
-    }
-
-    #[test]
-    #[serial]
-    fn test_claude_poll_fn_skips_stale_sidecar_falls_through_to_disk() {
-        use std::os::unix::fs::PermissionsExt;
-        let hook_tmp = tempfile::tempdir().unwrap();
-        let hook_base = hook_tmp.path().join("aoe-hooks");
-        std::fs::create_dir(&hook_base).unwrap();
-        std::fs::set_permissions(&hook_base, std::fs::Permissions::from_mode(0o700)).unwrap();
-        crate::hooks::override_base_for_test(hook_base.clone());
-        crate::hooks::reset_for_test();
-        struct Cleanup;
-        impl Drop for Cleanup {
-            fn drop(&mut self) {
-                crate::hooks::clear_base_override_for_test();
-                crate::hooks::reset_for_test();
-            }
-        }
-        let _cleanup = Cleanup;
-
-        let instance_id = "test_sidecar_stale_falls_through";
-        let hook_dir = hook_base.join(instance_id);
-        std::fs::create_dir(&hook_dir).unwrap();
-        std::fs::set_permissions(&hook_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let stale_uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
-        let sidecar_path = hook_dir.join("session_id");
-        std::fs::write(&sidecar_path, stale_uuid).unwrap();
-        let stale = std::time::SystemTime::now() - Duration::from_secs(10 * 60);
-        std::fs::File::options()
-            .write(true)
-            .open(&sidecar_path)
-            .unwrap()
-            .set_times(std::fs::FileTimes::new().set_modified(stale))
-            .unwrap();
-
-        let tmp = tempfile::tempdir().unwrap();
-        let project_dir = tmp.path().join("projects").join("-tmp-myproject");
-        std::fs::create_dir_all(&project_dir).unwrap();
-        let disk_uuid = "11111111-2222-3333-4444-555555555555";
-        std::fs::write(project_dir.join(format!("{disk_uuid}.jsonl")), "d\n").unwrap();
-
-        let old_val = std::env::var("CLAUDE_CONFIG_DIR").ok();
-        std::env::set_var("CLAUDE_CONFIG_DIR", tmp.path());
-
-        let poll = claude_poll_fn(
-            "/tmp/myproject".to_string(),
-            None,
-            instance_id.to_string(),
-            HashSet::new(),
-            Vec::new(),
-        );
-        assert_eq!(poll().as_deref(), Some(disk_uuid));
 
         match old_val {
             Some(v) => std::env::set_var("CLAUDE_CONFIG_DIR", v),

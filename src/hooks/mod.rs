@@ -27,8 +27,8 @@ pub(crate) use dir_guard::{
     write_session_id_via_guard,
 };
 pub use status_file::{
-    cleanup_hook_status_dir, hook_status_dir, read_hook_session_id, read_hook_status,
-    read_hook_status_age, read_hook_urgent,
+    cleanup_hook_status_dir, hook_status_dir, read_hook_session_id, read_hook_session_id_any_age,
+    read_hook_status, read_hook_status_age, read_hook_urgent,
 };
 pub(crate) use targets::{
     has_aoe_marker, iter_hook_targets, iter_hook_targets_in, HookTarget, HookTargetKind,
@@ -4478,6 +4478,24 @@ hooks_auto_accept: false
         let cmd = entries[0]["command"].as_str().unwrap();
         assert!(cmd.contains("session_id"));
         assert!(cmd.contains(AOE_HOOK_MARKER));
+    }
+
+    #[test]
+    fn codex_tab_reports_its_own_conversation_on_start_and_every_prompt() {
+        let hooks = build_aoe_hooks(codex_events(), HookInstallTarget::Host);
+        for event in ["SessionStart", "UserPromptSubmit"] {
+            let commands: Vec<String> = hooks[event]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|m| m["hooks"].as_array().unwrap().clone())
+                .map(|h| h["command"].as_str().unwrap().to_string())
+                .collect();
+            assert!(
+                commands.iter().any(|c| c.contains("__extract-session-id")),
+                "codex {event} must run the session-id extractor, got {commands:?}"
+            );
+        }
     }
 
     #[test]

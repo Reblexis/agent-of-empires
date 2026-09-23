@@ -164,10 +164,30 @@ fn drain_and_persist_session_ids_inner(
                     owner = %owner,
                     "Ignoring poller-reported sid already owned by another instance",
                 );
+                journal_refusal(inst, &sid, "held by another tab");
                 acknowledge_poller_observation(inst, &observation);
                 filtered_ids.insert(inst.id.clone());
                 continue;
             }
+        }
+        // Never a one-shot: a title/recap/summary run is not a conversation,
+        // whatever reported it (docs/guides/session-resume.md).
+        if crate::session::pointer_guard::conversation_is_oneshot(
+            &inst.tool,
+            &inst.project_path,
+            &sid,
+            &inst.resolved_host_environment(),
+        ) {
+            tracing::warn!(
+                target: "session.sync",
+                instance = %inst.id,
+                sid = %sid,
+                "Ignoring poller-reported sid: it is an aoe one-shot run",
+            );
+            journal_refusal(inst, &sid, "one-shot run, not a conversation");
+            acknowledge_poller_observation(inst, &observation);
+            filtered_ids.insert(inst.id.clone());
+            continue;
         }
         if inst.retroactive_capture_excludes.contains(&sid) {
             tracing::debug!(
@@ -211,6 +231,9 @@ fn drain_and_persist_session_ids_inner(
                 sid = %update.sid,
                 "Ignoring poller-reported sid claimed by multiple instances this tick",
             );
+            if let Some(inst) = instances.iter().find(|i| i.id == update.id) {
+                journal_refusal(inst, &update.sid, "claimed by several tabs at once");
+            }
             acknowledge_poller_observation_for(instances, &update.id, &update.observation);
             filtered_ids.insert(update.id.clone());
             false
@@ -322,6 +345,17 @@ fn drain_and_persist_session_ids_inner(
         }
         match outcome {
             SidWrite::Applied => {
+                if let Some(inst) = instances.iter().find(|i| i.id == update.id) {
+                    crate::session::pointer_guard::journal(
+                        &crate::session::pointer_guard::JournalEntry::new(
+                            &inst.id,
+                            &inst.title,
+                            update.expected_prior.as_deref(),
+                            Some(&update.sid),
+                            observation_source(inst),
+                        ),
+                    );
+                }
                 acknowledge_poller_observation_for(instances, &update.id, &update.observation);
                 to_apply.push((update.id.clone(), update.sid.clone()));
             }
@@ -560,6 +594,44 @@ fn reload_skipped_from_disk(
     })
 }
 
+/// Hook-only pollers (host Claude and Codex) report what the tab's own
+/// process said; every other poller still scans.
+fn observation_source(inst: &Instance) -> crate::session::pointer_guard::Source {
+    if matches!(inst.tool.as_str(), "claude" | "codex") && !inst.is_sandboxed() {
+        crate::session::pointer_guard::Source::Hook
+    } else {
+        crate::session::pointer_guard::Source::Scan
+    }
+}
+
+/// Journal a refused pointer change once per (tab, sid, reason) for the life
+/// of the process: a poller keeps re-reporting a refused value, and the
+/// journal records decisions, not ticks.
+type RefusalKey = (String, String, &'static str);
+
+fn journal_refusal(inst: &Instance, sid: &str, reason: &'static str) {
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<HashSet<RefusalKey>>> =
+        std::sync::OnceLock::new();
+    let key = (inst.id.clone(), sid.to_string(), reason);
+    let fresh = SEEN
+        .get_or_init(Default::default)
+        .lock()
+        .map(|mut seen| seen.insert(key))
+        .unwrap_or(true);
+    if fresh {
+        crate::session::pointer_guard::journal(
+            &crate::session::pointer_guard::JournalEntry::new(
+                &inst.id,
+                &inst.title,
+                inst.agent_session_id.as_deref(),
+                Some(sid),
+                observation_source(inst),
+            )
+            .refused(reason),
+        );
+    }
+}
+
 fn publish_tmux_env(
     instances: &[Instance],
     to_apply: &[(String, String)],
@@ -772,6 +844,129 @@ mod tests {
         assert_eq!(instances[0].agent_session_id.as_deref(), Some(sid));
         let disk = Storage::new_unwatched(profile).unwrap().load().unwrap();
         assert_eq!(disk[0].agent_session_id.as_deref(), Some(sid));
+    }
+
+    fn journal_lines(temp: &TempDir) -> Vec<serde_json::Value> {
+        let path = crate::session::get_app_dir()
+            .unwrap()
+            .join(crate::session::pointer_guard::JOURNAL_FILE);
+        let _ = temp;
+        std::fs::read_to_string(path)
+            .unwrap_or_default()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect()
+    }
+
+    #[test]
+    #[serial]
+    fn tab_never_adopts_a_one_shot_conversation() {
+        let temp = tempdir().unwrap();
+        let project = temp.path().join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        let claude_home = temp.path().join("claude");
+        let canonical = crate::session::capture::canonicalize_or_raw(project.to_str().unwrap());
+        let dir =
+            claude_home
+                .join("projects")
+                .join(crate::session::capture::encode_claude_project_path(
+                    &canonical.to_string_lossy(),
+                ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let recap = "bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee";
+        std::fs::write(
+            dir.join(format!("{recap}.jsonl")),
+            serde_json::json!({"type":"user","message":{"content":"You are given the terminal scrollback of a coding-agent session. Write a short recap"}}).to_string() + "\n",
+        )
+        .unwrap();
+        let mut pairs: Vec<(&'static str, PathBuf)> = vec![
+            ("HOME", temp.path().to_path_buf()),
+            ("CLAUDE_CONFIG_DIR", claude_home.clone()),
+        ];
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        pairs.push(("XDG_CONFIG_HOME", temp.path().join(".config")));
+        let _guard = EnvGuard::set(&pairs);
+        let profile = "sync-oneshot-refused";
+        let real = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+
+        let mut inst = Instance::new("oneshot-refused", project.to_str().unwrap());
+        inst.source_profile = profile.to_string();
+        inst.tool = "claude".to_string();
+        inst.agent_session_id = Some(real.to_string());
+        seed_instance_on_disk(profile, &inst);
+        attach_poller_with_update(&mut inst, recap);
+
+        let file_watch = FileWatchService::noop();
+        let mut instances = vec![inst];
+        let outcome = drain_and_persist_session_ids(&mut instances, &file_watch);
+
+        assert!(outcome.applied.is_empty());
+        assert_eq!(instances[0].agent_session_id.as_deref(), Some(real));
+        let disk = Storage::new_unwatched(profile).unwrap().load().unwrap();
+        assert_eq!(disk[0].agent_session_id.as_deref(), Some(real));
+        let journal = journal_lines(&temp);
+        assert_eq!(journal.len(), 1, "{journal:?}");
+        assert_eq!(journal[0]["new"], recap);
+        assert_eq!(journal[0]["old"], real);
+        assert!(journal[0]["refused"].as_str().unwrap().contains("one-shot"));
+    }
+
+    #[test]
+    #[serial]
+    fn every_pointer_change_is_journaled_with_old_new_and_source() {
+        let temp = tempdir().unwrap();
+        let _guard = storage_home_guard(&temp);
+        let profile = "sync-journal-applied";
+        let old = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let new = "cccccccc-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let mut inst = Instance::new("journal-applied", "/tmp/x");
+        inst.source_profile = profile.to_string();
+        inst.tool = "claude".to_string();
+        inst.agent_session_id = Some(old.to_string());
+        seed_instance_on_disk(profile, &inst);
+        attach_poller_with_update(&mut inst, new);
+
+        let file_watch = FileWatchService::noop();
+        let mut instances = vec![inst];
+        let outcome = drain_and_persist_session_ids(&mut instances, &file_watch);
+        assert_eq!(outcome.applied, vec![instances[0].id.clone()]);
+
+        let journal = journal_lines(&temp);
+        assert_eq!(journal.len(), 1, "{journal:?}");
+        assert_eq!(journal[0]["instance_id"], instances[0].id.as_str());
+        assert_eq!(journal[0]["title"], "journal-applied");
+        assert_eq!(journal[0]["old"], old);
+        assert_eq!(journal[0]["new"], new);
+        assert_eq!(journal[0]["source"], "hook");
+        assert!(journal[0].get("refused").is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn refused_takeover_of_another_tabs_conversation_is_journaled() {
+        let temp = tempdir().unwrap();
+        let _guard = storage_home_guard(&temp);
+        let profile = "sync-journal-owned";
+        let theirs = "dddddddd-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let mut owner = Instance::new("owner", "/tmp/x");
+        owner.source_profile = profile.to_string();
+        owner.agent_session_id = Some(theirs.to_string());
+        let mut thief = Instance::new("thief", "/tmp/x");
+        thief.source_profile = profile.to_string();
+        seed_instances_on_disk(profile, &[&owner, &thief]);
+        attach_poller_with_update(&mut thief, theirs);
+
+        let file_watch = FileWatchService::noop();
+        let mut instances = vec![owner, thief];
+        drain_and_persist_session_ids(&mut instances, &file_watch);
+        assert_eq!(instances[1].agent_session_id, None);
+        let journal = journal_lines(&temp);
+        assert_eq!(journal.len(), 1, "{journal:?}");
+        assert_eq!(journal[0]["title"], "thief");
+        assert!(journal[0]["refused"]
+            .as_str()
+            .unwrap()
+            .contains("another tab"));
     }
 
     #[test]

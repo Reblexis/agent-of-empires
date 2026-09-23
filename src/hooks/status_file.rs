@@ -98,6 +98,19 @@ pub fn read_hook_session_id(instance_id: &str) -> Option<String> {
     }
 }
 
+/// Read the tab's hook-reported session UUID regardless of the sidecar's age.
+///
+/// The launch deletes the sidecar before the pane starts, so whatever is
+/// present was written by the tab's current agent process and stays valid
+/// for as long as that process lives, however long it has been idle.
+pub fn read_hook_session_id_any_age(instance_id: &str) -> Option<String> {
+    let dir = dir_guard::open_instance_dir_read_only(instance_id).ok()??;
+    let bytes =
+        dir_guard::read_file_at(dir.as_fd(), "session_id", SESSION_ID_FILE_READ_CAP).ok()??;
+    let id = std::str::from_utf8(&bytes).ok()?.trim().to_string();
+    Uuid::parse_str(&id).is_ok().then_some(id)
+}
+
 /// Read the urgent flag from the hook-written `attention.json`.
 ///
 /// See the `attention-urgent` cx-script for the writer contract: `urgent`

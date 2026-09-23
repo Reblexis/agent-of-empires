@@ -781,12 +781,18 @@ mod tests {
         let parsed: Value =
             serde_json::from_str(&fs::read_to_string(codex_override.join("hooks.json")).unwrap())
                 .unwrap();
-        let cmd = parsed["hooks"]["SessionStart"][0]["hooks"][0]["command"]
-            .as_str()
-            .expect("AoE command must be present at the override path");
+        // SessionStart also carries the session-id extractor for Codex, so
+        // look for the rewritten status command among all its entries.
+        let cmds: Vec<&str> = parsed["hooks"]["SessionStart"]
+            .as_array()
+            .expect("AoE commands must be present at the override path")
+            .iter()
+            .flat_map(|m| m["hooks"].as_array().into_iter().flatten())
+            .filter_map(|h| h["command"].as_str())
+            .collect();
         assert!(
-            cmd.contains("case \"$AOE_INSTANCE_ID\""),
-            "profile-overridden Codex path must be reached and rewritten; got: {cmd}"
+            cmds.iter().any(|c| c.contains("case \"$AOE_INSTANCE_ID\"")),
+            "profile-overridden Codex path must be reached and rewritten; got: {cmds:?}"
         );
         assert!(
             !home.join(".codex/hooks.json").exists(),

@@ -1930,13 +1930,18 @@ impl Instance {
     /// and `Cleared` override); excluded sids skipped (cascade re-poison
     /// guard).
     fn reconcile_sidecar_into_disk(&mut self) {
-        if self.tool != "claude" {
+        if !self.tracks_conversation_by_hook_only() && self.tool != "claude" {
             return;
         }
         if !matches!(self.resume_intent, ResumeIntent::Default) {
             return;
         }
-        let Some(fresh) = crate::hooks::read_hook_session_id(&self.id) else {
+        let fresh = if self.tracks_conversation_by_hook_only() {
+            crate::hooks::read_hook_session_id_any_age(&self.id)
+        } else {
+            crate::hooks::read_hook_session_id(&self.id)
+        };
+        let Some(fresh) = fresh else {
             return;
         };
         if Some(&fresh) == self.agent_session_id.as_ref() {
@@ -1955,6 +1960,15 @@ impl Instance {
             &self.resolve_file_watch(),
         ) {
             SidWrite::Applied => {
+                crate::session::pointer_guard::journal(
+                    &crate::session::pointer_guard::JournalEntry::new(
+                        &self.id,
+                        &self.title,
+                        baseline,
+                        Some(&fresh),
+                        crate::session::pointer_guard::Source::Hook,
+                    ),
+                );
                 self.agent_session_id = Some(fresh);
             }
             SidWrite::Skipped => {
@@ -3012,6 +3026,7 @@ impl Instance {
                 self.resume_probe_failed_sid = None;
                 let session_id = self.fresh_launch_session_id(preassign_opencode);
                 if let Some(ref id) = session_id {
+                    self.journal_pointer(Some(id), crate::session::pointer_guard::Source::Launch);
                     self.agent_session_id = Some(id.clone());
                 }
                 return (session_id, false);
@@ -3038,6 +3053,7 @@ impl Instance {
                     tool = %self.tool,
                     "Replacing stored session id with fresher live observation"
                 );
+                self.journal_pointer(Some(&fresh), self.capture_source());
                 self.agent_session_id = Some(fresh.clone());
                 return (Some(fresh), true);
             }
@@ -3081,6 +3097,7 @@ impl Instance {
                     self.tool,
                     id
                 );
+                self.journal_pointer(Some(&id), self.capture_source());
                 self.agent_session_id = Some(id);
                 return (self.agent_session_id.clone(), true);
             }
@@ -3090,6 +3107,7 @@ impl Instance {
 
         if let Some(ref id) = session_id {
             tracing::debug!(target: "session.store", "Session ID for {}: {}", self.tool, id);
+            self.journal_pointer(Some(id), crate::session::pointer_guard::Source::Launch);
             self.agent_session_id = session_id.clone();
         }
 
@@ -3157,7 +3175,42 @@ impl Instance {
         )
     }
 
+    /// Journal a change of this tab's recorded conversation to `new`.
+    fn journal_pointer(&self, new: Option<&str>, source: crate::session::pointer_guard::Source) {
+        crate::session::pointer_guard::journal(&crate::session::pointer_guard::JournalEntry::new(
+            &self.id,
+            &self.title,
+            self.agent_session_id.as_deref(),
+            new,
+            source,
+        ));
+    }
+
+    fn capture_source(&self) -> crate::session::pointer_guard::Source {
+        if self.tracks_conversation_by_hook_only() {
+            crate::session::pointer_guard::Source::Hook
+        } else {
+            crate::session::pointer_guard::Source::Scan
+        }
+    }
+
+    /// Host Claude and Codex tabs learn their conversation only from their
+    /// own hook (docs/guides/session-resume.md); no disk scan applies.
+    pub(crate) fn tracks_conversation_by_hook_only(&self) -> bool {
+        matches!(self.tool.as_str(), "claude" | "codex") && !self.is_sandboxed()
+    }
+
+    /// The tab's own hook-reported conversation at any age, minus ids this
+    /// tab has explicitly left behind.
+    fn hook_reported_session_id(&self) -> Option<String> {
+        crate::hooks::read_hook_session_id_any_age(&self.id)
+            .filter(|id| !self.retroactive_capture_excludes.contains(id))
+    }
+
     pub(crate) fn try_retroactive_capture(&self) -> Option<String> {
+        if self.tracks_conversation_by_hook_only() {
+            return self.hook_reported_session_id();
+        }
         let result: Option<String> = match self.tool.as_str() {
             "claude" => {
                 // Claude additionally extends the common live and parked-id
@@ -3494,6 +3547,7 @@ impl Instance {
         self.lifecycle_generation = generation;
         self.lifecycle_reservation = None;
         if applied {
+            self.journal_pointer(captured.as_deref(), self.capture_source());
             self.agent_session_id = captured;
             self.resume_probe_failed_sid = None;
             tracing::info!(
@@ -3536,6 +3590,10 @@ impl Instance {
     /// reads can briefly surface different UUIDs, benign under the existing
     /// eventual-consistency capture model.
     pub(crate) fn capture_freshest_session_id(&self) -> Option<String> {
+        if self.tracks_conversation_by_hook_only() {
+            let reported = self.hook_reported_session_id()?;
+            return override_if_distinct(self.agent_session_id.as_deref(), reported);
+        }
         if self.tool == "claude" {
             if let Some(authoritative) = crate::hooks::read_hook_session_id(&self.id) {
                 if self.retroactive_capture_excludes.contains(&authoritative) {
@@ -4220,7 +4278,10 @@ impl Instance {
             "agent launch command prepared"
         );
 
-        if self.tool == "claude" {
+        // The tab's sidecar is the only thing that may move its recorded
+        // conversation, so a value left by the previous process must never
+        // outlive this launch (docs/guides/session-resume.md).
+        if matches!(self.tool.as_str(), "claude" | "codex") {
             let _ = crate::hooks::unlink_session_id_via_guard(&self.id);
         }
 
@@ -13763,7 +13824,7 @@ mod tests {
 
             #[test]
             #[serial]
-            fn supersedes_stale_claude_sid_after_clear() {
+            fn relaunch_keeps_the_recorded_claude_conversation_when_only_a_newer_file_exists() {
                 let temp = tempdir().unwrap();
                 let _guard = claude_home_guard(&temp);
 
@@ -13792,10 +13853,13 @@ mod tests {
                 inst.agent_session_id = Some(stale.to_string());
                 inst.resume_intent = ResumeIntent::Default;
 
+                // A newer file in the folder is not evidence: only the tab's
+                // own hook may move it (docs/guides/session-resume.md).
+                let _ = fresh;
                 let (sid, is_existing) = inst.acquire_session_id();
-                assert_eq!(sid.as_deref(), Some(fresh));
+                assert_eq!(sid.as_deref(), Some(stale));
                 assert!(is_existing);
-                assert_eq!(inst.agent_session_id.as_deref(), Some(fresh));
+                assert_eq!(inst.agent_session_id.as_deref(), Some(stale));
             }
 
             #[test]
@@ -14119,45 +14183,6 @@ mod tests {
                 assert_eq!(sid.as_deref(), Some(mine));
                 assert!(is_existing);
                 assert_eq!(inst.agent_session_id.as_deref(), Some(mine));
-            }
-
-            // Companion to the above: without a sidecar (e.g. a session resumed
-            // after the 5-minute sidecar window) the mtime fallback still
-            // applies, preserving the #2291 daemon-mode fix.
-            #[test]
-            #[serial]
-            fn mtime_fallback_applies_without_sidecar() {
-                let temp = tempdir().unwrap();
-                let _guard = claude_home_guard(&temp);
-
-                let project_path = "/tmp/aoe-test-2344-no-sidecar";
-                let claude_dir = temp
-                    .path()
-                    .join(".claude")
-                    .join("projects")
-                    .join(encode_claude_project_path(project_path));
-                fs::create_dir_all(&claude_dir).unwrap();
-
-                let stale = "cccccccc-3333-4333-8333-cccccccccccc";
-                let fresh = "dddddddd-4444-4444-8444-dddddddddddd";
-                let now = SystemTime::now();
-                write_jsonl_with_mtime(
-                    &claude_dir.join(format!("{stale}.jsonl")),
-                    now - Duration::from_secs(120),
-                );
-                write_jsonl_with_mtime(
-                    &claude_dir.join(format!("{fresh}.jsonl")),
-                    now - Duration::from_secs(5),
-                );
-
-                let mut inst = Instance::new("verify-2344-no-sidecar", project_path);
-                inst.tool = "claude".to_string();
-                inst.agent_session_id = Some(stale.to_string());
-                inst.resume_intent = ResumeIntent::Default;
-
-                let (sid, _is_existing) = inst.acquire_session_id();
-                assert_eq!(sid.as_deref(), Some(fresh));
-                assert_eq!(inst.agent_session_id.as_deref(), Some(fresh));
             }
 
             // #2355: when a co-located stopped peer leaves a fresher jsonl in
@@ -14563,7 +14588,7 @@ mod tests {
 
             #[test]
             #[serial]
-            fn supersedes_stale_codex_sid() {
+            fn relaunch_keeps_the_recorded_codex_conversation_when_only_a_newer_rollout_exists() {
                 let temp = tempdir().unwrap();
                 let _home = isolate_app_dir_at(temp.path());
                 let _codex = EnvGuard::set(&[("CODEX_HOME", temp.path())]);
@@ -14593,10 +14618,11 @@ mod tests {
                 inst.agent_session_id = Some(stale.to_string());
                 inst.resume_intent = ResumeIntent::Default;
 
+                let _ = fresh;
                 let (sid, is_existing) = inst.acquire_session_id();
-                assert_eq!(sid.as_deref(), Some(fresh));
+                assert_eq!(sid.as_deref(), Some(stale));
                 assert!(is_existing);
-                assert_eq!(inst.agent_session_id.as_deref(), Some(fresh));
+                assert_eq!(inst.agent_session_id.as_deref(), Some(stale));
             }
 
             #[test]
