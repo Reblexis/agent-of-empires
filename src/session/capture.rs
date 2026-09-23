@@ -218,6 +218,49 @@ pub(crate) fn claude_host_transcript_confirmed_absent(
 ///    UUID after `/clear` / `/new` / `--fork-session` mints a new jsonl.
 /// 3. otherwise → return the anchor (covers steady-state and the case where
 ///    a sibling's most-recent write was filtered out by `exclusion`).
+/// Whether a Claude transcript was written by one of aoe's own one-shot
+/// prompts (see [`crate::session::smart_rename::oneshot_prompt_prefixes`]).
+/// Reads only the head of the file and the first user message; any parse
+/// trouble is "not a one-shot" so a real transcript is never wrongly hidden.
+fn transcript_is_aoe_oneshot(path: &Path) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut buf = vec![0u8; 16 * 1024];
+    let Ok(n) = f.read(&mut buf) else {
+        return false;
+    };
+    let head = String::from_utf8_lossy(&buf[..n]);
+    for line in head.lines() {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if v.get("type").and_then(|t| t.as_str()) != Some("user") {
+            continue;
+        }
+        let content = v.get("message").and_then(|m| m.get("content"));
+        let text: String = match content {
+            Some(serde_json::Value::String(t)) => t.clone(),
+            Some(serde_json::Value::Array(parts)) => parts
+                .iter()
+                .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
+                .collect::<Vec<_>>()
+                .join(" "),
+            _ => return false,
+        };
+        let text = text.trim_start();
+        return crate::session::smart_rename::oneshot_prompt_prefixes()
+            .iter()
+            .any(|p| {
+                let n = p.len().min(48);
+                let n = if p.is_char_boundary(n) { n } else { p.len() };
+                text.starts_with(&p[..n])
+            });
+    }
+    false
+}
+
 fn scan_claude_project_dir(
     claude_home: &Path,
     project_path: &Path,
@@ -258,6 +301,16 @@ fn scan_claude_project_dir(
             continue;
         };
         if !meta.is_file() {
+            continue;
+        }
+        // aoe's own one-shots (title, recap, summary) are `claude -p` runs
+        // whose transcripts can share this directory. Adopting one as the
+        // session's conversation overwrote the stored pointer with a title
+        // job (resume then resumed the title job). Skip them outright, even
+        // as `known`: a known id that turns out to be a one-shot is exactly
+        // the corruption this guards against, and the real transcript is
+        // still in the dir to be found.
+        if transcript_is_aoe_oneshot(&path) {
             continue;
         }
         let modified = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
@@ -3484,6 +3537,86 @@ mod tests {
             Some(v) => std::env::set_var("CLAUDE_CONFIG_DIR", v),
             None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
         }
+    }
+
+    /// Regression for the session-pointer corruption: aoe's own one-shots
+    /// (smart-rename title, context recap, conversation summary) are
+    /// `claude -p` runs whose transcripts land in the SAME Claude project
+    /// dir as the session they describe. The disk-scan fallback picked
+    /// "newest transcript in the dir", adopted the throwaway one-shot as the
+    /// session's conversation, and the sync persisted it - so resuming the
+    /// session resumed the title job. The scan must never adopt an aoe
+    /// one-shot transcript, even when it is the newest file.
+    #[test]
+    #[serial]
+    fn test_capture_claude_session_skips_aoe_oneshot_transcripts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_dir = tmp.path().join("projects").join("-tmp-myproject");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let real = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee1";
+        let oneshot = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee2";
+        let real_file = project_dir.join(format!("{real}.jsonl"));
+        std::fs::write(
+            &real_file,
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"fix the login bug\"}}\n",
+        )
+        .unwrap();
+        // The one-shot is NEWER: written after the real transcript.
+        let older = std::time::SystemTime::now() - Duration::from_secs(60);
+        std::fs::File::options()
+            .write(true)
+            .open(&real_file)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(older))
+            .unwrap();
+        std::fs::write(
+            project_dir.join(format!("{oneshot}.jsonl")),
+            "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Generate a concise 3 to 5 word title summarizing the following task. The transcript may begin with the CLI tool's startup banner\"}}\n",
+        )
+        .unwrap();
+
+        let old_val = std::env::var("CLAUDE_CONFIG_DIR").ok();
+        std::env::set_var("CLAUDE_CONFIG_DIR", tmp.path());
+
+        let result = capture_claude_session_id("/tmp/myproject", None, &HashSet::new(), &[]);
+
+        match old_val {
+            Some(v) => std::env::set_var("CLAUDE_CONFIG_DIR", v),
+            None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
+        }
+        assert_eq!(
+            result.unwrap(),
+            real,
+            "the newer aoe one-shot transcript must not be adopted as the session's conversation"
+        );
+    }
+
+    /// A project dir holding ONLY aoe one-shot transcripts has no session
+    /// conversation to capture: the scan must report none rather than hand
+    /// back a title job as the session id.
+    #[test]
+    #[serial]
+    fn test_capture_claude_session_only_oneshots_is_none() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project_dir = tmp.path().join("projects").join("-tmp-myproject");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(
+            project_dir.join("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeee3.jsonl"),
+            "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"You are given the terminal scrollback of a coding-agent session. Write a short recap\"}]}}\n",
+        )
+        .unwrap();
+        let old_val = std::env::var("CLAUDE_CONFIG_DIR").ok();
+        std::env::set_var("CLAUDE_CONFIG_DIR", tmp.path());
+        let result = capture_claude_session_id("/tmp/myproject", None, &HashSet::new(), &[]);
+        match old_val {
+            Some(v) => std::env::set_var("CLAUDE_CONFIG_DIR", v),
+            None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
+        }
+        assert!(
+            result.is_err(),
+            "a lone recap one-shot must not be captured as a session"
+        );
     }
 
     #[test]

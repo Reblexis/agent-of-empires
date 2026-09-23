@@ -189,7 +189,7 @@ pub fn extract_transcript_delta(events: &[(u64, Event)], since_seq: u64) -> (Str
 /// Instruction for the summary one-shot. Asks for a compact recap and, when a
 /// previous summary is supplied, an incremental update rather than a re-read of
 /// the whole history.
-const INSTRUCTION: &str = "You are summarizing an ongoing coding-agent session for a human who wants \
+pub(crate) const INSTRUCTION: &str = "You are summarizing an ongoing coding-agent session for a human who wants \
 to see, at a glance, what has happened so far. Write a concise summary in a few short bullet points: \
 what the user asked for, what the agent has done, the current state, and any open thread. \
 Output only the summary: no preamble, no headings, no code fences.";

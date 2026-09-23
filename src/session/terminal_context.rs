@@ -47,7 +47,8 @@ pub struct ContextSnapshot {
 /// Instruction for the recap one-shot. Explicitly asks for the last user
 /// request first: the pane exists to re-orient a human returning to a session
 /// they forgot about.
-const INSTRUCTION: &str = "You are given the terminal scrollback of a coding-agent session. \
+pub(crate) const INSTRUCTION: &str =
+    "You are given the terminal scrollback of a coding-agent session. \
 Write a short recap for the human who owns the session and needs to remember what is going on. \
 Start with one line: 'Last ask: <the user's most recent request, compressed>'. Then 2-5 short \
 bullet points: what the agent has done, the current state, and any open thread or blocker. \
@@ -234,10 +235,13 @@ mod serve {
             let Ok(_permit) = state.terminal_context_semaphore.acquire().await else {
                 return;
             };
+            // Isolated cwd, never the project path: a recap transcript in
+            // the session's project dir gets adopted by the session-id
+            // poller as the session's conversation. See `oneshot_cwd`.
             crate::session::smart_rename::run_oneshot(
                 &session_id,
                 &argv,
-                &project_path,
+                &crate::session::smart_rename::oneshot_cwd(),
                 CONTEXT_TIMEOUT,
             )
             .await

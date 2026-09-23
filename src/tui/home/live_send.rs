@@ -2049,13 +2049,6 @@ pub(super) fn send_key_oneshot(tmux_name: &str, key: TmuxKey) {
     }
 }
 
-/// Upper bound on the number of bytes encoded into a single
-/// `tmux send-keys -H` fork. Each byte becomes one ~2-char hex argument
-/// plus its argv pointer (~11 bytes of kernel arg space), and macOS caps
-/// `execve` argv+envp at `ARG_MAX` = 256 KiB, so a per-byte encoding of
-/// a large paste overflows around 20 KB and fails wholesale with E2BIG.
-/// 4 KiB per fork keeps every argv under ~45 KiB, comfortably below the
-/// limit on every platform while keeping the fork count low.
 /// Split a literal payload into its leading content and the number of
 /// trailing `;` bytes. tmux's command parser drops a trailing `;` from a
 /// `send-keys -l` payload, reading it as a command separator even after the

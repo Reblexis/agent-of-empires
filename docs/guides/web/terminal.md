@@ -55,7 +55,7 @@ On touch devices the agent pane uses a different architecture, mirroring the TUI
 
 - **Scrolling is the browser's own scroll**: momentum, rubber-banding, and finger-true tracking, over the pane's real tmux scrollback. No copy-mode round trips, and the agent keeps running while you read history.
 - **Text selection is native**: long-press to select and copy, like any web page.
-- **Typing** goes back over the same WebSocket and is delivered with `tmux send-keys`; tapping anywhere on the terminal brings up the soft keyboard, the floating keyboard button toggles it open and closed, and the terminal toolbar provides arrows, Tab, Esc, a `Ctrl` modifier toggle, interrupt, and paste.
+- **Typing** goes back over the same WebSocket and is delivered with `tmux send-keys`. A paste of any length arrives whole: it is split across several `send-keys` calls of at most 512 bytes each, because tmux 3.7 rejects a command with more than 1000 arguments ("command too long") and each byte is one argument. Tapping anywhere on the terminal brings up the soft keyboard, the floating keyboard button toggles it open and closed, and the terminal toolbar provides arrows, Tab, Esc, a `Ctrl` modifier toggle, interrupt, and paste.
 - **Pinch** adjusts the font size; the pane resizes the tmux window to the resulting grid.
 
 A "Back to live" pill appears while you are scrolled up; tapping it (or scrolling to the bottom) returns to the live tail. The pane stays mounted while you switch views so the connection and scroll position survive. Desktop keeps the full xterm.js PTY relay described above.

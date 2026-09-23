@@ -607,6 +607,10 @@ fn default_auto_stop_idle_secs() -> u32 {
     0
 }
 
+fn default_hibernate_max_live() -> u32 {
+    0
+}
+
 fn default_prevent_sleep_idle_grace_minutes() -> u32 {
     15
 }
@@ -1203,6 +1207,24 @@ pub struct SessionConfig {
     )]
     pub auto_stop_idle_secs: u32,
 
+    /// Cap on plain sessions kept live at once: when more than this many
+    /// have a running tmux/agent process, the least-recently-used idle ones
+    /// are hibernated - tmux torn down, the row kept in the list as dormant,
+    /// and the agent resumed with full context when the session is next
+    /// selected. Working sessions (`Running`/`Waiting`/...) and sessions
+    /// with an attached tmux client are never hibernated, so the live count
+    /// may exceed the cap while agents are busy. `0` disables (default).
+    /// Checked about once a minute alongside the idle reaper.
+    #[serde(default = "default_hibernate_max_live")]
+    #[setting(
+        label = "Max live sessions (LRU)",
+        widget = "number",
+        min = 0,
+        category = "Interaction",
+        advanced
+    )]
+    pub hibernate_max_live: u32,
+
     /// Hold an OS assertion preventing user-idle system sleep while any
     /// session is active. Released once every session has been idle past
     /// `prevent_sleep_idle_grace_minutes`. Global toggle, daemon only: the
@@ -1595,6 +1617,7 @@ impl Default for SessionConfig {
             confirm_delete: true,
             trash_retention_days: default_trash_retention_days(),
             auto_stop_idle_secs: default_auto_stop_idle_secs(),
+            hibernate_max_live: default_hibernate_max_live(),
             prevent_sleep_when_active: false,
             prevent_sleep_idle_grace_minutes: default_prevent_sleep_idle_grace_minutes(),
             restart_wake_message: default_restart_wake_message(),

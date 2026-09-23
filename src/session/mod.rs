@@ -22,6 +22,7 @@ pub(crate) mod environment;
 pub mod fork;
 mod groups;
 pub(crate) mod handoff;
+pub mod hibernate;
 pub mod idle_reap;
 mod instance;
 pub mod mcp_model;
