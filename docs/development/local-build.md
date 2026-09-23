@@ -29,3 +29,12 @@ Check that every branch that was ever deployed is contained in what you build:
 
 Add a branch to that list when you deploy it. Any `MISSING` line stops the
 deploy.
+
+## Tab tracking is a hard requirement
+
+Viktor, 2026-09-23, after the second occurrence: "thsi already happened before
+and i thought we fixed it - apparently not.. so add safeguards on top ensuring
+trackability and correct trackingo ftabs is 100% guaranteed". The contract that
+answers it is in [session-resume.md](../guides/session-resume.md), "How the
+conversation ID stays correct". After any deploy, `aoe session verify-pointers`
+must print no violations.
