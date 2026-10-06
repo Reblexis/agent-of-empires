@@ -740,6 +740,12 @@ fn perform_deletion_core(
     tracing::debug!(target: "session.delete", session_id = %request.session_id, stage = "hook_status_cleanup", "perform_deletion: stage");
     crate::hooks::cleanup_hook_status_dir(&request.instance.id);
 
+    // Stage 7: the session's forecast card (docs/guides/session-forecast.md).
+    // Only a real deletion reaches here; the trash keeps the card.
+    if let Err(error) = crate::session::forecast::clear_card(&request.instance.id) {
+        tracing::warn!(target: "session.delete", session_id = %request.session_id, "forecast card not removed: {error:#}");
+    }
+
     if !errors.is_empty() {
         tracing::debug!(target: "session.delete",
             session_id = %request.session_id,
@@ -1316,6 +1322,40 @@ mod tests {
         assert!(result.success);
         assert!(result.errors.is_empty());
         assert_eq!(result.session_id, request.session_id);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn deleting_a_session_removes_its_forecast_card() {
+        let _guard = crate::session::test_support::isolate_app_dir();
+        let instance = create_test_instance();
+        let other = create_test_instance();
+        let card = br#"{"verdict":"stop","headline":"-20 EUR"}"#;
+        crate::session::forecast::write_card(&instance.id, card).unwrap();
+        crate::session::forecast::write_card(&other.id, card).unwrap();
+        let request = DeletionRequest {
+            session_id: instance.id.clone(),
+            instance,
+            delete_worktree: false,
+            delete_branch: false,
+            delete_sandbox: false,
+            force_delete: false,
+            detach_hooks: true,
+            keep_scratch: false,
+        };
+
+        let result = perform_deletion(&request);
+
+        assert!(result.success, "{:?}", result.errors);
+        assert!(crate::session::forecast::read_card(&request.session_id)
+            .unwrap()
+            .is_none());
+        assert!(
+            crate::session::forecast::read_card(&other.id)
+                .unwrap()
+                .is_some(),
+            "only the deleted session's card goes"
+        );
     }
 
     #[test]

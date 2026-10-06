@@ -19,6 +19,7 @@ pub(crate) mod container_config;
 pub mod conversation_summary;
 pub mod deletion;
 pub(crate) mod environment;
+pub mod forecast;
 pub mod fork;
 mod groups;
 pub(crate) mod handoff;

@@ -158,6 +158,11 @@ pub struct SessionResponse {
     /// single-session responses leave it `false`.
     #[serde(default)]
     pub default_name: bool,
+    /// The session's forecast card in brief, for the sidebar chip: `null`, or
+    /// `{ verdict, headline, updated_at }`. Overlaid in `list_sessions` from
+    /// `<app_dir>/session-forecasts/`; single-session responses leave it
+    /// `null`. See docs/guides/session-forecast.md.
+    pub forecast: Option<crate::session::forecast::ForecastSummary>,
     pub has_terminal: bool,
     pub profile: String,
     pub cleanup_defaults: CleanupDefaults,
@@ -440,6 +445,8 @@ impl SessionResponse {
             smart_rename: crate::session::smart_rename::SmartRenameState::Inactive,
             // Overlaid in list_sessions; single-session responses stay false.
             default_name: false,
+            // Overlaid in list_sessions; single-session responses stay null.
+            forecast: None,
             has_terminal: inst.terminal_info.is_some(),
             profile: inst.source_profile.clone(),
             cleanup_defaults: CleanupDefaults {
@@ -758,6 +765,15 @@ pub async fn list_sessions(
             )
         })
         .collect();
+
+    // Forecast chips: one directory scan per poll, a file read only per
+    // session that has a card. A card whose session is gone is never shown.
+    {
+        let mut forecasts = crate::session::forecast::summaries();
+        for session in &mut sessions {
+            session.forecast = forecasts.remove(&session.id);
+        }
+    }
 
     // Shared per-request cache of the resolved `SessionConfig` keyed by
     // (profile, project_path). Both the ACP-capability overlay (serve-only)
@@ -3550,6 +3566,39 @@ pub async fn get_terminal_context(
         "inflight": inflight,
     }))
     .into_response()
+}
+
+/// A session's forecast card as stored (including `updated_at`): `404` when
+/// the session does not exist or has no card. A read; there is no HTTP write,
+/// cards are written by the agent through `aoe session forecast set`. See
+/// docs/guides/session-forecast.md.
+pub async fn get_session_forecast(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> axum::response::Response {
+    if let Some(resp) = cityhall_block_non_structured(&state, &id).await {
+        return resp;
+    }
+    let exists = state.instances.read().await.iter().any(|i| i.id == id);
+    if !exists {
+        return super::session_not_found();
+    }
+    match tokio::task::spawn_blocking(move || crate::session::forecast::read_card(&id)).await {
+        Ok(Ok(Some(card))) => Json(card).into_response(),
+        Ok(Ok(None)) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": "not_found", "message": "No forecast for this session" })),
+        )
+            .into_response(),
+        Ok(Err(e)) => {
+            tracing::warn!(target: "server.forecast", "reading forecast card failed: {e:#}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        Err(e) => {
+            tracing::warn!(target: "server.forecast", "forecast read task failed: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
 }
 
 /// Start a terminal-context recap one-shot for a session. Preflights the same
@@ -8462,6 +8511,92 @@ mod tests {
 
     #[cfg(feature = "serve")]
     #[tokio::test]
+    #[serial_test::serial]
+    async fn forecast_api_serves_the_card_and_the_list_summary() {
+        use axum::response::IntoResponse as _;
+        let _app = crate::session::test_support::isolate_app_dir();
+        let mut with_card = Instance::new("priced", "/tmp/forecast-api-a");
+        with_card.id = "forecastapia".to_string();
+        let mut without = Instance::new("plain", "/tmp/forecast-api-b");
+        without.id = "forecastapib".to_string();
+        crate::session::forecast::write_card(
+            "forecastapia",
+            br#"{"verdict":"continue","headline":"+150 EUR revenue","note":"next round"}"#,
+        )
+        .unwrap();
+        // A card whose session is gone is ignored by both reads.
+        crate::session::forecast::write_card(
+            "forecastgone",
+            br#"{"verdict":"stop","headline":"x"}"#,
+        )
+        .unwrap();
+        let state = crate::server::test_support::build_test_app_state(vec![with_card, without]);
+
+        let get = |id: &str| {
+            let state = state.clone();
+            let id = id.to_string();
+            async move {
+                get_session_forecast(axum::extract::State(state), axum::extract::Path(id))
+                    .await
+                    .into_response()
+            }
+        };
+        let ok = get("forecastapia").await;
+        assert_eq!(ok.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(ok.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let card: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(card["headline"], "+150 EUR revenue");
+        assert_eq!(card["note"], "next round");
+        assert!(
+            card["updated_at"].is_string(),
+            "the card carries updated_at"
+        );
+        assert_eq!(
+            get("forecastapib").await.status(),
+            StatusCode::NOT_FOUND,
+            "no card"
+        );
+        assert_eq!(
+            get("forecastgone").await.status(),
+            StatusCode::NOT_FOUND,
+            "no session"
+        );
+        assert_eq!(get("nosuchsession").await.status(), StatusCode::NOT_FOUND);
+
+        let envelope = list_sessions(
+            axum::extract::State(state.clone()),
+            axum::extract::Query(ListSessionsQuery { state: None }),
+        )
+        .await;
+        let json = serde_json::to_value(&envelope.0).unwrap();
+        let by_id = |id: &str| {
+            json["sessions"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|s| s["id"] == id)
+                .unwrap()
+                .clone()
+        };
+        let summary = &by_id("forecastapia")["forecast"];
+        assert_eq!(summary["verdict"], "continue");
+        assert_eq!(summary["headline"], "+150 EUR revenue");
+        assert_eq!(summary["updated_at"], card["updated_at"]);
+        assert_eq!(
+            summary.as_object().unwrap().len(),
+            3,
+            "summary is the chip fields only"
+        );
+        assert!(
+            by_id("forecastapib")["forecast"].is_null(),
+            "null when there is no card"
+        );
+    }
+
+    #[cfg(feature = "serve")]
+    #[tokio::test]
     async fn wait_until_left_starting_returns_immediately_if_already_left() {
         let mut inst = Instance::new("already-running", "/tmp/wait-a");
         inst.id = "wait-already-left".to_string();
@@ -11619,6 +11754,7 @@ mod workspace_ordering_tests {
             tie_workdir_to_name: false,
             smart_rename: crate::session::smart_rename::SmartRenameState::Inactive,
             default_name: false,
+            forecast: None,
             has_terminal: false,
             profile: "default".to_string(),
             cleanup_defaults: CleanupDefaults {

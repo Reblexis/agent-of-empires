@@ -333,6 +333,24 @@ curl -sS \
   "http://localhost:7777/api/sessions/abc123/output?lines=80&format=text"
 ```
 
+## GET /api/sessions/{id}/forecast
+
+The session's forecast card as stored, including the `updated_at` aoe
+stamps on every write. Cards are written by the agent in the session with
+`aoe session forecast set`; there is no HTTP write. Each session in
+`GET /api/sessions` also carries `forecast`: `null`, or
+`{"verdict", "headline", "updated_at"}`. See the
+[Session Forecast guide](guides/session-forecast.md) for the card schema.
+
+**Responses**
+
+| Status | Body | When |
+| --- | --- | --- |
+| `200` | the card | The session has a card |
+| `404` | `{"error": "not_found", ...}` | No session with that id, or it has no card |
+
+It is a read, so it works under `--read-only`.
+
 ## Driving a session as a subagent
 
 Together, `send` and `output` are the minimum primitive needed to run

@@ -1372,6 +1372,20 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         );
     }
 
+    // Forecast cards whose session no longer exists in any profile are
+    // removed once per daemon start (docs/guides/session-forecast.md).
+    // Housekeeping of files no session owns, so it runs in read-only mode
+    // too.
+    tokio::task::spawn_blocking(|| match crate::session::forecast::prune_orphans() {
+        Ok(0) => {}
+        Ok(removed) => {
+            tracing::info!(target: "server.forecast", removed, "removed orphaned forecast cards")
+        }
+        Err(e) => {
+            tracing::warn!(target: "server.forecast", "forecast orphan cleanup skipped: {e:#}")
+        }
+    });
+
     // Trash retention sweep: auto-purge trashed sessions past their
     // retention window. First tick fires immediately (startup sweep), then
     // hourly. The daemon is the sole enforcer so there is no multi-process
@@ -1850,6 +1864,10 @@ fn build_router(state: Arc<AppState>) -> Router {
             post(api::force_smart_rename),
         )
         .route("/api/sessions/{id}/summarize", post(api::summarize_session))
+        .route(
+            "/api/sessions/{id}/forecast",
+            get(api::get_session_forecast),
+        )
         .route(
             "/api/sessions/{id}/terminal-context",
             get(api::get_terminal_context).post(api::refresh_terminal_context),
