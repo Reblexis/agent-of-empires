@@ -108,6 +108,13 @@ pub enum SessionCommands {
     /// structured-view session with `--structured`.
     Import(ImportArgs),
 
+    /// Write, print, or remove the session's forecast card: what happens to
+    /// the numbers it works on if it stops now versus if it continues. The
+    /// web dashboard pins the card on the session. See
+    /// docs/guides/session-forecast.md.
+    #[command(subcommand)]
+    Forecast(super::session_forecast::ForecastCommands),
+
     /// List the sessions currently in the trash.
     ListTrash,
 
@@ -404,6 +411,7 @@ pub async fn run(profile: &str, command: SessionCommands) -> Result<()> {
         SessionCommands::Unarchive(args) => unarchive_session(profile, args).await,
         SessionCommands::Restore(args) => restore_session(profile, args).await,
         SessionCommands::Import(args) => import_sessions(profile, args).await,
+        SessionCommands::Forecast(command) => super::session_forecast::run(profile, command).await,
         SessionCommands::ListTrash => list_trash(profile).await,
         SessionCommands::EmptyTrash => empty_trash(profile).await,
     }
