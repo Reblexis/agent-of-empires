@@ -38,6 +38,10 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe session unarchive`↴](#aoe-session-unarchive)
 * [`aoe session restore`↴](#aoe-session-restore)
 * [`aoe session import`↴](#aoe-session-import)
+* [`aoe session forecast`↴](#aoe-session-forecast)
+* [`aoe session forecast set`↴](#aoe-session-forecast-set)
+* [`aoe session forecast show`↴](#aoe-session-forecast-show)
+* [`aoe session forecast clear`↴](#aoe-session-forecast-clear)
 * [`aoe session list-trash`↴](#aoe-session-list-trash)
 * [`aoe session empty-trash`↴](#aoe-session-empty-trash)
 * [`aoe group`↴](#aoe-group)
@@ -433,6 +437,7 @@ Manage session lifecycle (start, stop, attach, etc.)
 * `unarchive` — Unarchive a session (restores it to its tier in the Attention sort)
 * `restore` — Restore a trashed session, returning it to its prior bucket with its transcript and metadata intact. See #2489
 * `import` — Import existing Claude Code sessions from disk. Scans the given path(s) (default: current directory) for Claude Code conversations whose working directory is at or under a path, and creates an AoE session for each: a terminal/tmux session that resumes the conversation with `claude --resume <id>` (default), or a structured-view session with `--structured`
+* `forecast` — Write, print, or remove the session's forecast card: what happens to the numbers it works on if it stops now versus if it continues. The web dashboard pins the card on the session. See docs/guides/session-forecast.md
 * `list-trash` — List the sessions currently in the trash
 * `empty-trash` — Permanently purge every trashed session in the profile (irreversible)
 
@@ -753,6 +758,56 @@ Import existing Claude Code sessions from disk. Scans the given path(s) (default
 * `--launch` — Start terminal sessions immediately after importing (spawns the tmux pane running `claude --resume <id>`). Ignored for structured imports
 * `--dry-run` — List what would be imported without creating anything
 * `-y`, `--yes` — Skip the confirmation prompt when importing more than one session
+
+
+
+## `aoe session forecast`
+
+Write, print, or remove the session's forecast card: what happens to the numbers it works on if it stops now versus if it continues. The web dashboard pins the card on the session. See docs/guides/session-forecast.md
+
+**Usage:** `aoe session forecast <COMMAND>`
+
+###### **Subcommands:**
+
+* `set` — Replace the session's forecast card with the JSON card on stdin. Validates first; on any error nothing is written
+* `show` — Print the session's stored card as JSON (nothing when it has none)
+* `clear` — Remove the session's card (succeeds when it has none)
+
+
+
+## `aoe session forecast set`
+
+Replace the session's forecast card with the JSON card on stdin. Validates first; on any error nothing is written
+
+**Usage:** `aoe session forecast set [OPTIONS]`
+
+###### **Options:**
+
+* `--session <SESSION>` — Session ID or title. Defaults to `$AOE_INSTANCE_ID`, which aoe sets inside every session it launches
+
+
+
+## `aoe session forecast show`
+
+Print the session's stored card as JSON (nothing when it has none)
+
+**Usage:** `aoe session forecast show [OPTIONS]`
+
+###### **Options:**
+
+* `--session <SESSION>` — Session ID or title. Defaults to `$AOE_INSTANCE_ID`, which aoe sets inside every session it launches
+
+
+
+## `aoe session forecast clear`
+
+Remove the session's card (succeeds when it has none)
+
+**Usage:** `aoe session forecast clear [OPTIONS]`
+
+###### **Options:**
+
+* `--session <SESSION>` — Session ID or title. Defaults to `$AOE_INSTANCE_ID`, which aoe sets inside every session it launches
 
 
 

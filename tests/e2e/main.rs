@@ -32,6 +32,7 @@ mod filewatch_config_profile_switch;
 mod filewatch_tui_dynamic_profile;
 mod filewatch_tui_reload;
 mod force_remove_tmux_teardown_e2e;
+mod forecast_cli;
 mod fork_cli;
 mod fork_structured_e2e;
 mod hermes_shared_project_correlation_e2e;
