@@ -51,6 +51,7 @@ export const docsNav: NavSection[] = [
       { title: "Dashboard & Workspaces", href: "/guides/web/dashboard/", description: "The dashboard layout: workspace sidebar, status glyphs, and the session wizard." },
       { title: "Terminal View", href: "/guides/web/terminal/", description: "A real terminal in the browser, backed by your tmux session." },
       { title: "Diff View", href: "/guides/web/diff/", description: "Review and stage git changes from the web dashboard." },
+      { title: "Session Forecast", href: "/guides/session-forecast/", description: "Stop now or continue: the agent's forecast card, pinned on the session." },
       { title: "Settings & Profiles", href: "/guides/web/settings/", description: "Manage settings and configuration profiles from the web." },
       { title: "Remote Phone Access", href: "/guides/remote-phone-access/", description: "Expose the dashboard over HTTPS with QR pairing." },
       { title: "Tailscale Setup", href: "/guides/tailscale/", description: "Set up Tailscale from scratch for remote access to your AOE sessions." },

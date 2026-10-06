@@ -113,6 +113,12 @@ Persist and resume Claude Code conversations across reboots, upgrades, and runti
 
 [Session Resume guide](guides/session-resume.md)
 
+### Session forecast
+
+The agent in a session can post a forecast card: what happens to the numbers it works on if the session stops now versus if it continues. The web dashboard pins it at the top of the session and shows a verdict chip on the sidebar row.
+
+[Session Forecast guide](guides/session-forecast.md)
+
 ### tmux persistence
 
 Every agent runs in its own tmux session. Close the TUI, disconnect SSH, or crash your terminal; the agents keep running. Reopen `aoe` and everything is where you left it. `Ctrl+b d` detaches and returns to the TUI.

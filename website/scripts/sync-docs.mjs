@@ -146,6 +146,13 @@ const PAGES = [
       "Fork a session to start a second agent from its context, then diverge onto a different task, leaving the original untouched.",
   },
   {
+    source: "docs/guides/session-forecast.md",
+    dest: "guides/session-forecast.md",
+    title: "Session Forecast",
+    description:
+      "Show what happens to a session's numbers if it stops now versus if it continues, written by the agent and pinned on the dashboard.",
+  },
+  {
     source: "docs/guides/multi-repo-workspaces.md",
     dest: "guides/multi-repo-workspaces.md",
     title: "Multi-Repo Workspaces",
@@ -444,6 +451,7 @@ const URL_MAP = {
   "docs/guides/agent-override.md": "/guides/agent-override/",
   "docs/guides/session-resume.md": "/guides/session-resume/",
   "docs/guides/session-fork.md": "/guides/session-fork/",
+  "docs/guides/session-forecast.md": "/guides/session-forecast/",
   "docs/guides/multi-repo-workspaces.md": "/guides/multi-repo-workspaces/",
   "docs/guides/scratch-sessions.md": "/guides/scratch-sessions/",
   "docs/guides/live-mode.md": "/guides/live-mode/",
