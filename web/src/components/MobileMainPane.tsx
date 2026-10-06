@@ -1,6 +1,7 @@
 import { lazy, Suspense } from "react";
 
 import { TerminalSessionStack } from "./TerminalSessionStack";
+import { ForecastBand } from "./ForecastBand";
 import { PairedShellPane } from "./PairedTerminal";
 import { DiffFileList } from "./diff/DiffFileList";
 import { DiffFileViewer } from "./diff/DiffFileViewer";
@@ -105,6 +106,9 @@ export function MobileMainPane({
           </button>
           <span className="text-xs text-text-dim">{viewLabel}</span>
         </div>
+      )}
+      {view === "agent" && activeSessionId && (
+        <ForecastBand key={activeSessionId} sessionId={activeSessionId} summary={activeSession?.forecast} />
       )}
       <div className="relative flex-1 flex flex-col min-h-0 overflow-hidden">
         <div className={layerClass(view === "agent")} inert={view !== "agent"}>

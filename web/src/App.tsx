@@ -108,6 +108,7 @@ import { SwitchViewDialog } from "./components/SwitchViewDialog";
 import { TopBar } from "./components/TopBar";
 import { AppShellSkeleton, MainPaneSkeleton } from "./components/AppShellSkeleton";
 import { ContentSplit } from "./components/ContentSplit";
+import { ForecastBand } from "./components/ForecastBand";
 import { TerminalSessionStack } from "./components/TerminalSessionStack";
 // Lazy-load the acp surface so non-acp users never download
 // the @assistant-ui/react, shiki, and in-house StringDiff/DiffLine
@@ -1893,6 +1894,9 @@ function AppContent({
             onToggleCollapse={toggleRightDock}
             left={
               <div className="flex-1 flex flex-col min-h-0 overflow-hidden relative">
+                {activeSessionId && (
+                  <ForecastBand key={activeSessionId} sessionId={activeSessionId} summary={activeSession?.forecast} />
+                )}
                 <div className={selectedFilePath ? "hidden" : "flex-1 flex flex-col min-h-0 overflow-hidden"}>
                   {activeSession?.view === "structured" ? (
                     <Suspense fallback={<AcpLoadingFallback />}>

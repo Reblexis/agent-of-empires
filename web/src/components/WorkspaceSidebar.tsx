@@ -80,6 +80,7 @@ import { useWebSettings } from "../hooks/useWebSettings";
 import { exceedsTouchSlop } from "../lib/longPress";
 import { useUnreadIndicatorEnabled } from "../lib/unreadIndicator";
 import { computeSessionRowTag, useSessionRowTagMode } from "../lib/sessionRowTag";
+import { ForecastChip } from "./ForecastBand";
 import { useSessionColorsEnabled } from "../lib/sessionColors";
 import { SidebarCompactContext, useSidebarCompact } from "../lib/sidebarCompact";
 import { TOUR_ANCHORS, tourAnchor } from "../lib/tourSteps";
@@ -1061,6 +1062,8 @@ export const SessionRow = memo(function SessionRow({
   // carries a color wins, mirroring how `snoozedUntil` picks the first match.
   const sessionColor = workspace.sessions.map((s) => s.color).find((c) => c != null) ?? null;
   const sessionColorDot = sessionColorDotClass(sessionColor);
+  // Forecast chip: like the color label, the first session carrying a card wins.
+  const forecast = workspace.sessions.map((s) => s.forecast).find((f) => f != null) ?? null;
   // Web-only triage signals. `pinned` floats the workspace to the top
   // of every sort mode; `archived` and `snoozedUntil` mark the row as
   // sunk (the parent splits sunk workspaces into a separate collapsible
@@ -1588,6 +1591,7 @@ export const SessionRow = memo(function SessionRow({
               {/* Trailing badges hidden in the compact rail (#2288). */}
               {!compact && (
                 <>
+                  {forecast && <ForecastChip summary={forecast} />}
                   {rowTag && (
                     <span
                       data-testid="sidebar-session-row-tag"

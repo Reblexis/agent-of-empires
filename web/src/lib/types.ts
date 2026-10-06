@@ -55,6 +55,10 @@ export interface SessionResponse {
    *  at-a-glance agent status signaling. Set via the sidebar context menu or
    *  `aoe session color <id> <color>`. See #2383. */
   color?: string | null;
+  /** The session's forecast card in brief, for the sidebar chip and to tell
+   *  the session band when to refetch the full card. Null when the session
+   *  has no card. See docs/guides/session-forecast.md. */
+  forecast?: ForecastSummary | null;
   /** True when the agent has flagged this session as urgent via the
    *  `attention-urgent` hook. Mirrors `Instance::is_urgent()` server-side
    *  (false for archived / snoozed sessions). The sidebar's Attention sort
@@ -720,4 +724,33 @@ export interface SettingsFieldDescriptor {
    *  (`plugin:<id>`) fields, which have no value in the config until saved;
    *  omitted for core fields (their value always exists in the config). */
   default?: unknown;
+}
+
+export type ForecastVerdict = "continue" | "stop" | "unpriced";
+
+/** What `GET /api/sessions` carries per session about its forecast card. */
+export interface ForecastSummary {
+  verdict: ForecastVerdict;
+  headline: string;
+  updated_at: string;
+}
+
+/** One number the session works on: its value if the session stops now
+ *  against its value if it continues. A null side is unknown. */
+export interface ForecastMetric {
+  name: string;
+  date?: string | null;
+  stopped?: number | null;
+  continued?: number | null;
+  unit?: string | null;
+  traders?: number | null;
+  depth?: number | null;
+}
+
+/** The stored card from `GET /api/sessions/{id}/forecast`. */
+export interface ForecastCard extends ForecastSummary {
+  metrics?: ForecastMetric[] | null;
+  note?: string | null;
+  source?: { label: string; url: string } | null;
+  decide_by?: string | null;
 }

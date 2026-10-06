@@ -13,6 +13,7 @@ import type {
   CreateSessionRequest,
   ClaudeSessionSummary,
   SettingsFieldDescriptor,
+  ForecastCard,
 } from "./types";
 import type { ConfigOptionDescriptor } from "./acpTypes";
 import { clearDeviceBindingSecret, getOrCreateDeviceBindingSecret } from "./deviceBinding";
@@ -2243,6 +2244,18 @@ export interface TerminalContextResult {
   text: string | null;
   generated_at: string | null;
   inflight: boolean;
+}
+
+/** Read a session's forecast card. Null when it has none (404) or the
+ *  daemon could not be reached. */
+export async function getSessionForecast(id: string): Promise<ForecastCard | null> {
+  try {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/forecast`);
+    if (!res.ok) return null;
+    return (await res.json()) as ForecastCard;
+  } catch {
+    return null;
+  }
 }
 
 /** Read the cached terminal-context recap. Null on any fetch failure so the

@@ -1168,6 +1168,14 @@
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {
+      "id": "sessions.forecast-band",
+      "description": "Forecast card band on the session view and the verdict chip on the sidebar row (docs/guides/session-forecast.md).",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/components/__tests__/ForecastBand.test.tsx", "src/components/__tests__/SessionRowTriage.test.tsx"],
+      "components": ["web/src/components/ForecastBand.tsx", "web/src/components/WorkspaceSidebar.tsx"]
+    },
+    {
       "id": "sidebar.session-color-toggle",
       "kind": "vitest",
       "risk": "low",

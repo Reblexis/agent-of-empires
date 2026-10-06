@@ -181,6 +181,32 @@ describe("SessionRow chips", () => {
     expect(badge.textContent).toContain("monitoring");
   });
 
+  it("renders the forecast chip when a session in the row has a card", () => {
+    const ws = workspace("w-forecast", [
+      session({
+        forecast: { verdict: "continue", headline: "+150 EUR revenue", updated_at: new Date().toISOString() },
+      }),
+    ]);
+    render(
+      <Wrap>
+        <Row ws={ws} />
+      </Wrap>,
+    );
+    const chip = screen.getByTestId("sidebar-forecast-chip");
+    expect(chip.textContent).toBe("+150 EUR revenue");
+    expect(chip.getAttribute("data-verdict")).toBe("continue");
+  });
+
+  it("renders no forecast chip without a card", () => {
+    const ws = workspace("w-no-forecast", [session({ forecast: null })]);
+    render(
+      <Wrap>
+        <Row ws={ws} />
+      </Wrap>,
+    );
+    expect(screen.queryByTestId("sidebar-forecast-chip")).toBeNull();
+  });
+
   it("renders no monitoring badge when no monitor is armed", () => {
     const ws = workspace("w-none", [session()]);
     render(
