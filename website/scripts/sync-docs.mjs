@@ -104,6 +104,13 @@ const PAGES = [
       "Persist, resume, fork, and import agent conversations across reboots, upgrades, and runtime rotations.",
   },
   {
+    source: "docs/guides/session-forecast.md",
+    dest: "guides/session-forecast.md",
+    title: "Session Forecast",
+    description:
+      "Show what happens to a session's numbers if it stops now versus if it continues, written by the agent and pinned on the dashboard.",
+  },
+  {
     source: "docs/guides/multi-repo-workspaces.md",
     dest: "guides/multi-repo-workspaces.md",
     title: "Multi-Repo Workspaces",
