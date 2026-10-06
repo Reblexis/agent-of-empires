@@ -19,6 +19,7 @@ import type {
   CreateSessionRequest,
   ImportableSession,
   SettingsFieldDescriptor,
+  ForecastCard,
 } from "./types";
 import type { ConfigOptionDescriptor } from "./acpTypes";
 import type { ResolvedTheme } from "./theme";
@@ -247,6 +248,12 @@ export function sessionDiffRawFileUrl(id: string, filePath: string, repoName?: s
   const params = new URLSearchParams({ path: filePath });
   if (repoName) params.set("repo", repoName);
   return `/api/sessions/${id}/diff/file/raw?${params.toString()}`;
+}
+
+/** Read a session's forecast card. Null when it has none (404) or the
+ *  daemon could not be reached. */
+export function getSessionForecast(id: string): Promise<ForecastCard | null> {
+  return fetchJson<ForecastCard>(`/api/sessions/${encodeURIComponent(id)}/forecast`);
 }
 
 export interface SessionFileResponse {

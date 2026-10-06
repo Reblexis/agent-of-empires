@@ -38,6 +38,10 @@ export interface SessionResponse {
   scratch: boolean;
   favorited: boolean;
   color?: string | null;
+  /** The session's forecast card in brief, for the sidebar chip and to tell
+   *  the session band when to refetch the full card. Null when the session
+   *  has no card. See docs/guides/session-forecast.md. */
+  forecast?: ForecastSummary | null;
   urgent?: boolean;
   /** Web pin time; `pinned_at != null` is the pinned state. */
   pinned_at?: string | null;
@@ -521,4 +525,33 @@ export interface SettingsFieldDescriptor {
   default?: unknown;
   /** Plugin field that can also be set per registered project. */
   per_project?: boolean;
+}
+
+export type ForecastVerdict = "continue" | "stop" | "unpriced";
+
+/** What `GET /api/sessions` carries per session about its forecast card. */
+export interface ForecastSummary {
+  verdict: ForecastVerdict;
+  headline: string;
+  updated_at: string;
+}
+
+/** One number the session works on: its value if the session stops now
+ *  against its value if it continues. A null side is unknown. */
+export interface ForecastMetric {
+  name: string;
+  date?: string | null;
+  stopped?: number | null;
+  continued?: number | null;
+  unit?: string | null;
+  traders?: number | null;
+  depth?: number | null;
+}
+
+/** The stored card from `GET /api/sessions/{id}/forecast`. */
+export interface ForecastCard extends ForecastSummary {
+  metrics?: ForecastMetric[] | null;
+  note?: string | null;
+  source?: { label: string; url: string } | null;
+  decide_by?: string | null;
 }

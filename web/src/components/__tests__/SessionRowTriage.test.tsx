@@ -69,6 +69,22 @@ describe("SessionRow chips", () => {
   });
 });
 
+describe("SessionRow forecast chip", () => {
+  it("renders the forecast chip when a session in the row has a card", () => {
+    renderRow(
+      ws({ forecast: { verdict: "continue", headline: "+150 EUR revenue", updated_at: new Date().toISOString() } }),
+    );
+    const chip = screen.getByTestId("sidebar-forecast-chip");
+    expect(chip.textContent).toBe("+150 EUR revenue");
+    expect(chip.getAttribute("data-verdict")).toBe("continue");
+  });
+
+  it("renders no forecast chip without a card", () => {
+    renderRow(ws({ forecast: null }));
+    expect(testId("sidebar-forecast-chip")).toBeNull();
+  });
+});
+
 describe("SessionRow row tags", () => {
   it("renders a compact branch tag instead of the branch subtitle, and nothing for none", () => {
     const branched = makeWorkspace("w", [makeSession({ branch: "feature/web-row-tag" })], {

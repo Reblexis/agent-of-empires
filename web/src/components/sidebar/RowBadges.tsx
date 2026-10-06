@@ -11,6 +11,7 @@ import { useQueuedCountForSessions } from "../../hooks/useAcpQueueCount";
 import { summarizeRateLimits } from "../../lib/rateLimitSummary";
 import { computeSessionRowTag, useSessionRowTagMode } from "../../lib/sessionRowTag";
 import { PluginRowLine } from "../plugin/PluginSlots";
+import { ForecastChip } from "../ForecastBand";
 import { formatDurationSecondsShort, formatSnoozeRemainingShort } from "./format";
 import type { RowModel } from "./rowModel";
 
@@ -118,8 +119,11 @@ export function RowTrailingBadges({ workspace, model }: { workspace: Workspace; 
   const hasDraft = useHasDraftForSessions(sessionIds);
   const queuedCount = useQueuedCountForSessions(sessionIds);
   const worker = first?.view === "structured" ? first.acp_worker_state : undefined;
+  // Forecast chip: like the color label, the first session carrying a card wins.
+  const forecast = workspace.sessions.map((s) => s.forecast).find((f) => f != null) ?? null;
   return (
     <>
+      {forecast && <ForecastChip summary={forecast} />}
       {rowTag && (
         <span
           data-testid="sidebar-session-row-tag"
