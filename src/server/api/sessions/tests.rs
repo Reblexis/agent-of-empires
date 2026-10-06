@@ -5171,3 +5171,85 @@ done
         );
     }
 }
+
+#[tokio::test]
+#[serial_test::serial]
+async fn forecast_api_serves_the_card_and_the_list_summary() {
+    let _app = crate::session::test_support::isolate_app_dir();
+    let mut with_card = Instance::new("priced", "/tmp/forecast-api-a");
+    with_card.id = "forecastapia".to_string();
+    let mut without = Instance::new("plain", "/tmp/forecast-api-b");
+    without.id = "forecastapib".to_string();
+    crate::session::forecast::write_card(
+        "forecastapia",
+        br#"{"verdict":"continue","headline":"+150 EUR revenue","note":"next round"}"#,
+    )
+    .unwrap();
+    // A card whose session is gone is ignored by both reads.
+    crate::session::forecast::write_card("forecastgone", br#"{"verdict":"stop","headline":"x"}"#)
+        .unwrap();
+    let state = crate::server::test_support::build_test_app_state(vec![with_card, without]);
+
+    let get = |id: &str| {
+        let state = state.clone();
+        let id = id.to_string();
+        async move {
+            get_session_forecast(axum::extract::State(state), axum::extract::Path(id))
+                .await
+                .into_response()
+        }
+    };
+    let ok = get("forecastapia").await;
+    assert_eq!(ok.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(ok.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let card: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(card["headline"], "+150 EUR revenue");
+    assert_eq!(card["note"], "next round");
+    assert!(
+        card["updated_at"].is_string(),
+        "the card carries updated_at"
+    );
+    assert_eq!(
+        get("forecastapib").await.status(),
+        StatusCode::NOT_FOUND,
+        "no card"
+    );
+    assert_eq!(
+        get("forecastgone").await.status(),
+        StatusCode::NOT_FOUND,
+        "no session"
+    );
+    assert_eq!(get("nosuchsession").await.status(), StatusCode::NOT_FOUND);
+
+    let envelope = list_sessions(
+        axum::extract::State(state.clone()),
+        axum::extract::Query(ListSessionsQuery { state: None }),
+    )
+    .await;
+    let json = serde_json::to_value(&envelope.0).unwrap();
+    let by_id = |id: &str| {
+        json["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == id)
+            .unwrap()
+            .clone()
+    };
+    let summary = &by_id("forecastapia")["forecast"];
+    assert_eq!(summary["verdict"], "continue");
+    assert_eq!(summary["headline"], "+150 EUR revenue");
+    assert_eq!(summary["updated_at"], card["updated_at"]);
+    assert_eq!(
+        summary.as_object().unwrap().len(),
+        3,
+        "summary is the chip fields only"
+    );
+    let plain = by_id("forecastapib");
+    assert!(
+        plain.as_object().unwrap().contains_key("forecast") && plain["forecast"].is_null(),
+        "null when there is no card"
+    );
+}

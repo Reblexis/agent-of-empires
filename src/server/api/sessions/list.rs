@@ -156,6 +156,15 @@ pub(crate) async fn list_sessions_envelope(
         })
         .collect();
 
+    // Forecast chips: one directory scan per poll, a file read only per
+    // session that has a card. A card whose session is gone is never shown.
+    {
+        let mut forecasts = crate::session::forecast::summaries();
+        for session in &mut sessions {
+            session.forecast = forecasts.remove(&session.id);
+        }
+    }
+
     // Share resolved config between the ACP-capability and smart-rename
     // overlays, halving disk reads when a profile/project pair repeats in the
     // 3s sidebar poll (#2603). Monotonic, so the delta below is this request's
@@ -642,6 +651,7 @@ mod workspace_ordering_tests {
             tie_workdir_to_name: false,
             smart_rename: crate::session::smart_rename::SmartRenameState::Inactive,
             default_name: false,
+            forecast: None,
             has_terminal: false,
             profile: "default".to_string(),
             cleanup_defaults: CleanupDefaults {

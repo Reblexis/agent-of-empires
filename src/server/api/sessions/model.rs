@@ -83,6 +83,8 @@ impl SessionResponse {
             smart_rename: crate::session::smart_rename::SmartRenameState::Inactive,
             // Overlaid in list_sessions; single-session responses stay false.
             default_name: false,
+            // Overlaid in list_sessions; single-session responses stay null.
+            forecast: None,
             has_terminal: inst.terminal_info.is_some(),
             profile: row.profile.to_string(),
             cleanup_defaults: CleanupDefaults {

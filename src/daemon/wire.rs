@@ -202,6 +202,12 @@ pub struct SessionResponse {
     pub smart_rename: crate::session::smart_rename::SmartRenameState,
     #[serde(default)]
     pub default_name: bool,
+    /// The session's forecast card in brief, for the sidebar chip: `null`, or
+    /// `{ verdict, headline, updated_at }`. Overlaid in `list_sessions` from
+    /// `<app_dir>/session-forecasts/`; single-session responses leave it
+    /// `null`. See docs/guides/session-forecast.md.
+    #[serde(default)]
+    pub forecast: Option<crate::session::forecast::ForecastSummary>,
     #[serde(default)]
     pub has_terminal: bool,
     #[serde(default)]

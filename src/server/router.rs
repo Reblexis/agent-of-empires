@@ -132,6 +132,10 @@ pub(super) fn build_router(state: Arc<AppState>) -> Router {
             post(api::force_smart_rename),
         )
         .route("/api/sessions/{id}/summarize", post(api::summarize_session))
+        .route(
+            "/api/sessions/{id}/forecast",
+            get(api::get_session_forecast),
+        )
         .route("/api/sessions/{id}/start", post(api::start_session))
         .route(
             "/api/sessions/{id}/terminal",

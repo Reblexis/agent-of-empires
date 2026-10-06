@@ -16,6 +16,7 @@ pub mod conversation_carry;
 pub mod conversation_summary;
 pub mod deletion;
 pub(crate) mod environment;
+pub mod forecast;
 pub mod fork;
 mod groups;
 pub mod idle_reap;

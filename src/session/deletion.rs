@@ -817,6 +817,12 @@ fn perform_deletion_core(
     tracing::debug!(target: "session.delete", session_id = %request.session_id, stage = "hook_status_cleanup", "perform_deletion: stage");
     crate::hooks::cleanup_hook_status_dir(&request.instance.id);
 
+    // Stage 7: the session's forecast card (docs/guides/session-forecast.md).
+    // Only a real deletion reaches here; the trash keeps the card.
+    if let Err(error) = crate::session::forecast::clear_card(&request.instance.id) {
+        tracing::warn!(target: "session.delete", session_id = %request.session_id, "forecast card not removed: {error:#}");
+    }
+
     if !errors.is_empty() {
         tracing::debug!(target: "session.delete",
             session_id = %request.session_id,
@@ -1575,6 +1581,31 @@ mod tests {
             assert!(result.success && result.errors.is_empty());
             assert_eq!(result.session_id, "custom-session-id-123");
         }
+    }
+
+    #[test]
+    #[serial]
+    fn deleting_a_session_removes_its_forecast_card() {
+        let _guard = isolate_app_dir();
+        let instance = Instance::new("Test Session", "/tmp/test-project");
+        let other = Instance::new("Other Session", "/tmp/test-project");
+        let card = br#"{"verdict":"stop","headline":"-20 EUR"}"#;
+        crate::session::forecast::write_card(&instance.id, card).unwrap();
+        crate::session::forecast::write_card(&other.id, card).unwrap();
+        let request = request(instance);
+
+        let result = perform_deletion(&request);
+
+        assert!(result.success, "{:?}", result.errors);
+        assert!(crate::session::forecast::read_card(&request.session_id)
+            .unwrap()
+            .is_none());
+        assert!(
+            crate::session::forecast::read_card(&other.id)
+                .unwrap()
+                .is_some(),
+            "only the deleted session's card goes"
+        );
     }
 
     /// A force chosen against an earlier trash lifecycle is dropped at the claim, so a row
