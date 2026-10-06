@@ -21,14 +21,16 @@ aoe session forecast clear [--session <id>]
 ```
 
 Inside an aoe session the target defaults to `$AOE_INSTANCE_ID`, which aoe
-exports into every session it launches. `--session` takes an instance id or a
-title, resolved the way the other `aoe session` subcommands resolve one. With
-neither, the command exits non-zero with `no session: run inside an aoe
-session or pass --session`.
+exports into every session it launches; the id must name an existing session
+in any profile, and an empty value counts as unset. `--session` takes an
+instance id or a title, resolved the way the other `aoe session` subcommands
+resolve one, and wins over the environment. With neither, the command exits
+non-zero with `no session: run inside an aoe session or pass --session`.
 
 `set` replaces the whole card. It validates before writing and on any error
 exits non-zero, prints which field is wrong, and leaves the previous card
-untouched. aoe stamps `updated_at` itself (the writer never sends it) and
+untouched. aoe stamps `updated_at` itself (the writer never sends it; a card
+that carries one is refused) and
 writes atomically (temp file and rename), so a reader never sees half a card.
 `clear` on a session with no card succeeds silently. `show` on a session with
 no card prints nothing and exits 0.
@@ -73,8 +75,10 @@ no card prints nothing and exits 0.
 | `source.url` | with `source` | `http` or `https` only |
 | `decide_by` | no | RFC 3339 instant |
 
-Unknown top-level or row fields are refused, so a typo fails loudly instead of
-silently not showing. The card file is at most 16 KB.
+An optional field may be omitted or `null`; both mean "not given". Unknown
+fields (top level, in a metric row, or in `source`) are refused, so a typo
+fails loudly instead of silently not showing. The card is at most 16 KB
+(16384 bytes), both as sent and as stored.
 
 `unpriced` means the source has no answer yet (for a market: nobody has
 traded). It is shown as its own state, never as a tie.
@@ -84,8 +88,9 @@ traded). It is shown as its own state, never as a tie.
 Each card is one file, `<app_dir>/session-forecasts/<instance-id>.json`,
 outside `sessions.json`: writing a forecast never touches the session registry,
 so it cannot disturb tab tracking ([session-resume.md](session-resume.md)).
-Deleting a session removes its card. Stopping, restarting, or hibernating a
-session keeps it. A card whose session no longer exists is ignored and removed
+Deleting a session for good (purge, or a delete that skips the trash) removes
+its card. Moving it to the trash, stopping, restarting, or hibernating it
+keeps the card, so a restored session comes back with it. A card whose session no longer exists is ignored and removed
 on the daemon's next start.
 
 ## Where it shows
@@ -109,7 +114,8 @@ age in a warning color.
 
 **Web dashboard, session list.** The session's row in the sidebar carries a
 small chip: the verdict color and the headline, truncated to fit. Hovering
-shows the first line of the band.
+shows the verdict, the headline, and the age (the list summary carries only
+those).
 
 The dashboard picks up a new or changed card within one session-list refresh,
 with no reload.
