@@ -68,7 +68,6 @@ function open(sessionId = "s") {
   return hook;
 }
 
- 
 const renderedLines = (content: string) =>
   content
     .split("\n")

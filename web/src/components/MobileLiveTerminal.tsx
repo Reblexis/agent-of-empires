@@ -10,6 +10,7 @@ import {
   wrapLine,
   type LinkSpan,
 } from "../lib/liveTermLines";
+import { EchoTracker } from "../lib/liveEcho";
 import { wheelNotches } from "../lib/liveMouse";
 import { registerMobileKeyboardProxyReceiver, type MobileKeyboardProxyInput } from "../lib/mobileKeyboardProxy";
 import { writeClipboard } from "../lib/clipboard";
@@ -174,6 +175,10 @@ export interface MobileLiveTerminalProps {
    *  Gates the sizing latch so a pane that first measures with the keyboard
    *  up never ships keyboard-shrunk rows to tmux. Always false on desktop. */
   keyboardOpen: boolean;
+  /** Draw plain typing at the cursor before the server echoes it (local
+   *  echo, lib/liveEcho.ts). Only while this browser's keystrokes reach the
+   *  pane: connected and owning it. */
+  predictEcho?: boolean;
 }
 
 // Backslash-escape whitespace and backslashes in a pasted image path, matching
@@ -477,6 +482,7 @@ export function MobileLiveTerminal({
   onInputFocusChange,
   bottomAlign,
   keyboardOpen,
+  predictEcho = false,
 }: MobileLiveTerminalProps) {
   // Stable identity for the "which terminal did the user last touch" registry
   // that arbitrates stray pastes between the agent pane and the paired shell.
@@ -743,7 +749,54 @@ export function MobileLiveTerminal({
   // state initializer (never set) rather than a ref so the render-time
   // read is legal; re-running on the same frame converges (see the class).
   const [parseCache] = useState(() => new LineParseCache());
-  const lines = useMemo(() => (frame ? parseCache.lines(frame.content) : []), [frame, parseCache]);
+  const parsedLines = useMemo(() => (frame ? parseCache.lines(frame.content) : []), [frame, parseCache]);
+  // Local echo: the cursor's row in this snapshot is what typing is predicted
+  // on (null when nothing may be predicted: no cursor, a full-screen app,
+  // reading scrollback). Each new snapshot settles the predictions before
+  // paint, so a confirmed character is never drawn twice.
+  const [echo] = useState(() => new EchoTracker());
+  const [echoVersion, setEchoVersion] = useState(0);
+  const echoRow = useMemo(() => {
+    const cursor = frame?.cursor;
+    if (!predictEcho || reading || !frame || !cursor || frame.altScreen) return null;
+    const idx = Math.max(0, parsedLines.length - frame.rows) + cursor.y;
+    const segs = parsedLines[idx];
+    return segs ? { segs, x: cursor.x, idx } : null;
+  }, [predictEcho, reading, frame, parsedLines]);
+  const [reconciledRow, setReconciledRow] = useState(echoRow);
+  if (reconciledRow !== echoRow) {
+    setReconciledRow(echoRow);
+    echo.reconcile(echoRow);
+  }
+  const echoRowRef = useRef(echoRow);
+  useLayoutEffect(() => {
+    echoRowRef.current = echoRow;
+  }, [echoRow]);
+  const predicted = useMemo(
+    () => (echoRow ? echo.render(echoRow) : null),
+    // echoVersion: the tracker is mutable; a bump means its state changed.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [echo, echoRow, echoVersion],
+  );
+  const lines = useMemo(() => {
+    if (!predicted || !echoRow) return parsedLines;
+    const out = parsedLines.slice();
+    out[echoRow.idx] = predicted.segs;
+    return out;
+  }, [parsedLines, predicted, echoRow]);
+  useEffect(() => {
+    echo.arm(Date.now());
+    const deadline = echo.deadline();
+    if (deadline == null) return;
+    const timer = setTimeout(
+      () => {
+        echo.expire(Date.now());
+        setEchoVersion((v) => v + 1);
+      },
+      Math.max(0, deadline - Date.now()),
+    );
+    return () => clearTimeout(timer);
+  }, [echo, echoVersion, reconciledRow]);
   // Columns this viewer renders at. Normally the pane is exactly this
   // wide and wrapping is the identity; when another writer resizes the
   // window wider (see the server-side drift re-assert), wrapping keeps
@@ -910,8 +963,9 @@ export function MobileLiveTerminal({
   // top, fed to cursorAnchorRef so the keyboard-shrunk scroll target can keep
   // the input row above the keyboard.
   const live = useMemo(() => {
-    const cursor = !reading ? (frame?.cursor ?? null) : null;
-    if (!cursor) return { row: -1, col: -1, top: null as number | null };
+    const frameCursor = !reading ? (frame?.cursor ?? null) : null;
+    if (!frameCursor) return { row: -1, col: -1, top: null as number | null };
+    const cursor = predicted ? { ...frameCursor, x: predicted.x } : frameCursor;
     const lineIdx = Math.max(0, lines.length - screenRows) + cursor.y;
     if (lineIdx < 0 || lineIdx >= lines.length) return { row: -1, col: -1, top: null };
     const cols = renderCols > 0 ? renderCols : Number.POSITIVE_INFINITY;
@@ -927,7 +981,18 @@ export function MobileLiveTerminal({
     if (row > lastNonBlankRow) return { row: -1, col: -1, top: null };
     const col = Number.isFinite(cols) ? cursor.x % cols : cursor.x;
     return { row, col, top: (effectiveSpacerLines + row) * lineH };
-  }, [reading, frame, lines.length, screenRows, visual, renderCols, effectiveSpacerLines, lineH, lastNonBlankRow]);
+  }, [
+    reading,
+    frame,
+    predicted,
+    lines.length,
+    screenRows,
+    visual,
+    renderCols,
+    effectiveSpacerLines,
+    lineH,
+    lastNonBlankRow,
+  ]);
 
   const atBottom = useCallback(() => {
     const el = scrollerRef.current;
@@ -1180,9 +1245,11 @@ export function MobileLiveTerminal({
     (data: string) => {
       stopMomentum();
       cancelTouchWheelQueue();
+      echo.input(data, echoRowRef.current, Date.now());
+      setEchoVersion((v) => v + 1);
       sendDataRaw(data);
     },
-    [sendDataRaw, stopMomentum, cancelTouchWheelQueue],
+    [sendDataRaw, stopMomentum, cancelTouchWheelQueue, echo],
   );
 
   // Mouse button (click/drag) forwarding for a full-screen mouse app, the

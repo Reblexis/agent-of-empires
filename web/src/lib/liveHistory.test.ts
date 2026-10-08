@@ -27,7 +27,7 @@ function frameOf(
 
 const lines = (n: number, from = 0) => Array.from({ length: n }, (_, i) => `line ${from + i}`);
 const screen = ["$ prompt", "", "status"];
- 
+
 const plain = (l: string) => l.replace(/\x1b\[[0-9;]*m/g, "");
 const rendered = (frame: LiveFrame) => new LineParseCache().lines(frame.content).map(lineText);
 

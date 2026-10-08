@@ -27,6 +27,15 @@ claude_inline_tui = true
 
 It applies whenever a session's Claude starts or restarts, whatever per-session arguments the session carries, so a running session switches on its next restart.
 
+### Typing echoes locally
+
+What you type shows up at once, without waiting for the server to echo it, the way mosh does it:
+
+- A printable character appears at the cursor the moment you press it, and Backspace removes the character before the cursor at once. Dim text to the right of the cursor (an input placeholder, such as Claude's `Try "..."`) is cleared as you type; other text to the right moves along. When the server's next snapshot arrives, the prediction gives way to the real screen; when they agree, nothing visibly changes.
+- Only plain single-cell characters and Backspace are predicted, on the normal screen (not a full-screen app), at the live edge, while this browser owns the terminal, and only up to the end of the cursor's row. Any other key (Enter, Tab, Esc, arrows, Ctrl or Alt chords, a paste carrying control characters, a wide character) drops every pending prediction and waits for the server, like before.
+- A prediction is shown at once only on a row whose prompt has already echoed this browser's typing (the row's text up to the first space after its first word: Claude's `❯`, your shell prompt). On any other row the first character waits for the server's echo, and once it arrives the rest of that row is predicted again. A row that never echoes, such as a password prompt, never shows your input.
+- A prediction the server contradicts (the cursor or the text left of it ends up somewhere else) is dropped as soon as that snapshot arrives, and one the server has not confirmed within 1.5 s is dropped and its row has to earn trust again. The cost of a wrong guess is that for up to one round trip you see a character the app then draws differently or not at all.
+
 ## Copy and scroll
 
 The terminal renders tmux's scrollback as page text, so copy and scroll work with no modifier keys:

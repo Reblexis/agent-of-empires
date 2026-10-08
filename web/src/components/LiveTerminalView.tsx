@@ -312,6 +312,7 @@ export function LiveTerminalView({ session, active = true, surface = "agent", te
           onInputFocusChange={setInputFocused}
           bottomAlign={surface === "agent"}
           keyboardOpen={keyboardOpen}
+          predictEcho={live.state.connected && live.state.isOwner}
         />
         {coarse && live.state.connected && <KeyboardFab keyboardOpen={inputFocused} onToggle={toggleKeyboard} />}
       </div>
