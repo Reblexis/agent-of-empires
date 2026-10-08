@@ -4431,6 +4431,10 @@ impl Instance {
         }
         let agent = crate::agents::get_agent(&self.tool)
             .or_else(|| crate::agents::get_agent(&self.detect_as));
+        let claude_inline_tui =
+            super::profile_config::resolve_config_or_warn(&self.effective_profile())
+                .session
+                .claude_inline_tui;
 
         let (cmd, is_existing, omp_capture_plan, launch_env) = if self.is_sandboxed() {
             let image = self
@@ -4492,6 +4496,7 @@ impl Instance {
                 }
             }
 
+            apply_claude_inline_tui(&mut tool_cmd, agent, claude_inline_tui);
             let is_existing = self.apply_session_flags(&mut tool_cmd, "sandboxed");
             append_handoff_prompt(self, &mut tool_cmd);
             apply_agent_launch_env(&mut tool_cmd, agent);
@@ -4541,7 +4546,7 @@ impl Instance {
                 },
             )
         } else {
-            let result = self.build_host_command(agent)?;
+            let result = self.build_host_command(agent, claude_inline_tui)?;
             let mut env = super::environment::resolve_host_environment_pairs(
                 &self.profile_host_environment(),
             )
@@ -4800,6 +4805,7 @@ impl Instance {
     fn build_host_command(
         &mut self,
         agent: Option<&'static crate::agents::AgentDef>,
+        claude_inline_tui: bool,
     ) -> Result<(Option<String>, bool, Option<OmpCapturePlan>)> {
         // Resolve after `on_launch`. The snapshot is checked inside the
         // profile environment assignment scope executed by the login shell;
@@ -4830,6 +4836,7 @@ impl Instance {
                             apply_yolo_mode(&mut cmd, yolo, false);
                         }
                     }
+                    apply_claude_inline_tui(&mut cmd, agent, claude_inline_tui);
                     let is_existing = self.apply_session_flags(&mut cmd, "host agent");
                     append_handoff_prompt(self, &mut cmd);
                     apply_agent_launch_env(&mut cmd, agent);
@@ -4858,6 +4865,7 @@ impl Instance {
                     apply_yolo_mode(&mut cmd, yolo, false);
                 }
             }
+            apply_claude_inline_tui(&mut cmd, agent, claude_inline_tui);
             let is_existing = self.apply_session_flags(&mut cmd, "host custom");
             append_handoff_prompt(self, &mut cmd);
             apply_agent_launch_env(&mut cmd, agent);
@@ -7404,6 +7412,19 @@ fn format_env_var_prefix(key: &str, value: &str, cmd: &str) -> String {
 /// web renderer handles ANSI fine. Unsetting `NO_COLOR` and advertising
 /// `TERM=xterm-256color` plus `COLORTERM=truecolor` at launch keeps color on
 /// without pinning tools to a specific `FORCE_COLOR` depth.
+/// Claude Code's own settings layer outranks `~/.claude/settings.json`, so
+/// this switches a fullscreen user to the inline renderer for aoe's sessions
+/// only (session.claude_inline_tui).
+fn apply_claude_inline_tui(
+    cmd: &mut String,
+    agent: Option<&'static crate::agents::AgentDef>,
+    enabled: bool,
+) {
+    if enabled && agent.map(|a| a.name) == Some("claude") {
+        cmd.push_str(r#" --settings '{"tui":"default"}'"#);
+    }
+}
+
 fn apply_agent_launch_env(cmd: &mut String, agent: Option<&'static crate::agents::AgentDef>) {
     if !matches!(agent.map(|a| a.name), Some("antigravity" | "codex")) {
         return;
@@ -12339,7 +12360,7 @@ mod tests {
         let mut inst = Instance::new("test", "/tmp/test");
         inst.tool = "codex".to_string();
         let (cmd, _, _) = inst
-            .build_host_command(crate::agents::get_agent("codex"))
+            .build_host_command(crate::agents::get_agent("codex"), false)
             .unwrap();
         assert!(cmd.is_some());
         assert!(cmd.as_ref().unwrap().contains("codex"));
@@ -12351,7 +12372,7 @@ mod tests {
         inst.tool = "codex".to_string();
         inst.yolo_mode = true;
         let (cmd, _, _) = inst
-            .build_host_command(crate::agents::get_agent("codex"))
+            .build_host_command(crate::agents::get_agent("codex"), false)
             .unwrap();
         let cmd_str = cmd.unwrap();
         let agent = crate::agents::get_agent("codex").unwrap();
@@ -12368,7 +12389,7 @@ mod tests {
         inst.tool = "claude".to_string();
         inst.agent_session_id = Some("ses_abc123def456".to_string());
         let (cmd, _, _) = inst
-            .build_host_command(crate::agents::get_agent("claude"))
+            .build_host_command(crate::agents::get_agent("claude"), false)
             .unwrap();
         let cmd_str = cmd.unwrap();
         assert!(cmd_str.contains("ses_abc123def456"));
@@ -12376,11 +12397,40 @@ mod tests {
     }
 
     #[test]
+    fn claude_inline_tui_keeps_claude_history_in_tmux() {
+        // (tool, command override, setting on, expect the inline override)
+        let cases = [
+            ("claude", "", true, true),
+            ("claude", "", false, false),
+            // A wrapper still launches Claude Code, so it gets the override too.
+            ("claude", "my-claude-wrapper", true, true),
+            // Only Claude reads `--settings`; other agents are left alone.
+            ("codex", "", true, false),
+        ];
+        for (tool, command, enabled, expected) in cases {
+            let mut inst = Instance::new("test", "/tmp/test");
+            inst.tool = tool.to_string();
+            inst.command = command.to_string();
+            inst.extra_args = "--model opus".to_string();
+            let (cmd, _, _) = inst
+                .build_host_command(crate::agents::get_agent(tool), enabled)
+                .unwrap();
+            let cmd = cmd.unwrap();
+            assert_eq!(
+                cmd.contains(r#"--settings '{"tui":"default"}'"#),
+                expected,
+                "{tool} command={command:?} enabled={enabled}: {cmd}"
+            );
+            assert!(cmd.contains("--model"), "per-session args survive: {cmd}");
+        }
+    }
+
+    #[test]
     fn test_build_host_command_antigravity_forces_color() {
         let mut inst = Instance::new("test", "/tmp/test");
         inst.tool = "antigravity".to_string();
         let (cmd, _, _) = inst
-            .build_host_command(crate::agents::get_agent("antigravity"))
+            .build_host_command(crate::agents::get_agent("antigravity"), false)
             .unwrap();
         let cmd_str = cmd.unwrap();
 
@@ -12397,7 +12447,7 @@ mod tests {
         let mut inst = Instance::new("test", "/tmp/test");
         inst.tool = "kiro".to_string();
         let (cmd, _, _) = inst
-            .build_host_command(crate::agents::get_agent("kiro"))
+            .build_host_command(crate::agents::get_agent("kiro"), false)
             .unwrap();
         assert!(cmd.unwrap().contains("kiro-cli chat"));
     }
@@ -12409,7 +12459,7 @@ mod tests {
         inst.tool = "kiro".to_string();
         inst.yolo_mode = true;
         let (cmd, _, _) = inst
-            .build_host_command(crate::agents::get_agent("kiro"))
+            .build_host_command(crate::agents::get_agent("kiro"), false)
             .unwrap();
         let cmd_str = cmd.unwrap();
         let chat_pos = cmd_str
@@ -12432,7 +12482,7 @@ mod tests {
         inst.tool = "kiro".to_string();
         inst.command = "kiro-cli chat --trust-all-tools".to_string();
         let (cmd, _, _) = inst
-            .build_host_command(crate::agents::get_agent("kiro"))
+            .build_host_command(crate::agents::get_agent("kiro"), false)
             .unwrap();
         let cmd_str = cmd.unwrap();
         // Exactly one "chat" token (no doubled `chat chat`).
@@ -12480,7 +12530,7 @@ mod tests {
         inst.tool = "antigravity".to_string();
         inst.command = "agy --some-flag".to_string();
         let (cmd, _, _) = inst
-            .build_host_command(crate::agents::get_agent("antigravity"))
+            .build_host_command(crate::agents::get_agent("antigravity"), false)
             .unwrap();
         let cmd_str = cmd.unwrap();
 
@@ -12495,7 +12545,7 @@ mod tests {
         let mut inst = Instance::new("test", "/tmp/test");
         inst.tool = "codex".to_string();
         let (cmd, _, _) = inst
-            .build_host_command(crate::agents::get_agent("codex"))
+            .build_host_command(crate::agents::get_agent("codex"), false)
             .unwrap();
         let cmd_str = cmd.unwrap();
 
@@ -12510,7 +12560,7 @@ mod tests {
         let mut inst = Instance::new("test", "/tmp/test");
         inst.tool = "cursor".to_string();
         let (cmd, _, _) = inst
-            .build_host_command(crate::agents::get_agent("cursor"))
+            .build_host_command(crate::agents::get_agent("cursor"), false)
             .unwrap();
         let cmd_str = cmd.unwrap();
 

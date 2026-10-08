@@ -1,21 +1,38 @@
 # Terminal View
 
-For tmux-backed sessions the dashboard renders a real terminal in the page: the agent's pane streamed over a WebSocket PTY relay, plus an optional paired shell. This page covers both terminals, reconnect behavior, and the close codes you may see when a connection fails. For the structured-view rendering used by ACP sessions, see the [Structured view overview](../../structured-view.md).
+For tmux-backed sessions the dashboard renders a real terminal in the page: the agent's pane streamed over a WebSocket, plus an optional paired shell. This page covers both terminals, reconnect behavior, and the close codes you may see when a connection fails. For the structured-view rendering used by ACP sessions, see the [Structured view overview](../../structured-view.md).
 
-![The agent terminal rendered in the browser via the PTY relay](../../assets/web/terminal.png)
+![The agent terminal rendered in the browser](../../assets/web/terminal.png)
 
 ## Agent terminal
 
-The main terminal attaches to the session's tmux pane through an xterm.js front end. The server spawns `tmux attach-session` inside a PTY and relays the raw byte stream bidirectionally over the WebSocket, so every key sequence, color, and scrollback line behaves like `tmux attach` over SSH.
+The main terminal mirrors the TUI's live mode on every device: the server streams `tmux capture-pane` snapshots of the session's pane over the WebSocket and the dashboard renders them as real text that the browser scrolls natively. Keystrokes go back over the same WebSocket. There is no PTY attach and no tmux copy-mode, and the agent keeps running while you read history.
 
-Scrolling up into history pauses the live tail and surfaces a **Back to live** button; scrolling back to the bottom (or clicking it) resumes the tail.
+Scrolling up into history surfaces a **Back to live** button; scrolling back to the bottom (or clicking it) returns to the live tail.
+
+### Scrollback is local
+
+Scrolling never waits on the server, however far away it is:
+
+- When a session's terminal opens, the dashboard downloads the pane's scrollback in the background (the last 4000 lines at most) and keeps that copy current from the live stream, which itself only carries the screen and a little history above it.
+- Scrolling through anything already downloaded is the browser's own scroll, with no request to the server. History not downloaded yet (the first round trip after opening) shows as blank lines that fill in when it lands.
+- The copy is downloaded again whenever it can no longer be shown to match the pane: the history was cleared, the pane's width changed (tmux re-wraps its history), or more output arrived between two snapshots than a snapshot covers. A copy that matches is never thrown away, including across a reconnect.
+
+A full-screen app on the alternate screen keeps its history inside the app, not in tmux, so there is nothing to download. For a mouse-aware one (Claude Code with `"tui": "fullscreen"`, vim, htop) the wheel is forwarded to the app and each scroll step waits a round trip to the server. To get local scrolling for Claude sessions, turn on **Claude Inline Renderer** (`claude_inline_tui`): aoe then starts Claude with its inline renderer without touching your own Claude settings.
+
+```toml
+[session]
+claude_inline_tui = true
+```
+
+It applies whenever a session's Claude starts or restarts, whatever per-session arguments the session carries, so a running session switches on its next restart.
 
 ## Copy and scroll
 
-The terminal uses tmux for scrollback and selection, so copy and scroll work with no modifier keys:
+The terminal renders tmux's scrollback as page text, so copy and scroll work with no modifier keys:
 
-- **Scroll** with the mouse wheel (or a one-finger swipe on touch) through tmux scrollback. Touch scrolling follows the finger like any native list: drag down to look back through history, drag up to head back toward the live tail.
-- **Select** by click-dragging across the text. Dragging upward past the top edge scrolls into scrollback and extends the selection. Releasing the drag copies to your system clipboard automatically; no Ctrl/Cmd+C needed.
+- **Scroll** with the mouse wheel (or a one-finger swipe on touch) through the pane's scrollback (see above). Touch scrolling follows the finger like any native list: drag down to look back through history, drag up to head back toward the live tail.
+- **Select** by click-dragging across the text. Releasing the drag copies to your system clipboard automatically; no Ctrl/Cmd+C needed.
 
 Mouse-enabled full-screen agents copy through OSC 52 instead: AoE forwards the agent's clipboard event through the live connection to the same browser clipboard path.
 
@@ -51,11 +68,11 @@ When the server runs with `aoe serve --read-only`, the terminal renders the live
 
 ## On mobile
 
-On touch devices the agent pane uses a different architecture, mirroring the TUI's live mode: instead of attaching a PTY, the server streams `tmux capture-pane` snapshots over the WebSocket and the dashboard renders them as real text. That makes the phone experience native:
+The same live view makes the phone experience native:
 
-- **Scrolling is the browser's own scroll**: momentum, rubber-banding, and finger-true tracking, over the pane's real tmux scrollback. No copy-mode round trips, and the agent keeps running while you read history.
+- **Scrolling is the browser's own scroll**: momentum, rubber-banding, and finger-true tracking, over the pane's scrollback downloaded as above.
 - **Text selection is native**: long-press to select and copy, like any web page.
 - **Typing** goes back over the same WebSocket and is delivered with `tmux send-keys`. A paste of any length arrives whole: it is split across several `send-keys` calls of at most 512 bytes each, because tmux 3.7 rejects a command with more than 1000 arguments ("command too long") and each byte is one argument. Tapping anywhere on the terminal brings up the soft keyboard, the floating keyboard button toggles it open and closed, and the terminal toolbar provides arrows, Tab, Esc, a `Ctrl` modifier toggle, interrupt, and paste.
 - **Pinch** adjusts the font size; the pane resizes the tmux window to the resulting grid.
 
-A "Back to live" pill appears while you are scrolled up; tapping it (or scrolling to the bottom) returns to the live tail. The pane stays mounted while you switch views so the connection and scroll position survive. Desktop keeps the full xterm.js PTY relay described above.
+A "Back to live" pill appears while you are scrolled up; tapping it (or scrolling to the bottom) returns to the live tail. The pane stays mounted while you switch views so the connection and scroll position survive.

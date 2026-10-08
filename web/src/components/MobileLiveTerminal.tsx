@@ -132,7 +132,7 @@ export interface MobileLiveTerminalProps {
   sendResize: (cols: number, rows: number) => void;
   setWindow: (lines: number) => void;
   setCadence: (fast: boolean) => void;
-  enterReading: (rows: number) => void;
+  enterReading: () => void;
   returnToLive: (rows: number) => void;
   sendData: (data: string) => void;
   /** Upload a clipboard image pasted into the pane and resolve to the path
@@ -978,7 +978,7 @@ export function MobileLiveTerminal({
       }
     }
     if (!atBottom()) {
-      enterReading(rowsRef.current);
+      enterReading();
     } else if (!touchActiveRef.current) {
       // Mid-gesture passes over the bottom edge are settled on touchend;
       // re-entering live here would let the next frame pin against the
@@ -1349,7 +1349,7 @@ export function MobileLiveTerminal({
         // tripping it.
         if (Math.abs(e.touches[0]!.clientY - touchScrollStartYRef.current) > 8) {
           suppressTouchClickRef.current = true;
-          enterReading(rowsRef.current);
+          enterReading();
         }
       }
     },
