@@ -6,6 +6,7 @@ import { createFrameInflater, supportsFrameDeflate, type FrameInflater } from ".
 import { MAX_RETRIES, retryDelayMs } from "../lib/wsBackoff";
 import { reportTelemetrySeen } from "../lib/api";
 import { HISTORY_CAP_LINES, mergeFrame, type HistoryCache } from "../lib/liveHistory";
+import { recallScreen, rememberScreen, screenKey } from "../lib/screenCache";
 
 // Capture-snapshot live view transport (mobile). Mirrors the TUI's
 // live-send model: the server polls `tmux capture-pane` and pushes ANSI
@@ -188,7 +189,11 @@ export function useLiveTerminal(
     wsRef.current?.close();
     pendingInputRef.current = [];
     ownerKnownRef.current = false;
-    historyRef.current = null;
+    // A session this page showed before starts from its remembered screen
+    // and scrollback, so it draws at once while the socket connects.
+    const memoryKey = screenKey(sessionId, wsPath);
+    const recalled = recallScreen(memoryKey);
+    historyRef.current = recalled?.history ?? null;
     downloadingRef.current = false;
     lastDownloadRef.current = Number.NEGATIVE_INFINITY;
     if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
@@ -199,7 +204,7 @@ export function useLiveTerminal(
     // lines (the frame handler trusts the ref) while the UI believes it
     // is at the live edge and offers no way back.
     readingRef.current = false;
-    setState(() => INITIAL_STATE);
+    setState(() => ({ ...INITIAL_STATE, frame: recalled?.frame ?? null }));
 
     let disposed = false;
     // Inflater for the compressed frame stream, one per live connection
@@ -342,6 +347,7 @@ export function useLiveTerminal(
           downloadingRef.current = true;
         }
         syncWindow();
+        rememberScreen(memoryKey, { frame: incoming, history: historyRef.current });
         // Always render the freshest frame. The component's spacer model
         // keeps a reader's position stable as the agent streams
         // (above-viewport pixels are invariant), so no freeze is needed.

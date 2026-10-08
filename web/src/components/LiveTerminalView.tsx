@@ -7,6 +7,7 @@ import { MobileLiveTerminal } from "./MobileLiveTerminal";
 import { KeyboardFab } from "./KeyboardFab";
 import { TerminalConnectionBanners } from "./TerminalConnectionBanners";
 import { ensureSession, ensureTerminal, pasteImage } from "../lib/api";
+import { recallScreen, screenKey } from "../lib/screenCache";
 import { armClipboardWrite, writeClipboard } from "../lib/clipboard";
 import type { ArmedClipboardWrite } from "../lib/clipboard";
 import type { SessionResponse } from "../lib/types";
@@ -193,7 +194,11 @@ export function LiveTerminalView({ session, active = true, surface = "agent", te
     else ta.focus();
   }, [inputFocused]);
 
-  if (ensureState === "pending") {
+  // While the session is being ensured, a screen this page remembers (or
+  // prefetched from the sidebar) stands in for the placeholder; the live
+  // stream replaces it once it connects.
+  const remembered = ensureState === "pending" ? recallScreen(screenKey(session.id, wsPath)) : undefined;
+  if (ensureState === "pending" && !remembered) {
     return (
       <div className="flex-1 flex items-center justify-center bg-surface-950 text-text-dim">
         <span className="text-xs">Starting session...</span>
@@ -292,7 +297,7 @@ export function LiveTerminalView({ session, active = true, surface = "agent", te
         }}
       >
         <MobileLiveTerminal
-          frame={live.state.frame}
+          frame={live.state.frame ?? remembered?.frame ?? null}
           armAgentClipboard={armAgentClipboard}
           connected={live.state.connected}
           active={active}

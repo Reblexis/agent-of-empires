@@ -36,6 +36,14 @@ What you type shows up at once, without waiting for the server to echo it, the w
 - A prediction is shown at once only on a row whose prompt has already echoed this browser's typing (the row's text up to the first space after its first word: Claude's `❯`, your shell prompt). On any other row the first character waits for the server's echo, and once it arrives the rest of that row is predicted again. A row that never echoes, such as a password prompt, never shows your input.
 - A prediction the server contradicts (the cursor or the text left of it ends up somewhere else) is dropped as soon as that snapshot arrives, and one the server has not confirmed within 1.5 s is dropped and its row has to earn trust again. The cost of a wrong guess is that for up to one round trip you see a character the app then draws differently or not at all.
 
+### Switching sessions
+
+Opening a session shows a screen at once instead of a "Starting session..." placeholder:
+
+- The browser remembers the last screen, and the downloaded scrollback, of the 32 sessions it showed most recently, for as long as the page stays open. Opening one of them shows that screen immediately while the session is started (if it was stopped) and its live stream connects, which takes a few round trips to the server; the live stream then replaces it. Keys typed meanwhile are delivered once the stream connects.
+- Resting the pointer on a session in the sidebar fetches its current screen in the background (at most once every 10 seconds per session), so a session not yet opened in this page also appears at once when clicked.
+- Without a remembered or prefetched screen (the first open on a touch device, say), the placeholder shows until the stream connects, as before.
+
 ## Copy and scroll
 
 The terminal renders tmux's scrollback as page text, so copy and scroll work with no modifier keys:

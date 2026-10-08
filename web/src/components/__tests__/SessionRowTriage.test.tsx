@@ -27,6 +27,7 @@ import { SessionColorsContext } from "../../lib/sessionColors";
 import { useSidebarTriage } from "../../hooks/useSidebarTriage";
 import type { SessionResponse, Workspace } from "../../lib/types";
 import { OPEN_SESSION_EVENT } from "../../lib/sessionRoute";
+import { forgetAllScreens } from "../../lib/screenCache";
 import { OPEN_SWITCH_AGENT_EVENT, consumePendingSwitchAgent } from "../../lib/switchAgentTrigger";
 
 function session(over: Partial<SessionResponse> = {}): SessionResponse {
@@ -136,6 +137,7 @@ function Row({
 const fetchSpy = vi.fn<typeof fetch>();
 
 beforeEach(() => {
+  forgetAllScreens();
   fetchSpy.mockReset();
   vi.stubGlobal("fetch", fetchSpy);
   fetchSpy.mockImplementation(
@@ -927,5 +929,36 @@ describe("SessionRow color label (#2383)", () => {
     for (const key of ["red", "amber", "green", "clear"]) {
       expect(screen.queryByTestId(`sidebar-context-menu-color-${key}`)).toBeNull();
     }
+  });
+});
+
+// docs/guides/web/terminal.md, "Switching sessions".
+describe("SessionRow screen prefetch", () => {
+  const outputCalls = () =>
+    fetchSpy.mock.calls.map((c) => String(c[0])).filter((u) => u.includes("/output?format=ansi"));
+
+  it("resting the pointer on a running terminal session fetches its screen", () => {
+    render(
+      <Wrap>
+        <Row ws={workspace("w1", [session({ id: "s1", status: "Running" })])} />
+      </Wrap>,
+    );
+    fireEvent.mouseEnter(screen.getByText("row title").closest("a")!);
+    expect(outputCalls()).toEqual(["/api/sessions/s1/output?format=ansi&lines=1"]);
+  });
+
+  it("does not fetch for a stopped or structured-view session", () => {
+    render(
+      <Wrap>
+        <Row
+          ws={workspace("w1", [
+            session({ id: "s1", status: "Stopped" }),
+            session({ id: "s2", status: "Running", view: "structured" } as Partial<SessionResponse>),
+          ])}
+        />
+      </Wrap>,
+    );
+    fireEvent.mouseEnter(screen.getAllByText("row title")[0]!.closest("a")!);
+    expect(outputCalls()).toEqual([]);
   });
 });

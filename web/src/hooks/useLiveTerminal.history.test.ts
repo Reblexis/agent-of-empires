@@ -7,6 +7,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useLiveTerminal } from "./useLiveTerminal";
+import { forgetAllScreens } from "../lib/screenCache";
 
 vi.mock("../lib/token", () => ({ getToken: () => null }));
 vi.mock("../lib/deviceBinding", () => ({ getOrCreateDeviceBindingSecret: () => null }));
@@ -36,6 +37,7 @@ class FakeWS {
 
 beforeEach(() => {
   vi.useFakeTimers();
+  forgetAllScreens();
   FakeWS.all = [];
   vi.stubGlobal("WebSocket", FakeWS as unknown as typeof WebSocket);
 });
@@ -168,5 +170,33 @@ describe("useLiveTerminal scrollback download", () => {
     act(() => ws.onopen?.({}));
     sendFrame(ws, lines(1000), 1000, 2);
     expect(windowsSent(ws).at(-1)).toBe(4000);
+  });
+
+  it("switching back to a session shows its last screen before the socket opens", () => {
+    const hook = open("a");
+    const all = lines(1000);
+    sendFrame(last(), all, 1000, 2);
+    sendFrame(last(), all, 1000, 1000);
+    const shownA = hook.result.current.state.frame!.content;
+    hook.rerender({ id: "b" });
+    expect(hook.result.current.state.frame).toBeNull();
+    hook.rerender({ id: "a" });
+    expect(hook.result.current.state.connected).toBe(false);
+    expect(hook.result.current.state.frame?.content).toBe(shownA);
+  });
+
+  it("reuses a remembered session's scrollback instead of downloading it again", () => {
+    const hook = open("a");
+    const all = lines(1010);
+    sendFrame(last(), all, 1000, 2);
+    sendFrame(last(), all, 1000, 1000);
+    hook.rerender({ id: "b" });
+    hook.rerender({ id: "a" });
+    const ws = last();
+    act(() => ws.onopen?.({}));
+    act(() => hook.result.current.setWindow(4));
+    sendFrame(ws, all, 1010, 20);
+    expect(windowsSent(ws)).not.toContain(4000);
+    expect(renderedLines(hook.result.current.state.frame!.content)).toEqual([...all, ...SCREEN]);
   });
 });

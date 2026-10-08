@@ -1,4 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
+import { prefetchScreen } from "../lib/screenCache";
 import {
   createContext,
   memo,
@@ -1523,6 +1524,22 @@ export const SessionRow = memo(function SessionRow({
           // click builds the selection instead of following the href.
           e.preventDefault();
           onActivate(e);
+        }}
+        // Fetch the screens this row would open, so a click draws them at once
+        // (docs/guides/web/terminal.md, "Switching sessions").
+        onMouseEnter={() => {
+          if (isActive) return;
+          for (const s of workspace.sessions) {
+            if (
+              s.view === "structured" ||
+              s.status === "Stopped" ||
+              s.status === "Deleting" ||
+              s.status === "Creating"
+            ) {
+              continue;
+            }
+            void prefetchScreen(s.id);
+          }
         }}
         onContextMenu={handleContextMenu}
         onTouchStart={handleTouchStart}
