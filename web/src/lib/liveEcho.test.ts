@@ -173,4 +173,90 @@ describe("EchoTracker", () => {
     t.input("a", null, 20);
     expect(t.pending()).toBe(false);
   });
+
+  // The screen does not keep trailing spaces: right after a space, or on an
+  // empty prompt, the cursor sits past the row's last visible character.
+  // These rows crashed the dashboard ("Something went wrong") and, on a
+  // keystroke, stopped typing from reaching the session (2026-10-10).
+  const trimmedRow = (text: string, x: number, width = 20): EchoRow => ({
+    segs: text ? [{ text, style: {} }] : [],
+    x,
+    width,
+  });
+
+  it("typing after a space no longer crashes the view or stops typing", () => {
+    const t = trustedTracker();
+    const row = trimmedRow(`${PROMPT}hello`, 8);
+    expect(() => t.input("w", row, 20)).not.toThrow();
+    expect(shown(t, row)).toEqual({ text: `${PROMPT}hello w`.padEnd(20), x: 9 });
+    const echoed = trimmedRow(`${PROMPT}hello w`, 9);
+    expect(() => t.reconcile(echoed)).not.toThrow();
+    expect(t.pending()).toBe(false);
+  });
+
+  it("Backspace past the row's last visible character removes the trailing space", () => {
+    const t = trustedTracker();
+    const row = trimmedRow(`${PROMPT}hello`, 8);
+    expect(() => t.input("\x7f", row, 20)).not.toThrow();
+    expect(shown(t, row)).toEqual({ text: `${PROMPT}hello`.padEnd(20), x: 7 });
+  });
+
+  it("an empty prompt whose trailing space is trimmed predicts like a padded one", () => {
+    const t = new EchoTracker();
+    const shell = "v@box:~$ ";
+    expect(() => t.input("l", trimmedRow(shell.trimEnd(), 9), 0)).not.toThrow();
+    expect(() => t.reconcile(trimmedRow(`${shell}l`, 10))).not.toThrow();
+    const row = trimmedRow(`${shell}l`, 10);
+    t.input("s", row, 20);
+    expect(shown(t, row)).toEqual({ text: `${shell}ls`.padEnd(20), x: 11 });
+  });
+
+  it("a snapshot whose cursor is past the row's text settles without crashing", () => {
+    const t = trustedTracker();
+    t.input("ab", plainRow(`${PROMPT}h`, 3), 20);
+    // The app drew a space and moved on: cursor past the visible text.
+    expect(() => t.reconcile(trimmedRow(`${PROMPT}h`, 6))).not.toThrow();
+    expect(() => t.render(trimmedRow(`${PROMPT}h`, 6))).not.toThrow();
+  });
+
+  it("an empty row and a row with no known width never throw", () => {
+    for (const row of [
+      trimmedRow("", 0),
+      trimmedRow("", 5),
+      { segs: [], x: 4 },
+      { segs: [{ text: "ab", style: {} }], x: 7 },
+    ]) {
+      const t = trustedTracker();
+      expect(() => t.input("x\x7f\x7fy", row, 20)).not.toThrow();
+      expect(() => t.render(row)).not.toThrow();
+      expect(() => t.reconcile(row)).not.toThrow();
+    }
+  });
+
+  it("prediction never throws, whatever rows and keys arrive", () => {
+    // Deterministic pseudo-random rows, cursors and keys.
+    let seed = 42;
+    const rnd = (n: number) => {
+      seed = (seed * 1103515245 + 12345) % 2 ** 31;
+      return seed % n;
+    };
+    const alphabet = ["a", " ", "❯", "\x7f", "中", "é"];
+    const randomRow = (): EchoRow => {
+      const len = rnd(12);
+      let text = "";
+      for (let i = 0; i < len; i++) text += alphabet[rnd(alphabet.length - 1)];
+      const segs = rnd(4) === 0 ? [] : [{ text, style: rnd(3) === 0 ? DIM : {} }];
+      return { segs, x: rnd(16), ...(rnd(2) ? { width: 1 + rnd(16) } : {}) };
+    };
+    const t = new EchoTracker();
+    for (let i = 0; i < 5000; i++) {
+      const row = rnd(5) === 0 ? null : randomRow();
+      const op = rnd(3);
+      expect(() => {
+        if (op === 0) t.input(alphabet[rnd(alphabet.length)]!, row, i);
+        else if (op === 1) t.reconcile(row);
+        else if (row) t.render(row);
+      }).not.toThrow();
+    }
+  });
 });

@@ -7,6 +7,7 @@ import { createRef } from "react";
 import { act, render } from "@testing-library/react";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import { MobileLiveTerminal } from "../MobileLiveTerminal";
+import { EchoTracker } from "../../lib/liveEcho";
 import type { LiveFrame } from "../../hooks/useLiveTerminal";
 
 vi.mock("../../hooks/useWebSettings", () => ({
@@ -22,15 +23,19 @@ beforeAll(() => {
 });
 
 const PROMPT = "❯ ";
-const frameWith = (input: string): LiveFrame => ({
-  // capture-pane -N keeps every row at the pane's full width.
-  content: [`${PROMPT}${input}`, "", "status"].map((l) => `${l.padEnd(20)}\n`).join(""),
+const frameWith = (input: string, opts: { trimmed?: boolean; split?: boolean } = {}): LiveFrame => ({
+  // capture-pane -N keeps every row at the pane's full width; the live
+  // stream's rows end at their last visible character (`trimmed`).
+  content: [`${PROMPT}${input}`, "", "status"]
+    .map((l) => `${opts.trimmed ? l.replace(/ +$/, "") : l.padEnd(20)}\n`)
+    .join(""),
   rows: 3,
   history: 0,
   cursor: { x: 2 + input.length, y: 0 },
   altScreen: false,
   mouse: false,
   mouseSgr: false,
+  ...(opts.split ? { pane0: { cols: 20, rows: 3 } } : {}),
 });
 
 function mount(predictEcho = true) {
@@ -67,7 +72,8 @@ function mount(predictEcho = true) {
         new InputEvent("beforeinput", { inputType: "insertText", data, bubbles: true, cancelable: true }),
       );
     });
-  const frame = (input: string, predict = predictEcho) => view.rerender(props(frameWith(input), predict));
+  const frame = (input: string, predict = predictEcho, opts: { trimmed?: boolean; split?: boolean } = {}) =>
+    view.rerender(props(frameWith(input, opts), predict));
   const screen = () => view.container.querySelector("[data-live-content]")!.textContent ?? "";
   return { sendData, type, frame, screen };
 }
@@ -93,5 +99,60 @@ describe("MobileLiveTerminal local echo", () => {
     t.frame("h", false);
     t.type("i");
     expect(t.screen()).not.toContain(`${PROMPT}hi`);
+  });
+
+  // 2026-10-10: after typing a space the dashboard showed "Something went
+  // wrong", or keys stopped reaching the session until Enter.
+  it("typing after a space still reaches the session", () => {
+    const t = mount();
+    t.frame("", true, { trimmed: true });
+    t.type("a");
+    t.frame("a", true, { trimmed: true });
+    t.type(" ");
+    t.frame("a ", true, { trimmed: true });
+    t.type("b");
+    t.type("c");
+    expect(t.sendData.mock.calls.map((c) => c[0])).toEqual(["a", " ", "b", "c"]);
+    t.frame("a bc", true, { trimmed: true });
+    expect(t.screen()).toContain(`${PROMPT}a bc`);
+    expect(t.screen()).not.toContain(`${PROMPT}a bcbc`);
+  });
+
+  it("a window split into panes predicts nothing", () => {
+    const t = mount();
+    t.frame("", true, { split: true });
+    t.type("h");
+    t.frame("h", true, { split: true });
+    t.type("i");
+    expect(t.sendData).toHaveBeenCalledWith("i");
+    expect(t.screen()).not.toContain(`${PROMPT}hi`);
+  });
+
+  it("a key is sent even when predicting it fails", () => {
+    const spy = vi.spyOn(EchoTracker.prototype, "input").mockImplementation(() => {
+      throw new Error("boom");
+    });
+    try {
+      const t = mount();
+      expect(() => t.type("h")).not.toThrow();
+      expect(t.sendData).toHaveBeenCalledWith("h");
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("the view shows the server's screen when settling predictions fails", () => {
+    const spy = vi.spyOn(EchoTracker.prototype, "reconcile").mockImplementation(() => {
+      throw new Error("boom");
+    });
+    try {
+      const t = mount();
+      t.type("h");
+      expect(() => t.frame("h")).not.toThrow();
+      expect(t.screen()).toContain(`${PROMPT}h`);
+      expect(t.screen()).toContain("status");
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

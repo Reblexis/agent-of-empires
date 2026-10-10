@@ -23,10 +23,13 @@ const SIGNATURE_MAX = 40;
 
 export type EchoEvent = { kind: "char"; ch: string } | { kind: "bs" };
 
-/** The cursor's row in the latest snapshot. */
+/** The cursor's row in the latest snapshot. Its segments may end at the
+ *  last visible character (the screen keeps no trailing spaces), so the
+ *  cursor can sit past them; `width` is the pane's width when known. */
 export interface EchoRow {
   segs: AnsiSegment[];
   x: number;
+  width?: number;
 }
 
 interface Cell {
@@ -75,6 +78,15 @@ function segsOf(cells: Cell[]): AnsiSegment[] {
   return segs;
 }
 
+/** The row's cells, padded with blanks to its width and past the cursor so
+ *  every cell left of and at the cursor exists. */
+function rowCells(row: EchoRow): Cell[] {
+  const cells = cellsOf(row.segs);
+  const target = Math.max(row.width ?? 0, row.x + 1);
+  while (cells.length < target) cells.push({ ch: " ", style: BLANK });
+  return cells;
+}
+
 const isBlank = (c: Cell) => c.ch.trim() === "";
 
 /** The row after `events`, or null when the outcome is not predictable (the
@@ -83,6 +95,7 @@ function applyEvents(row: Cell[], x0: number, events: EchoEvent[]): { cells: Cel
   const cells = row.slice();
   const width = cells.length;
   let x = x0;
+  if (x < 0 || x >= width) return null;
   for (const ev of events) {
     if (ev.kind === "bs") {
       if (x === 0 || cells[x - 1]!.ch === "") return null;
@@ -143,7 +156,7 @@ export class EchoTracker {
       return;
     }
     if (!this.state) {
-      const base = cellsOf(row.segs);
+      const base = rowCells(row);
       const sig = signature(base, row.x);
       this.state = { base, x: row.x, events: [], sig, shown: this.trusted.has(sig), deadline: now + ECHO_CONFIRM_MS };
     }
@@ -157,7 +170,7 @@ export class EchoTracker {
   reconcile(row: EchoRow | null) {
     const s = this.state;
     if (!s || !row) return;
-    const seen = cellsOf(row.segs);
+    const seen = rowCells(row);
     for (let j = s.events.length; j >= 0; j--) {
       const r = applyEvents(s.base, s.x, s.events.slice(0, j));
       if (!r || r.x !== row.x) continue;
@@ -187,6 +200,11 @@ export class EchoTracker {
     this.state = null;
   }
 
+  /** Drop every prediction (prediction failed; show the server's screen). */
+  reset() {
+    this.state = null;
+  }
+
   pending(): boolean {
     return this.state != null;
   }
@@ -204,7 +222,7 @@ export class EchoTracker {
   render(row: EchoRow): { segs: AnsiSegment[]; x: number } | null {
     const s = this.state;
     if (!s || !s.shown) return null;
-    const r = applyEvents(cellsOf(row.segs), row.x, s.events);
+    const r = applyEvents(rowCells(row), row.x, s.events);
     return r && { segs: segsOf(r.cells), x: r.x };
   }
 }

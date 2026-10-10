@@ -11,6 +11,7 @@ import {
   type LinkSpan,
 } from "../lib/liveTermLines";
 import { EchoTracker } from "../lib/liveEcho";
+import { reportError } from "../lib/logger";
 import { wheelNotches } from "../lib/liveMouse";
 import { registerMobileKeyboardProxyReceiver, type MobileKeyboardProxyInput } from "../lib/mobileKeyboardProxy";
 import { writeClipboard } from "../lib/clipboard";
@@ -750,30 +751,52 @@ export function MobileLiveTerminal({
   // read is legal; re-running on the same frame converges (see the class).
   const [parseCache] = useState(() => new LineParseCache());
   const parsedLines = useMemo(() => (frame ? parseCache.lines(frame.content) : []), [frame, parseCache]);
+  // Columns this viewer renders at. Normally the pane is exactly this
+  // wide and wrapping is the identity; when another writer resizes the
+  // window wider (see the server-side drift re-assert), wrapping keeps
+  // the frame readable instead of clipping at the right edge.
+  const [renderCols, setRenderCols] = useState(0);
   // Local echo: the cursor's row in this snapshot is what typing is predicted
   // on (null when nothing may be predicted: no cursor, a full-screen app,
-  // reading scrollback). Each new snapshot settles the predictions before
-  // paint, so a confirmed character is never drawn twice.
+  // reading scrollback, a window split into panes). Each new snapshot settles
+  // the predictions before paint, so a confirmed character is never drawn
+  // twice. Prediction only ever adds a preview: a failure drops it and the
+  // server's screen shows as it is.
   const [echo] = useState(() => new EchoTracker());
   const [echoVersion, setEchoVersion] = useState(0);
   const echoRow = useMemo(() => {
     const cursor = frame?.cursor;
-    if (!predictEcho || reading || !frame || !cursor || frame.altScreen) return null;
+    if (!predictEcho || reading || !frame || !cursor || frame.altScreen || frame.pane0) return null;
     const idx = Math.max(0, parsedLines.length - frame.rows) + cursor.y;
     const segs = parsedLines[idx];
-    return segs ? { segs, x: cursor.x, idx } : null;
-  }, [predictEcho, reading, frame, parsedLines]);
+    const width = renderCols > 0 ? renderCols : undefined;
+    return segs ? { segs, x: cursor.x, width, idx } : null;
+  }, [predictEcho, reading, frame, parsedLines, renderCols]);
   const [reconciledRow, setReconciledRow] = useState(echoRow);
   if (reconciledRow !== echoRow) {
     setReconciledRow(echoRow);
-    echo.reconcile(echoRow);
+    try {
+      echo.reconcile(echoRow);
+    } catch (err) {
+      echo.reset();
+      reportError(err, { target: "live.echo" });
+    }
   }
   const echoRowRef = useRef(echoRow);
   useLayoutEffect(() => {
     echoRowRef.current = echoRow;
   }, [echoRow]);
   const predicted = useMemo(
-    () => (echoRow ? echo.render(echoRow) : null),
+    () => {
+      if (!echoRow) return null;
+      try {
+        return echo.render(echoRow);
+      } catch (err) {
+        echo.reset();
+        reportError(err, { target: "live.echo" });
+        return null;
+      }
+    },
     // echoVersion: the tracker is mutable; a bump means its state changed.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [echo, echoRow, echoVersion],
@@ -797,11 +820,6 @@ export function MobileLiveTerminal({
     );
     return () => clearTimeout(timer);
   }, [echo, echoVersion, reconciledRow]);
-  // Columns this viewer renders at. Normally the pane is exactly this
-  // wide and wrapping is the identity; when another writer resizes the
-  // window wider (see the server-side drift re-assert), wrapping keeps
-  // the frame readable instead of clipping at the right edge.
-  const [renderCols, setRenderCols] = useState(0);
   // Wrap results keyed on the line's segment-array identity (stable across
   // frames thanks to LineParseCache), so only changed lines re-wrap and
   // unchanged visual rows keep THEIR identity too, which is what lets
@@ -1245,9 +1263,16 @@ export function MobileLiveTerminal({
     (data: string) => {
       stopMomentum();
       cancelTouchWheelQueue();
-      echo.input(data, echoRowRef.current, Date.now());
-      setEchoVersion((v) => v + 1);
+      // The key goes out first: a prediction must never stand between a key
+      // and the session.
       sendDataRaw(data);
+      try {
+        echo.input(data, echoRowRef.current, Date.now());
+      } catch (err) {
+        echo.reset();
+        reportError(err, { target: "live.echo" });
+      }
+      setEchoVersion((v) => v + 1);
     },
     [sendDataRaw, stopMomentum, cancelTouchWheelQueue, echo],
   );
