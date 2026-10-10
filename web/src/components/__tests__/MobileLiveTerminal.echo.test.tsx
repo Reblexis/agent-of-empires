@@ -74,8 +74,9 @@ function mount(predictEcho = true) {
     });
   const frame = (input: string, predict = predictEcho, opts: { trimmed?: boolean; split?: boolean } = {}) =>
     view.rerender(props(frameWith(input, opts), predict));
+  const frameRaw = (f: LiveFrame) => view.rerender(props(f));
   const screen = () => view.container.querySelector("[data-live-content]")!.textContent ?? "";
-  return { sendData, type, frame, screen };
+  return { sendData, type, frame, frameRaw, screen };
 }
 
 describe("MobileLiveTerminal local echo", () => {
@@ -116,6 +117,22 @@ describe("MobileLiveTerminal local echo", () => {
     t.frame("a bc", true, { trimmed: true });
     expect(t.screen()).toContain(`${PROMPT}a bc`);
     expect(t.screen()).not.toContain(`${PROMPT}a bcbc`);
+  });
+
+  it("typing on the second line of a multi-line message reaches the session", () => {
+    const t = mount();
+    // Claude after Shift+Enter: the cursor sits indented on a row the app
+    // never wrote, so the row arrives empty.
+    const secondLine: LiveFrame = {
+      ...frameWith("one two", { trimmed: true }),
+      content: [`${PROMPT}one two`, "", "status"].map((l) => `${l}\n`).join(""),
+      cursor: { x: 2, y: 1 },
+    };
+    t.frameRaw(secondLine);
+    t.type("t");
+    t.type("h");
+    expect(t.sendData.mock.calls.map((c) => c[0])).toEqual(["t", "h"]);
+    expect(t.screen()).toContain("status");
   });
 
   it("a window split into panes predicts nothing", () => {
