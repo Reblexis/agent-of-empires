@@ -42,6 +42,7 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe session forecast set`↴](#aoe-session-forecast-set)
 * [`aoe session forecast show`↴](#aoe-session-forecast-show)
 * [`aoe session forecast clear`↴](#aoe-session-forecast-clear)
+* [`aoe session priority`↴](#aoe-session-priority)
 * [`aoe session list-trash`↴](#aoe-session-list-trash)
 * [`aoe session empty-trash`↴](#aoe-session-empty-trash)
 * [`aoe group`↴](#aoe-group)
@@ -438,6 +439,7 @@ Manage session lifecycle (start, stop, attach, etc.)
 * `restore` — Restore a trashed session, returning it to its prior bucket with its transcript and metadata intact. See #2489
 * `import` — Import existing Claude Code sessions from disk. Scans the given path(s) (default: current directory) for Claude Code conversations whose working directory is at or under a path, and creates an AoE session for each: a terminal/tmux session that resumes the conversation with `claude --resume <id>` (default), or a structured-view session with `--structured`
 * `forecast` — Write, print, or remove the session's forecast card: what happens to the numbers it works on if it stops now versus if it continues. The web dashboard pins the card on the session. See docs/guides/session-forecast.md
+* `priority` — Score how soon this session needs you, 0 to 10, or `clear`. An agent runs it at the end of its turn; the Attention sort and the TUI and web rows use it. See docs/guides/session-priority.md
 * `list-trash` — List the sessions currently in the trash
 * `empty-trash` — Permanently purge every trashed session in the profile (irreversible)
 
@@ -804,6 +806,22 @@ Print the session's stored card as JSON (nothing when it has none)
 Remove the session's card (succeeds when it has none)
 
 **Usage:** `aoe session forecast clear [OPTIONS]`
+
+###### **Options:**
+
+* `--session <SESSION>` — Session ID or title. Defaults to `$AOE_INSTANCE_ID`, which aoe sets inside every session it launches
+
+
+
+## `aoe session priority`
+
+Score how soon this session needs you, 0 to 10, or `clear`. An agent runs it at the end of its turn; the Attention sort and the TUI and web rows use it. See docs/guides/session-priority.md
+
+**Usage:** `aoe session priority [OPTIONS] <VALUE>`
+
+###### **Arguments:**
+
+* `<VALUE>` — An integer 0 to 10 (higher = needs you sooner), or `clear`
 
 ###### **Options:**
 

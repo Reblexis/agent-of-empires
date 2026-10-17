@@ -180,6 +180,13 @@ pub struct SessionResponse {
     pub color: Option<String>,
     #[serde(default)]
     pub urgent: bool,
+    /// Effective session priority, 0 to 10: how soon this session needs the
+    /// user, from its live status and the agent's current score
+    /// (`Instance::effective_priority`). The web Attention sort ranks on it
+    /// and the sidebar row shows it when above 0. See
+    /// docs/guides/session-priority.md.
+    #[serde(default)]
+    pub priority: u8,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pinned_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

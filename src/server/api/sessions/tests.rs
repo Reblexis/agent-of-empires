@@ -1299,6 +1299,21 @@ fn from_instance_reports_managed_worktree_for_workspace_session() {
 }
 
 #[test]
+fn from_instance_carries_the_effective_priority_live() {
+    let mut inst = make_test_instance();
+    inst.set_priority(Some(8));
+    assert_eq!(
+        SessionResponse::from_instance(&inst, false).priority,
+        0,
+        "a running session does not need you"
+    );
+    inst.status = Status::Idle;
+    assert_eq!(SessionResponse::from_instance(&inst, false).priority, 8);
+    inst.set_priority(None);
+    assert_eq!(SessionResponse::from_instance(&inst, false).priority, 3);
+}
+
+#[test]
 #[serial_test::serial(hook_base)]
 fn from_instance_surfaces_hook_urgent_flag() {
     // #1640: the web Attention sort needs `Instance::is_urgent()` on the wire.

@@ -693,6 +693,7 @@ mod workspace_ordering_tests {
             favorited: false,
             color: None,
             urgent: false,
+            priority: 0,
             pinned_at: None,
             archived_at: None,
             snoozed_until: None,

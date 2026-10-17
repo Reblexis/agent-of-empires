@@ -18,6 +18,7 @@ import {
   repoGroupAttentionRank,
   repoGroupIsFavorited,
   repoGroupIsUrgent,
+  repoGroupPriority,
   repoGroupLastActivityMs,
   repoGroupPluginSortValue,
   workspaceTriageTier,
@@ -149,6 +150,9 @@ export function useRepoGroups(
             const au = repoGroupIsUrgent(a.workspaces);
             const bu = repoGroupIsUrgent(b.workspaces);
             if (au !== bu) return au ? -1 : 1;
+            const ap = repoGroupPriority(a.workspaces, pluginAttention);
+            const bp = repoGroupPriority(b.workspaces, pluginAttention);
+            if (ap !== bp) return bp - ap;
             const ar = repoGroupAttentionRank(a.workspaces, pluginAttention);
             const br = repoGroupAttentionRank(b.workspaces, pluginAttention);
             if (ar !== br) return ar - br;

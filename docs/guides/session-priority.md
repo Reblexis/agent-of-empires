@@ -45,7 +45,9 @@ session's state each time it is read, never stored:
    pane, or status `Running`, `Starting`, `Creating`, `Deleting`, `Stopped`.
 2. `Unknown` is 1.
 3. `Waiting`, `Idle` and `Error` use the agent's score if it is **current**,
-   otherwise a default: `Waiting` 5, `Error` 5, `Idle` 3.
+   otherwise a default: `Waiting` 5, `Error` 4, `Idle` 3, and an `Idle` or
+   `Error` session carrying the unread marker 4. With no scores anywhere this
+   reproduces the Attention order aoe had before priorities existed.
 
 A score is current when it was set after the session last entered `Running`
 from any other status (aoe records that moment as `run_started_at`). So a score
@@ -62,6 +64,10 @@ default applies.
   Idle, Unknown, Running, Stopped, transient) breaks ties, then the existing
   favorite and activity tie-breaks. The `attention-urgent` flag still outranks
   everything. A workspace or group ranks by its highest-priority session.
+  On the web dashboard, where a plugin `row-column` entry toned `warn` or
+  `danger` ranks a session like Error, such a live session sorts with at least
+  the Error default (4), so Waiting stays ahead; its badge still shows the
+  session's own number.
 - **TUI row**: the effective priority shows as a number before the title when
   it is above 0.
 - **Web sidebar row**: a small numeric badge when above 0.

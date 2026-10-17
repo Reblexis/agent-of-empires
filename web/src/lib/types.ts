@@ -38,6 +38,11 @@ export interface SessionResponse {
   scratch: boolean;
   favorited: boolean;
   color?: string | null;
+  /** Effective session priority, 0 to 10: how soon this session needs the
+   *  user, computed server-side from its live status and the agent's
+   *  current score. Optional so older payloads read as 0. See
+   *  docs/guides/session-priority.md. */
+  priority?: number;
   /** The session's forecast card in brief, for the sidebar chip and to tell
    *  the session band when to refetch the full card. Null when the session
    *  has no card. See docs/guides/session-forecast.md. */

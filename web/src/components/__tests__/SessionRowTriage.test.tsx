@@ -113,6 +113,25 @@ describe("SessionRow row tags", () => {
   });
 });
 
+describe("SessionRow priority badge", () => {
+  it("shows the session's priority when it is above zero", () => {
+    renderRow(ws({ priority: 8 }));
+    const badge = screen.getByTestId("sidebar-session-priority");
+    expect(badge.textContent).toBe("8");
+    expect(badge.getAttribute("aria-label")).toBe("Priority 8");
+  });
+
+  it("shows nothing for a session that does not need you", () => {
+    renderRow(ws({ status: "Running", priority: 0 }));
+    expect(testId("sidebar-session-priority")).toBeNull();
+  });
+
+  it("hides the badge on a snoozed row even if a stale priority came in", () => {
+    renderRow(ws({ priority: 6, snoozed_until: inMinutes(90) }));
+    expect(testId("sidebar-session-priority")).toBeNull();
+  });
+});
+
 describe("SessionRow unread", () => {
   it.each([
     ["live idle unread row", {}, {}, true],

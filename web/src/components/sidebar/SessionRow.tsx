@@ -7,6 +7,7 @@ import { useIdleDecayWindowMs } from "../../lib/idleDecay";
 import { sessionRowChromeClass } from "../../lib/sessionRowChrome";
 import { useSessionColorsEnabled } from "../../lib/sessionColors";
 import { useSidebarCompact } from "../../lib/sidebarCompact";
+import { workspacePriority } from "../../lib/sidebarSort";
 import type { OptimisticTriage } from "../../lib/sidebarOptimistic";
 import { reportError, reportInfo } from "../../lib/toastBus";
 import { StatusGlyph } from "../StatusGlyph";
@@ -35,6 +36,7 @@ export const SessionRow = memo(function SessionRow(props: SessionRowProps) {
   const compact = useSidebarCompact();
   const { model, setNotify, setColor } = useSessionRowModel(workspace, props.optimistic, isActive);
   const { label, sessionId, isDeleting, navigationSession } = model;
+  const rowPriority = workspacePriority(workspace);
 
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(label);
@@ -198,6 +200,18 @@ export const SessionRow = memo(function SessionRow(props: SessionRowProps) {
               {model.isFavorited && (
                 <span title="Favorited" aria-label="Favorited" className="shrink-0 text-favorite">
                   ✦
+                </span>
+              )}
+              {!compact && rowPriority > 0 && !model.effectiveArchived && !model.effectiveSnoozed && (
+                <span
+                  data-testid="sidebar-session-priority"
+                  title={`Priority ${rowPriority}: how soon this session needs you`}
+                  aria-label={`Priority ${rowPriority}`}
+                  className={`inline-flex shrink-0 items-center justify-center rounded px-1 min-w-[1.25rem] text-[10px] font-mono font-semibold tabular-nums ${
+                    rowPriority >= 7 ? "bg-red-950/40 text-red-300" : "bg-surface-800/60 text-text-secondary"
+                  }`}
+                >
+                  {rowPriority}
                 </span>
               )}
               <span className="truncate" title={label}>

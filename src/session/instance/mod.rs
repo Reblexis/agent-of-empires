@@ -327,6 +327,17 @@ pub struct Instance {
     pub base_branch_override: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
+    /// The agent's score for its current ask, written by
+    /// `aoe session priority <n>`. Only counts while it is newer than
+    /// `run_started_at`; read it through [`Instance::effective_priority`].
+    /// See docs/guides/session-priority.md.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<super::priority::PriorityScore>,
+    /// When the status poller last saw this session enter `Running` from any
+    /// other status. Monotone: a patch never moves it backwards. A priority
+    /// score older than this belongs to an ask the user already answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_started_at: Option<DateTime<Utc>>,
     /// Position within its group under `SortOrder::Custom`. `None` sorts last.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sort_index: Option<u32>,
