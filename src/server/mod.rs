@@ -3273,6 +3273,19 @@ fn apply_tick_status_decisions(
 /// they belong together. A row absent from `prev` is new this tick and has no
 /// transition to report. Indices are only valid against the same slice, which
 /// the caller consumes immediately.
+/// Record `run_started_at` on every row this tick saw enter `Running`, before
+/// the passive patches are built from them, so the stale-score rule of
+/// docs/guides/session-priority.md reaches disk.
+fn stamp_run_starts(
+    instances: &mut [Instance],
+    transitions: &[(usize, Status)],
+    now: chrono::DateTime<chrono::Utc>,
+) {
+    for &(idx, old) in transitions {
+        instances[idx].note_status_transition(old, now);
+    }
+}
+
 fn observed_transitions(
     instances: &[Instance],
     prev: &std::collections::HashMap<String, crate::session::Status>,
@@ -4687,7 +4700,9 @@ async fn status_poll_loop(state: Arc<AppState>) {
             // #2690.
             let mut bundles: std::collections::HashMap<String, PassiveTransitionWrites> =
                 std::collections::HashMap::new();
-            for (idx, old) in observed_transitions(&instances, &prev) {
+            let transitions = observed_transitions(&instances, &prev);
+            stamp_run_starts(&mut instances, &transitions, now);
+            for (idx, old) in transitions {
                 let inst = &instances[idx];
                 // First turn's `Running -> Idle` edge: best-effort auto-name a
                 // still-default-named terminal session. Detached and
@@ -7875,6 +7890,39 @@ mod tests {
     }
 
     #[test]
+    fn a_session_the_daemon_sees_start_running_drops_its_old_priority_score() {
+        let mut started = Instance::new("started", "/tmp/started");
+        started.set_priority(Some(9));
+        started.status = Status::Running;
+        let mut finished = Instance::new("finished", "/tmp/finished");
+        finished.status = Status::Idle;
+        let prev = std::collections::HashMap::from([
+            (started.id.clone(), Status::Idle),
+            (finished.id.clone(), Status::Running),
+        ]);
+        let mut instances = vec![started, finished];
+        let now = chrono::Utc::now() + chrono::Duration::seconds(1);
+
+        let transitions = observed_transitions(&instances, &prev);
+        stamp_run_starts(&mut instances, &transitions, now);
+
+        assert_eq!(instances[0].run_started_at, Some(now));
+        assert_eq!(instances[1].run_started_at, None);
+        let patch = crate::session::PassiveStatusPatch::from_instance(&instances[0]);
+        assert_eq!(
+            patch.run_started_at,
+            Some(now),
+            "the stamp rides the persisted patch"
+        );
+        instances[0].status = Status::Idle;
+        assert_eq!(
+            instances[0].effective_priority(),
+            3,
+            "the 9 belonged to the answered ask"
+        );
+    }
+
+    #[test]
     fn tick_reports_no_transition_for_a_structured_phantom() {
         // The regression at tick level, over the two halves together. The
         // helper tests above pass even if the `continue` is dropped from
@@ -8251,6 +8299,7 @@ mod tests {
             .insert(
                 a1_id.clone(),
                 crate::session::PassiveStatusPatch {
+                    run_started_at: None,
                     lifecycle_generation: 0,
                     status: Status::Idle,
                     idle_entered_at: None,
@@ -8264,6 +8313,7 @@ mod tests {
             .insert(
                 b1_id.clone(),
                 crate::session::PassiveStatusPatch {
+                    run_started_at: None,
                     lifecycle_generation: 0,
                     status: Status::Running,
                     idle_entered_at: None,

@@ -16,6 +16,7 @@ import {
   compareWorkspacesByPluginSort,
   type PluginSortContext,
   repoGroupAttentionRank,
+  repoGroupPriority,
   repoGroupIsFavorited,
   repoGroupIsUrgent,
   repoGroupLastActivityMs,
@@ -278,7 +279,7 @@ export function useRepoGroups(
         // order (real repos, then multi-repo, then scratch), kept
         // consistent with lastActivity rather than letting a scratch group
         // with one Waiting session leapfrog every real repo. Among real
-        // groups: urgent first, then best attention rank, then favorited,
+        // groups: urgent first, then highest session priority, then best attention rank, then favorited,
         // then most-recent activity, then a deterministic repoPath
         // tie-break. See #1640.
         if (a.id === SCRATCH_GROUP_ID) return 1;
@@ -291,6 +292,9 @@ export function useRepoGroups(
         const au = repoGroupIsUrgent(a.workspaces);
         const bu = repoGroupIsUrgent(b.workspaces);
         if (au !== bu) return au ? -1 : 1;
+        const ap = repoGroupPriority(a.workspaces);
+        const bp = repoGroupPriority(b.workspaces);
+        if (ap !== bp) return bp - ap;
         const ar = repoGroupAttentionRank(a.workspaces);
         const br = repoGroupAttentionRank(b.workspaces);
         if (ar !== br) return ar - br;

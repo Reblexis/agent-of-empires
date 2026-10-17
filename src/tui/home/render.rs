@@ -503,6 +503,18 @@ pub(crate) fn compute_row_tag(
     }
 }
 
+/// Lead an agent row's title with its effective session priority when the
+/// session needs the user (above 0). See docs/guides/session-priority.md.
+fn with_priority_prefix(
+    priority: u8,
+    title: std::borrow::Cow<'_, str>,
+) -> std::borrow::Cow<'_, str> {
+    if priority == 0 {
+        return title;
+    }
+    std::borrow::Cow::Owned(format!("{priority} {title}"))
+}
+
 fn branch_row_tag(inst: &crate::session::Instance) -> Option<RowTag> {
     if let Some(ws) = &inst.workspace_info {
         workspace_branch_row_tag(&ws.branch, ws.repos.len())
@@ -1635,6 +1647,8 @@ impl HomeView {
                             } else {
                                 Cow::Owned(inst.title.clone())
                             };
+                            let title_text =
+                                with_priority_prefix(inst.effective_priority(), title_text);
                             (icon, title_text, style)
                         }
                         ViewMode::Terminal => {
@@ -4099,6 +4113,20 @@ mod tests {
 
     fn geo(id: &str, cols: u16, rows: u16) -> (String, u16, u16) {
         (id.to_string(), cols, rows)
+    }
+
+    #[test]
+    fn a_row_that_needs_you_leads_with_its_priority() {
+        use std::borrow::Cow;
+        assert_eq!(
+            with_priority_prefix(8, Cow::Borrowed("fix login")),
+            "8 fix login"
+        );
+        assert_eq!(
+            with_priority_prefix(10, Cow::Borrowed("! deploy")),
+            "10 ! deploy"
+        );
+        assert_eq!(with_priority_prefix(0, Cow::Borrowed("running")), "running");
     }
 
     #[test]

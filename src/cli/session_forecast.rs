@@ -35,7 +35,11 @@ pub const NO_SESSION: &str = "no session: run inside an aoe session or pass --se
 /// The instance id a forecast command acts on: `--session` (resolved in
 /// `profile` like every other `aoe session` subcommand) wins, else the id in
 /// `$AOE_INSTANCE_ID`, which must name a session in some profile.
-fn resolve_target(profile: &str, session: Option<&str>, env_id: Option<&str>) -> Result<String> {
+pub(crate) fn resolve_target(
+    profile: &str,
+    session: Option<&str>,
+    env_id: Option<&str>,
+) -> Result<String> {
     if let Some(identifier) = session {
         let storage = Storage::open_unwatched(profile)?;
         let instances = storage.load()?;

@@ -86,6 +86,12 @@ pub struct SessionResponse {
     /// returns false for archived/snoozed sessions, so a sunk row never
     /// claws back to the top. See #1640.
     pub urgent: bool,
+    /// Effective session priority, 0 to 10: how soon this session needs the
+    /// user, from its live status and the agent's current score
+    /// (`Instance::effective_priority`). The web Attention sort ranks on it
+    /// and the sidebar row shows it when above 0. See
+    /// docs/guides/session-priority.md.
+    pub priority: u8,
     /// RFC3339 timestamp at which the session was web-pinned, or omitted
     /// when not pinned. Distinct from `favorited`: favorite is the TUI
     /// within-tier attention-sort signal, while pin is the hard
@@ -416,6 +422,7 @@ impl SessionResponse {
             favorited: inst.is_favorited(),
             color: inst.color.clone(),
             urgent: inst.is_urgent(),
+            priority: inst.effective_priority(),
             pinned_at: inst.pinned_at.map(|t| t.to_rfc3339()),
             archived_at: inst.archived_at.map(|t| t.to_rfc3339()),
             // Surface `snoozed_until` only when the snooze is still
@@ -9041,6 +9048,21 @@ mod tests {
     }
 
     #[test]
+    fn from_instance_carries_the_effective_priority_live() {
+        let mut inst = make_test_instance();
+        inst.set_priority(Some(8));
+        assert_eq!(
+            SessionResponse::from_instance(&inst, false).priority,
+            0,
+            "a running session does not need you"
+        );
+        inst.status = Status::Idle;
+        assert_eq!(SessionResponse::from_instance(&inst, false).priority, 8);
+        inst.set_priority(None);
+        assert_eq!(SessionResponse::from_instance(&inst, false).priority, 3);
+    }
+
+    #[test]
     fn public_create_session_error_forwards_whitelisted_git_errors() {
         let dup: anyhow::Error =
             GitError::WorktreeAlreadyExists(std::path::PathBuf::from("/tmp/repo-worktrees/foo"))
@@ -11798,6 +11820,7 @@ mod workspace_ordering_tests {
             favorited: false,
             color: None,
             urgent: false,
+            priority: 0,
             pinned_at: None,
             archived_at: None,
             snoozed_until: None,

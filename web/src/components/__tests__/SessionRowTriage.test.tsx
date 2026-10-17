@@ -346,6 +346,38 @@ describe("SessionRow row tags", () => {
   });
 });
 
+describe("SessionRow priority badge", () => {
+  it("shows the session's priority when it is above zero", () => {
+    render(
+      <Wrap>
+        <Row ws={workspace("w-prio", [session({ priority: 8 })])} />
+      </Wrap>,
+    );
+    const badge = screen.getByTestId("sidebar-session-priority");
+    expect(badge.textContent).toBe("8");
+    expect(badge.getAttribute("aria-label")).toBe("Priority 8");
+  });
+
+  it("shows nothing for a session that does not need you", () => {
+    render(
+      <Wrap>
+        <Row ws={workspace("w-prio-0", [session({ status: "Running", priority: 0 })])} />
+      </Wrap>,
+    );
+    expect(screen.queryByTestId("sidebar-session-priority")).toBeNull();
+  });
+
+  it("hides the badge on a snoozed row even if a stale priority came in", () => {
+    const future = new Date(Date.now() + 90 * 60 * 1000).toISOString();
+    render(
+      <Wrap>
+        <Row ws={workspace("w-prio-snoozed", [session({ priority: 6, snoozed_until: future })])} />
+      </Wrap>,
+    );
+    expect(screen.queryByTestId("sidebar-session-priority")).toBeNull();
+  });
+});
+
 describe("SessionRow unread dot", () => {
   // Positive control: an idle unread row that is not sunk paints the dot,
   // so the absence assertions below mean suppression, not a broken probe.

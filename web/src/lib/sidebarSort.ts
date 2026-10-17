@@ -305,6 +305,26 @@ export function workspaceIsUrgent(ws: Workspace): boolean {
   return ws.sessions.some((s) => s.urgent === true);
 }
 
+/** A session's effective priority (docs/guides/session-priority.md). The
+ *  server already reports 0 for sunk rows; the guard keeps an optimistic
+ *  archive or snooze from leaving a stale number in the sort. */
+export function sessionPriority(s: SessionResponse): number {
+  if (s.archived_at != null || s.snoozed_until != null || s.trashed_at != null) {
+    return 0;
+  }
+  return s.priority ?? 0;
+}
+
+/** Highest priority across a workspace's sessions. */
+export function workspacePriority(ws: Workspace): number {
+  return Math.max(0, ...ws.sessions.map(sessionPriority));
+}
+
+/** Highest priority across a repo group's workspaces. */
+export function repoGroupPriority(workspaces: readonly Workspace[]): number {
+  return Math.max(0, ...workspaces.map(workspacePriority));
+}
+
 /** True when a session is asking for the user's attention: a live (not
  *  archived / snoozed / trashed) session that is Waiting or in Error, or one
  *  the agent flagged `urgent`. This is the single definition shared by the
@@ -362,12 +382,13 @@ export function nextAttentionSessionId(
  *    1. triage tier (pinned floats, sunk sinks, same web invariant as
  *       last-activity sort);
  *    2. urgent first (cross-rank promoter, mirrors the TUI urgent-bias);
- *    3. attention rank ascending (Waiting above Error above Idle ...);
- *    4. favorited first within a rank;
- *    5. last activity descending (newest-first, matching the existing web
+ *    3. session priority descending (docs/guides/session-priority.md);
+ *    4. attention rank ascending (Waiting above Error above Idle ...);
+ *    5. favorited first within a rank;
+ *    6. last activity descending (newest-first, matching the existing web
  *       feel; the TUI's longest-aging-first is deferred until the server
  *       exposes a status-entry timestamp, see #1640);
- *    6. id ascending.
+ *    7. id ascending.
  *  Activity keys use `<` / `>` rather than subtraction because
  *  `workspaceLastActivityMs` can return `Number.NEGATIVE_INFINITY`, and
  *  `-Infinity - -Infinity` is `NaN`, which `Array.prototype.sort` treats as
@@ -380,6 +401,10 @@ export function compareWorkspacesByAttention(a: Workspace, b: Workspace): number
   const aUrgent = workspaceIsUrgent(a);
   const bUrgent = workspaceIsUrgent(b);
   if (aUrgent !== bUrgent) return aUrgent ? -1 : 1;
+
+  const aPriority = workspacePriority(a);
+  const bPriority = workspacePriority(b);
+  if (aPriority !== bPriority) return bPriority - aPriority;
 
   const aRank = workspaceAttentionRank(a);
   const bRank = workspaceAttentionRank(b);

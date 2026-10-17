@@ -45,7 +45,9 @@ session's state each time it is read, never stored:
    pane, or status `Running`, `Starting`, `Creating`, `Deleting`, `Stopped`.
 2. `Unknown` is 1.
 3. `Waiting`, `Idle` and `Error` use the agent's score if it is **current**,
-   otherwise a default: `Waiting` 5, `Error` 5, `Idle` 3.
+   otherwise a default: `Waiting` 5, `Error` 4, `Idle` 3, and an `Idle` or
+   `Error` session carrying the unread marker 4. With no scores anywhere this
+   reproduces the Attention order aoe had before priorities existed.
 
 A score is current when it was set after the session last entered `Running`
 from any other status (aoe records that moment as `run_started_at`). So a score

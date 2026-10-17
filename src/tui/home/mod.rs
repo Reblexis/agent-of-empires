@@ -3233,6 +3233,9 @@ impl HomeView {
             let status_changed = old_status != Some(new_status);
             self.mutate_instance(&update.id, |inst| {
                 inst.status = new_status;
+                if let Some(old) = old_status.filter(|old| *old != new_status) {
+                    inst.note_status_transition(old, chrono::Utc::now());
+                }
                 // The daemon's `last_error` is authoritative only when present:
                 // an incoming `Some` is always applied, so an `Error -> Error`
                 // tick can replace the old text. Gating that write on a status

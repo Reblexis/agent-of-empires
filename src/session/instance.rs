@@ -1047,6 +1047,19 @@ pub struct Instance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
 
+    /// The agent's score for its current ask, written by
+    /// `aoe session priority <n>`. Only counts while it is newer than
+    /// `run_started_at`; read it through [`Instance::effective_priority`].
+    /// See docs/guides/session-priority.md.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub priority: Option<super::priority::PriorityScore>,
+
+    /// When the status poller last saw this session enter `Running` from any
+    /// other status. Monotone: a patch never moves it backwards. A priority
+    /// score older than this belongs to an ask the user already answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_started_at: Option<DateTime<Utc>>,
+
     /// How this session is rendered: `Structured` (ACP native rendering) or
     /// `Terminal` (raw tmux pane). When `Structured`, aoe spawns an ACP agent
     /// subprocess and renders structured events natively; tmux integration is
@@ -1580,6 +1593,7 @@ pub(crate) struct PassiveStatusPatch {
     pub status: Status,
     pub lifecycle_generation: u64,
     pub idle_entered_at: Option<DateTime<Utc>>,
+    pub run_started_at: Option<DateTime<Utc>>,
     /// `None` when the source `Instance` was never touched by a user
     /// (`last_accessed_at` itself `None`); must stay `None` in that case
     /// rather than fabricating a stamp, or a session that transitions
@@ -1598,6 +1612,7 @@ impl PassiveStatusPatch {
             status: inst.status,
             lifecycle_generation: inst.lifecycle_generation,
             idle_entered_at: inst.idle_entered_at,
+            run_started_at: inst.run_started_at,
             last_accessed_at: inst.last_accessed_at,
         }
     }
@@ -1662,6 +1677,8 @@ impl Instance {
             idempotency_key: None,
             base_branch_override: None,
             color: None,
+            priority: None,
+            run_started_at: None,
             view: View::Terminal,
             agent_name: None,
             agent_model: None,
@@ -2148,6 +2165,7 @@ impl Instance {
         self.lifecycle_generation = patch.lifecycle_generation;
         self.status = patch.status;
         self.idle_entered_at = patch.idle_entered_at;
+        self.run_started_at = self.run_started_at.max(patch.run_started_at);
         let Some(incoming) = patch.last_accessed_at else {
             return;
         };
@@ -2493,6 +2511,35 @@ impl Instance {
             }
         }
         Ok(())
+    }
+
+    /// How soon this session needs the user, 0 to 10, from its live status
+    /// and the agent's current score. See docs/guides/session-priority.md.
+    pub fn effective_priority(&self) -> u8 {
+        let sunk =
+            self.is_archived() || self.is_snoozed() || self.is_trashed() || self.pane_dead_observed;
+        let unread = self.unread && super::unread_enabled();
+        super::priority::effective_priority(
+            self.status,
+            sunk,
+            unread,
+            self.priority,
+            self.run_started_at,
+        )
+    }
+
+    /// Record the agent's score (`None` clears it), stamped now.
+    pub fn set_priority(&mut self, value: Option<u8>) {
+        self.priority = value.map(|value| super::priority::PriorityScore {
+            value,
+            set_at: Utc::now(),
+        });
+    }
+
+    /// Fold an observed `old -> self.status` change into `run_started_at`.
+    pub fn note_status_transition(&mut self, old: Status, now: DateTime<Utc>) {
+        self.run_started_at =
+            super::priority::run_started_at_after(old, self.status, now, self.run_started_at);
     }
 
     /// Read the agent-raised urgent flag from `attention.json`. Sourced
@@ -9941,6 +9988,61 @@ mod tests {
     }
 
     #[test]
+    fn replying_to_a_scored_session_makes_its_old_score_stop_counting() {
+        let mut inst = Instance::new("scored", "/tmp/scored");
+        inst.status = Status::Running;
+        inst.set_priority(Some(9));
+        inst.status = Status::Idle;
+        inst.note_status_transition(Status::Running, Utc::now());
+        assert_eq!(
+            inst.effective_priority(),
+            9,
+            "the ask the agent just scored"
+        );
+
+        inst.status = Status::Running;
+        inst.note_status_transition(Status::Idle, Utc::now() + chrono::Duration::seconds(1));
+        assert_eq!(
+            inst.effective_priority(),
+            0,
+            "working again, does not need you"
+        );
+
+        inst.status = Status::Idle;
+        inst.note_status_transition(Status::Running, Utc::now() + chrono::Duration::seconds(2));
+        assert_eq!(
+            inst.effective_priority(),
+            3,
+            "unscored next ask gets the default"
+        );
+    }
+
+    #[test]
+    fn a_passive_patch_never_rewinds_run_started_at() {
+        let now = Utc::now();
+        let mut disk = Instance::new("disk", "/tmp/disk");
+        disk.run_started_at = Some(now);
+        let older = PassiveStatusPatch {
+            lifecycle_generation: 0,
+            status: Status::Idle,
+            idle_entered_at: None,
+            run_started_at: Some(now - chrono::Duration::seconds(30)),
+            last_accessed_at: None,
+        };
+        disk.merge_passive_status_patch(&disk.id.clone(), &older);
+        assert_eq!(disk.run_started_at, Some(now));
+        let newer = PassiveStatusPatch {
+            run_started_at: Some(now + chrono::Duration::seconds(30)),
+            ..older
+        };
+        disk.merge_passive_status_patch(&disk.id.clone(), &newer);
+        assert_eq!(
+            disk.run_started_at,
+            Some(now + chrono::Duration::seconds(30))
+        );
+    }
+
+    #[test]
     fn test_merge_passive_status_patch_applies_status_and_timestamps() {
         let mut disk = Instance::new("session", "/tmp/test");
         disk.status = Status::Running;
@@ -9956,6 +10058,7 @@ mod tests {
 
         let now = Utc::now();
         let patch = PassiveStatusPatch {
+            run_started_at: None,
             lifecycle_generation: 0,
             status: Status::Idle,
             idle_entered_at: Some(now),
@@ -9998,6 +10101,7 @@ mod tests {
         disk.last_accessed_at = None;
 
         let patch = PassiveStatusPatch {
+            run_started_at: None,
             lifecycle_generation: 0,
             status: Status::Idle,
             idle_entered_at: Some(Utc::now()),
@@ -10026,6 +10130,7 @@ mod tests {
         disk.idle_entered_at = None;
 
         let stale_patch = PassiveStatusPatch {
+            run_started_at: None,
             lifecycle_generation: 0,
             status: Status::Idle,
             idle_entered_at: Some(peer_touch - chrono::Duration::minutes(5)),
@@ -10057,6 +10162,7 @@ mod tests {
         disk.last_accessed_at = Some(ts);
 
         let patch = PassiveStatusPatch {
+            run_started_at: None,
             lifecycle_generation: 0,
             status: Status::Idle,
             idle_entered_at: None,
@@ -10103,6 +10209,7 @@ mod tests {
         disk.last_accessed_at = Some(ts);
 
         let patch = PassiveStatusPatch {
+            run_started_at: None,
             lifecycle_generation: 0,
             status: Status::Idle,
             idle_entered_at: None,
@@ -10137,6 +10244,7 @@ mod tests {
         disk.last_accessed_at = Some(older);
 
         let patch = PassiveStatusPatch {
+            run_started_at: None,
             lifecycle_generation: 0,
             status: Status::Idle,
             idle_entered_at: None,
@@ -10159,6 +10267,7 @@ mod tests {
 
         let newer = Utc::now();
         let patch = PassiveStatusPatch {
+            run_started_at: None,
             lifecycle_generation: 0,
             status: Status::Idle,
             idle_entered_at: None,
@@ -10178,6 +10287,7 @@ mod tests {
 
         let ts = Utc::now();
         let patch = PassiveStatusPatch {
+            run_started_at: None,
             lifecycle_generation: 0,
             status: Status::Idle,
             idle_entered_at: None,
@@ -10193,6 +10303,7 @@ mod tests {
         let mut disk = Instance::new("session", "/tmp/test");
         let ts = Utc::now();
         let patch = PassiveStatusPatch {
+            run_started_at: None,
             lifecycle_generation: 0,
             status: Status::Idle,
             idle_entered_at: Some(ts),
@@ -10215,6 +10326,7 @@ mod tests {
         disk.merge_passive_status_patch(
             &disk.id.clone(),
             &PassiveStatusPatch {
+                run_started_at: None,
                 lifecycle_generation: 0,
                 status: Status::Running,
                 idle_entered_at: None,
@@ -10224,6 +10336,7 @@ mod tests {
         disk.merge_passive_status_patch(
             &disk.id.clone(),
             &PassiveStatusPatch {
+                run_started_at: None,
                 lifecycle_generation: 0,
                 status: Status::Idle,
                 idle_entered_at: Some(t1),

@@ -7953,6 +7953,47 @@ fn apply_status_update_persists_genuine_transition_to_disk() {
     assert_eq!(row.last_accessed_at, Some(now));
 }
 
+// docs/guides/session-priority.md: once the user replies and the session
+// runs again, the score the agent gave the previous ask stops counting, on
+// disk too, so the daemon and the web see the same thing.
+#[test]
+#[serial]
+fn a_scored_session_that_starts_running_again_drops_its_old_score() {
+    use crate::session::{Status, Storage};
+    use crate::tui::status_poller::{IdleIntent, StatusUpdate};
+
+    let mut env = create_test_env_with_sessions(1);
+    let id = match env.view.flat_items.first() {
+        Some(Item::Session { id, .. }) => id.clone(),
+        _ => panic!("expected the fixture to seed a single Session item"),
+    };
+    env.view
+        .mutate_instance(&id, |inst| inst.set_priority(Some(9)));
+    assert_eq!(env.view.get_instance(&id).unwrap().effective_priority(), 9);
+
+    let update = |status| StatusUpdate {
+        id: id.clone(),
+        status,
+        last_error: None,
+        idle_entered_at: IdleIntent::Keep,
+        last_accessed_at: None,
+        pane_dead: false,
+        live_status_baseline: None,
+    };
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    env.view.apply_one_status_update(update(Status::Running));
+    env.view.apply_one_status_update(update(Status::Idle));
+
+    assert_eq!(
+        env.view.get_instance(&id).unwrap().effective_priority(),
+        4,
+        "the next unscored ask gets the unread-Idle default, not the stale 9"
+    );
+    let reloaded = Storage::new_unwatched("test").unwrap().load().unwrap();
+    let row = reloaded.iter().find(|i| i.id == id).expect("row present");
+    assert!(row.run_started_at.is_some(), "the run start is persisted");
+}
+
 #[test]
 #[serial]
 fn apply_status_update_clears_idle_entered_at_on_idle_to_running() {

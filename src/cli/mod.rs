@@ -27,6 +27,7 @@ pub mod send;
 pub mod serve;
 pub mod session;
 pub mod session_forecast;
+pub mod session_priority;
 pub mod settings;
 pub mod skill;
 pub mod sounds;

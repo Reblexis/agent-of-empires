@@ -111,6 +111,7 @@ import {
   workspaceIsPinned,
   workspaceIsSunk,
   workspaceIsTrashed,
+  workspacePriority,
   workspaceTrashedAtMs,
   type SidebarSortMode,
 } from "../lib/sidebarSort";
@@ -1062,6 +1063,7 @@ export const SessionRow = memo(function SessionRow({
   // Per-session color label (#2383): the first session in the workspace that
   // carries a color wins, mirroring how `snoozedUntil` picks the first match.
   const sessionColor = workspace.sessions.map((s) => s.color).find((c) => c != null) ?? null;
+  const rowPriority = workspacePriority(workspace);
   const sessionColorDot = sessionColorDotClass(sessionColor);
   // Forecast chip: like the color label, the first session carrying a card wins.
   const forecast = workspace.sessions.map((s) => s.forecast).find((f) => f != null) ?? null;
@@ -1600,6 +1602,18 @@ export const SessionRow = memo(function SessionRow({
               {!compact && isFavorited && (
                 <span title="Favorited" aria-label="Favorited" className="shrink-0 text-amber-300">
                   *
+                </span>
+              )}
+              {!compact && rowPriority > 0 && !effectiveArchived && !effectiveSnoozed && (
+                <span
+                  data-testid="sidebar-session-priority"
+                  title={`Priority ${rowPriority}: how soon this session needs you`}
+                  aria-label={`Priority ${rowPriority}`}
+                  className={`inline-flex shrink-0 items-center justify-center rounded px-1 min-w-[1.25rem] text-[10px] font-mono font-semibold tabular-nums ${
+                    rowPriority >= 7 ? "bg-red-950/40 text-red-300" : "bg-surface-800/60 text-text-secondary"
+                  }`}
+                >
+                  {rowPriority}
                 </span>
               )}
               <span className="truncate" title={label}>

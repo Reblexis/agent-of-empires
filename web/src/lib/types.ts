@@ -66,6 +66,11 @@ export interface SessionResponse {
    *  Optional so older payloads and test fixtures without the field read as
    *  not-urgent. See #1640. */
   urgent?: boolean;
+  /** Effective session priority, 0 to 10: how soon this session needs the
+   *  user, computed server-side from its live status and the agent's
+   *  current score. Optional so older payloads read as 0. See
+   *  docs/guides/session-priority.md. */
+  priority?: number;
   /** RFC3339 timestamp at which the session was web-pinned, or null /
    *  undefined when not pinned. Distinct from `favorited`: favorite is
    *  the TUI within-tier attention-sort signal; pin is the hard

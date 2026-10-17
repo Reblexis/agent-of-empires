@@ -16,6 +16,7 @@ import {
   repoGroupHasLiveWorkspace,
   repoGroupIsUrgent,
   repoGroupLastActivityMs,
+  repoGroupPriority,
   resolveEffectiveSnoozedUntil,
   saveSidebarSortMode,
   sessionAttentionRank,
@@ -30,6 +31,8 @@ import {
   workspaceIsSunk,
   workspaceIsUrgent,
   workspaceLastActivityMs,
+  workspacePriority,
+  sessionPriority,
   workspaceTriageTier,
 } from "../sidebarSort";
 
@@ -693,6 +696,45 @@ describe("compareWorkspacesByAttention (#1640)", () => {
     // -Infinity vs -Infinity must not poison the comparator into skipping
     // the id tie-break; "a" sorts before "b".
     expect(order([b, a])).toEqual(["a", "b"]);
+  });
+});
+
+describe("session priority (docs/guides/session-priority.md)", () => {
+  const TS = "2025-06-01T00:00:00Z";
+  const ws = (id: string, status: string, priority?: number) =>
+    workspace(id, [session({ id: `${id}-s`, status: status as never, priority, created_at: TS })]);
+  const order = (list: Workspace[]) => [...list].sort(compareWorkspacesByAttention).map((w) => w.id);
+
+  it("a higher priority ask gets attention before a lower one", () => {
+    expect(order([ws("waiting-5", "Waiting", 5), ws("idle-9", "Idle", 9), ws("waiting-2", "Waiting", 2)])).toEqual([
+      "idle-9",
+      "waiting-5",
+      "waiting-2",
+    ]);
+  });
+
+  it("equal priority falls back to the status order", () => {
+    expect(order([ws("idle-5", "Idle", 5), ws("waiting-5", "Waiting", 5)])).toEqual(["waiting-5", "idle-5"]);
+  });
+
+  it("the urgent flag still outranks priority", () => {
+    const urgent = workspace("urgent", [
+      session({ id: "u", status: "Idle", urgent: true, priority: 1, created_at: TS }),
+    ]);
+    expect(order([ws("ten", "Idle", 10), urgent])).toEqual(["urgent", "ten"]);
+  });
+
+  it("a sunk session contributes no priority", () => {
+    const sunk = session({ id: "s", status: "Idle", priority: 9, snoozed_until: "2999-01-01T00:00:00Z" });
+    expect(sessionPriority(sunk)).toBe(0);
+    expect(sessionPriority(session({ id: "p", priority: 7 }))).toBe(7);
+    expect(sessionPriority(session({ id: "o" }))).toBe(0);
+  });
+
+  it("a workspace and a repo group rank by their highest-priority session", () => {
+    const mixed = workspace("m", [session({ id: "a", priority: 2 }), session({ id: "b", priority: 8 })]);
+    expect(workspacePriority(mixed)).toBe(8);
+    expect(repoGroupPriority([ws("x", "Idle", 3), mixed])).toBe(8);
   });
 });
 

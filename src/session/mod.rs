@@ -31,6 +31,7 @@ pub mod mcp_overrides;
 pub mod mcp_state;
 pub(crate) mod pointer_guard;
 pub mod poller;
+pub mod priority;
 pub mod profile_config;
 pub mod project_mcp;
 pub mod projects;
