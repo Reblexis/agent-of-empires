@@ -113,6 +113,12 @@ Persist and resume Claude Code conversations across reboots, upgrades, and runti
 
 [Session Resume guide](guides/session-resume.md)
 
+### Session priority
+
+Each session carries a 0-10 priority for how soon it needs you. The agent scores its own ask at the end of a turn (`aoe session priority 8`); a running session that does not need you reads 0, and an unscored ask falls back to a status default. The Attention sort orders by it and the TUI and web rows show the number.
+
+[Session Priority guide](guides/session-priority.md)
+
 ### Session forecast
 
 The agent in a session can post a forecast card: what happens to the numbers it works on if the session stops now versus if it continues. The web dashboard pins it at the top of the session and shows a verdict chip on the sidebar row.

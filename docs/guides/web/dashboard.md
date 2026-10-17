@@ -54,7 +54,7 @@ A sort picker next to the filter button offers three modes:
 
 - **Manual** (default): keeps your drag-ordered list, drag enabled.
 - **Recent activity**: orders by the most recent of `last_accessed_at`, `idle_entered_at`, and `created_at` across each workspace's sessions, descending.
-- **Attention**: floats sessions needing a human to the top, mirroring the TUI's Attention sort. Ranks by status (Waiting, Error, Idle, Unknown, Running, Stopped, transient states last); sessions flagged urgent via the `attention-urgent` hook rise above non-urgent rows in their tier, favorited rows come first within a status rank, ties break by most-recent activity.
+- **Attention**: floats sessions needing a human to the top, mirroring the TUI's Attention sort. Ranks by effective [session priority](../session-priority.md) (highest first), then by status (Waiting, Error, Idle, Unknown, Running, Stopped, transient states last); sessions flagged urgent via the `attention-urgent` hook rise above non-urgent rows in their tier, favorited rows come first within a status rank, ties break by most-recent activity.
 
 Drag-to-reorder is disabled in the computed modes. The picker's state is per-browser (localStorage), not synced and not tied to your profile. The Multi-repo and Scratch groups default to the bottom; in manual mode you can drag them anywhere, in computed modes they stay at the bottom.
 
