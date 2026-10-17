@@ -23,7 +23,7 @@ wrong conversation. Both branches were merged into `local-defaults` on
 
 Check that every branch that was ever deployed is contained in what you build:
 
-    for b in session-hibernation; do
+    for b in session-hibernation session-priority; do
       git merge-base --is-ancestor "$b" HEAD || echo "MISSING: $b"
     done
 
