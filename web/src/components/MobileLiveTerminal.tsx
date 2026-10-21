@@ -659,14 +659,17 @@ export function MobileLiveTerminal({
   const liveScrollTarget = useCallback(
     (el: HTMLDivElement) => {
       const bottom = Math.max(0, el.scrollHeight - el.clientHeight);
-      const shrunken = latchRef.current.maxHeight - el.clientHeight > lineH * 1.5;
+      // Only a touch device has a soft keyboard to shrink the container. On a
+      // fine pointer a shorter container is just a shorter window, and the
+      // live edge stays the literal bottom (status rows included).
+      const shrunken = coarse && latchRef.current.maxHeight - el.clientHeight > lineH * 1.5;
       const anchor = cursorAnchorRef.current;
       if (!shrunken || anchor == null) return bottom;
       // One spare line under the cursor row keeps the input box border
       // visible beneath it.
       return Math.min(bottom, Math.max(0, anchor + 2 * lineH - el.clientHeight));
     },
-    [lineH],
+    [coarse, lineH],
   );
   const geomRef = useRef({ target: -1, clientHeight: 0, scrollTop: 0 });
   // Sticky live-tail attachment. False = following the bottom (pin to it
@@ -1583,7 +1586,9 @@ export function MobileLiveTerminal({
         if (cols >= 20) setRenderCols(cols);
         return;
       }
-      if (widthChanged) {
+      // The latch outlives a soft-keyboard cycle, which only a touch device
+      // has; on a fine pointer the rows follow the window's height both ways.
+      if (widthChanged || !coarse) {
         latch.width = width;
         latch.maxHeight = height;
       } else if (height > latch.maxHeight) {
@@ -1612,7 +1617,7 @@ export function MobileLiveTerminal({
       ro.disconnect();
       if (timer) clearTimeout(timer);
     };
-  }, [active, charW, lineH, sendResize, setWindow, pinIfWasAtBottom, keyboardOpen]);
+  }, [active, charW, coarse, lineH, sendResize, setWindow, pinIfWasAtBottom, keyboardOpen]);
 
   // Opening the soft keyboard is an intent to type, not to continue reading
   // scrollback. Return to the live prompt before the keyboard reduces the

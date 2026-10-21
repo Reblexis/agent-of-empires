@@ -15,6 +15,11 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { act, render } from "@testing-library/react";
 import { MobileLiveTerminal } from "../MobileLiveTerminal";
 
+// A soft keyboard exists only on a touch device, so these run as one;
+// the fine-pointer case flips it.
+let coarsePointer = true;
+vi.mock("../../hooks/useIsCoarsePointer", () => ({ useIsCoarsePointer: () => coarsePointer }));
+
 vi.mock("../../hooks/useWebSettings", () => ({
   useWebSettings: () => ({ settings: { mobileFontSize: 14, desktopFontSize: 14 }, update: vi.fn() }),
 }));
@@ -128,6 +133,26 @@ describe("MobileLiveTerminal keyboard-aware sizing latch", () => {
     // shipped keyboard-shrunk rows.
     for (const call of sendResize.mock.calls) {
       expect(call).toEqual([COLS, FULL_ROWS]);
+    }
+  });
+
+  it("on a laptop the rows follow the window when it gets shorter", () => {
+    // No soft keyboard on a fine pointer: a shorter container is a shorter
+    // window, and keeping the taller grid hid the bottom rows behind a
+    // cursor-anchored scroll position.
+    coarsePointer = false;
+    try {
+      const sendResize = vi.fn();
+      const { rerender } = render(<MobileLiveTerminal {...props(false, sendResize)} />);
+      settleLayout();
+      expect(sendResize).toHaveBeenLastCalledWith(COLS, FULL_ROWS);
+
+      clientHeight = SHRUNK_HEIGHT;
+      rerender(<MobileLiveTerminal {...props(false, sendResize)} />);
+      settleLayout();
+      expect(sendResize).toHaveBeenLastCalledWith(COLS, Math.floor(SHRUNK_HEIGHT / LINE_H));
+    } finally {
+      coarsePointer = true;
     }
   });
 });

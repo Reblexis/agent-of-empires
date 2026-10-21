@@ -25,14 +25,16 @@ test.describe("Desktop live tail", () => {
       lines.push("  status bar");
       for (let i = 2; i < ROWS; i++) lines.push("");
     } else {
-      for (let i = 1; i < ROWS - 1; i++) lines.push(`screen line ${i}`);
+      for (let i = 1; i < ROWS - 3; i++) lines.push(`screen line ${i}`);
+      lines.push("❯ typed");
       lines.push("  status bar");
+      lines.push("  mode line");
     }
     return {
       content: lines.join("\n") + "\n",
       rows: ROWS,
       history,
-      cursor: { x: 2, y: 0 },
+      cursor: blankFoot ? { x: 2, y: 0 } : { x: 8, y: ROWS - 3 },
     };
   }
 
@@ -137,6 +139,35 @@ test.describe("Desktop live tail", () => {
 
     await stream(page, handle, 210, 20);
     expect(await gap(page), "the view follows output after returning to the live edge").toBeLessThan(2);
+  });
+
+  test("the bottom rows stay in view after the window was once taller", async ({ page }) => {
+    // Reported as "when I scroll down it just goes up again", a few lines: the
+    // terminal pinned the live edge to the cursor row as if a soft keyboard
+    // covered the bottom, because the window had been taller at this width
+    // once. On a desktop nothing covers the bottom; the live edge is the
+    // literal bottom, status rows included.
+    blankFoot = false;
+    const handle = await open(page);
+    await stream(page, handle, 200, 10);
+    await expect.poll(() => gap(page)).toBeLessThan(2);
+
+    await page.setViewportSize({ width: 1280, height: 1000 });
+    await page.waitForTimeout(600);
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.waitForTimeout(600);
+    await stream(page, handle, 210, 5);
+    expect(await gap(page), "the live edge after the window shrank back").toBeLessThan(2);
+
+    const box = (await scroller(page).boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    for (let i = 0; i < 10; i++) {
+      await page.mouse.wheel(0, 120);
+      await page.waitForTimeout(30);
+    }
+    await page.waitForTimeout(300);
+    await stream(page, handle, 215, 10);
+    expect(await gap(page), "scrolling down stays at the bottom").toBeLessThan(2);
   });
 
   test("output streaming while the user sits at the bottom never moves the view up", async ({ page }) => {
