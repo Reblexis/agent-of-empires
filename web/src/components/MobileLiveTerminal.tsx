@@ -1069,11 +1069,16 @@ export function MobileLiveTerminal({
       returnToLive(rowsRef.current * LIVE_WINDOW_SCREENS);
     }
     // Re-attach the follow latch only when the user has scrolled DOWN to the
-    // literal bottom (not the first pixels of an up-scroll, which sit within a
+    // live edge (not the first pixels of an up-scroll, which sit within a
     // couple px of the bottom too, nor a clamp, which lands here while moving
     // up). This is the one place auto-follow resumes for a mouse/non-touch
     // scroll-to-bottom; touch lifts and the jump button re-attach explicitly.
-    if (el.scrollHeight - el.clientHeight - el.scrollTop < 2 && !movingUp) {
+    // The live-edge band counts, not just the literal bottom: a scroll that
+    // stops a few px short returns to live above, which trims the trailing
+    // blank rows, and the resulting clamp is an upward move that would never
+    // re-attach, leaving the view parked while output streams past it.
+    const atLiteralBottom = el.scrollHeight - el.clientHeight - el.scrollTop < 2;
+    if (!movingUp && (atLiteralBottom || (!touchActiveRef.current && atBottom()))) {
       liveDetachedRef.current = false;
     }
   }, [atBottom, enterReading, forwardModeRef, reading, returnToLive, scheduleViewSync]);

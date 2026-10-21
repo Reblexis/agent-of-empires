@@ -8,7 +8,7 @@ For tmux-backed sessions the dashboard renders a real terminal in the page: the 
 
 The main terminal mirrors the TUI's live mode on every device: the server streams `tmux capture-pane` snapshots of the session's pane over the WebSocket and the dashboard renders them as real text that the browser scrolls natively. Keystrokes go back over the same WebSocket. There is no PTY attach and no tmux copy-mode, and the agent keeps running while you read history.
 
-Scrolling up into history surfaces a **Back to live** button; scrolling back to the bottom (or clicking it) returns to the live tail.
+Scrolling up into history surfaces a **Back to live** button; scrolling back to the bottom (or clicking it) returns to the live tail. At the live tail the view follows new output until you scroll up again. A scroll down that stops within about a line of the bottom counts as reaching it, even when blank rows at the foot of the screen then drop out and the page shortens under you.
 
 ### Scrollback is local
 

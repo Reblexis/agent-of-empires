@@ -1,0 +1,152 @@
+import { test, expect } from "./helpers/mockedTest";
+import type { Page } from "@playwright/test";
+import { mockTerminalApis, type MockHandle } from "./helpers/terminal-mocks";
+import { clickSidebarSession } from "./helpers/sidebar";
+
+// docs/guides/web/terminal.md: "Scrolling up into history surfaces a Back to
+// live button; scrolling back to the bottom (or clicking it) returns to the
+// live tail." Reported as "it autoscrolls up from time to time and when I
+// scroll back down it jumps up again": after a wheel trip up and back down,
+// the view stopped following, so every new line of output left it further
+// above the bottom.
+test.describe("Desktop live tail", () => {
+  test.use({ viewport: { width: 1280, height: 800 }, hasTouch: false });
+
+  const ROWS = 30;
+  // `blankFoot`: Claude's inline UI after its dynamic region shrank, the
+  // prompt and the status bar on top and blank rows below them to the bottom
+  // of the screen. Otherwise the screen is full down to the status bar.
+  let blankFoot = true;
+  function frame(history: number) {
+    const lines: string[] = [];
+    for (let i = 1; i <= history; i++) lines.push(`output line ${i}`);
+    lines.push("❯ ");
+    if (blankFoot) {
+      lines.push("  status bar");
+      for (let i = 2; i < ROWS; i++) lines.push("");
+    } else {
+      for (let i = 1; i < ROWS - 1; i++) lines.push(`screen line ${i}`);
+      lines.push("  status bar");
+    }
+    return {
+      content: lines.join("\n") + "\n",
+      rows: ROWS,
+      history,
+      cursor: { x: 2, y: 0 },
+    };
+  }
+
+  function scroller(page: Page) {
+    return page.locator("[data-live-terminal] > div").first();
+  }
+  const gap = (page: Page) => scroller(page).evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop);
+
+  async function open(page: Page): Promise<MockHandle> {
+    const handle = await mockTerminalApis(page);
+    await page.goto("/");
+    await clickSidebarSession(page, "pinch-test");
+    await page.locator("[data-live-terminal]").first().waitFor({ state: "visible", timeout: 10_000 });
+    await expect.poll(() => handle.liveMessages.length, { timeout: 5_000 }).toBeGreaterThan(0);
+    return handle;
+  }
+
+  async function stream(page: Page, handle: MockHandle, from: number, count: number) {
+    for (let h = from; h < from + count; h++) {
+      handle.pushLiveFrame(frame(h));
+      await page.waitForTimeout(40);
+    }
+  }
+
+  test("scrolling back down to the bottom with the wheel follows new output again", async ({ page }) => {
+    const handle = await open(page);
+    await stream(page, handle, 200, 10);
+    await expect.poll(() => gap(page)).toBeLessThan(2);
+
+    const box = (await scroller(page).boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    for (let i = 0; i < 5; i++) {
+      await page.mouse.wheel(0, -120);
+      await page.waitForTimeout(50);
+    }
+    await expect.poll(() => gap(page)).toBeGreaterThan(200);
+    // Output keeps arriving while the user reads.
+    await stream(page, handle, 210, 5);
+    for (let i = 0; i < 40; i++) {
+      await page.mouse.wheel(0, 120);
+      await page.waitForTimeout(30);
+    }
+    await expect.poll(() => gap(page)).toBeLessThan(2);
+
+    await stream(page, handle, 215, 20);
+    expect(await gap(page), "the view follows output after returning to the bottom").toBeLessThan(2);
+  });
+
+  test("a scroll down that stops a few pixels short of the bottom follows new output again", async ({ page }) => {
+    // A trackpad or an uneven wheel rarely lands on the exact last pixel.
+    // Ending inside the live-edge band returns the view to live, which trims
+    // the screen's trailing blank rows; the page shrinks under the user and
+    // the browser moves the scroll up to the new bottom. The view must follow
+    // output from there, not treat that move as the user scrolling away.
+    const handle = await open(page);
+    await stream(page, handle, 200, 10);
+    await expect.poll(() => gap(page)).toBeLessThan(2);
+
+    const box = (await scroller(page).boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    for (let i = 0; i < 5; i++) {
+      await page.mouse.wheel(0, -120);
+      await page.waitForTimeout(50);
+    }
+    await expect.poll(() => gap(page)).toBeGreaterThan(200);
+    await page.waitForTimeout(300);
+    const away = await gap(page);
+    await page.mouse.wheel(0, away - 8);
+    await page.waitForTimeout(400);
+    // More notches at the bottom move nothing, as for the user.
+    for (let i = 0; i < 5; i++) {
+      await page.mouse.wheel(0, 120);
+      await page.waitForTimeout(30);
+    }
+    await expect.poll(() => gap(page)).toBeLessThan(2);
+
+    await stream(page, handle, 210, 20);
+    expect(await gap(page), "the view follows output after returning to the live edge").toBeLessThan(2);
+  });
+
+  test("a scroll down that stops a few pixels short of the bottom of a full screen follows new output", async ({
+    page,
+  }) => {
+    // Same stop inside the live-edge band, on a screen with no blank rows to
+    // trim: nothing moves the scroll afterwards, and the user scrolls no
+    // further. The view still counts as back at the live tail.
+    blankFoot = false;
+    const handle = await open(page);
+    await stream(page, handle, 200, 10);
+    await expect.poll(() => gap(page)).toBeLessThan(2);
+
+    const box = (await scroller(page).boundingBox())!;
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    for (let i = 0; i < 5; i++) {
+      await page.mouse.wheel(0, -120);
+      await page.waitForTimeout(50);
+    }
+    await expect.poll(() => gap(page)).toBeGreaterThan(200);
+    await page.waitForTimeout(300);
+    await page.mouse.wheel(0, (await gap(page)) - 8);
+    await page.waitForTimeout(400);
+
+    await stream(page, handle, 210, 20);
+    expect(await gap(page), "the view follows output after returning to the live edge").toBeLessThan(2);
+  });
+
+  test("output streaming while the user sits at the bottom never moves the view up", async ({ page }) => {
+    const handle = await open(page);
+    let worst = 0;
+    for (let h = 200; h < 260; h++) {
+      handle.pushLiveFrame(frame(h));
+      await page.waitForTimeout(40);
+      if (h > 205) worst = Math.max(worst, await gap(page));
+    }
+    expect(worst).toBeLessThan(2);
+  });
+});
