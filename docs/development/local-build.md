@@ -23,11 +23,13 @@ wrong conversation. Both branches were merged into `local-defaults` on
 
 Check that every branch that was ever deployed is contained in what you build:
 
-    for b in session-hibernation session-priority; do
-      git merge-base --is-ancestor "$b" HEAD || echo "MISSING: $b"
+    git fetch origin
+    for b in session-hibernation session-priority fix-terminal-jump-up; do
+      git merge-base --is-ancestor "origin/$b" HEAD || echo "MISSING: $b"
     done
 
-Add a branch to that list when you deploy it. Any `MISSING` line stops the
+Add a branch to that list when you deploy it, and push it first: the check reads
+`origin/`, because a merged branch's local copy may already be deleted. Any `MISSING` line stops the
 deploy.
 
 ## Tab tracking is a hard requirement
