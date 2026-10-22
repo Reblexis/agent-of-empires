@@ -10,7 +10,7 @@ The server renders the pane and pushes its rows over a WebSocket; the dashboard 
 
 Where it can, the server renders from the [VT live transport](../live-mode.md#the-vt-live-transport) and otherwise falls back to `capture-pane` snapshots on a 50 ms cadence with `tmux send-keys` for input. The fallback cannot withhold a half-drawn repaint. Add `?livedebug=1` to the URL to see which transport a session uses, plus frame rate and arrival-to-paint latency.
 
-Scrolling up into history widens the window the server sends and surfaces a **Back to live** button; scrolling back to the bottom returns to the live tail. The agent keeps running while you read.
+Scrolling up into history widens the window the server sends and surfaces a **Back to live** button; scrolling back to the bottom returns to the live tail. At the live tail the view follows new output until you scroll up again; a scroll down that stops within about a line of the bottom counts as reaching it. The pane's rows come from the tallest the terminal has been at its current width, so a shorter window, a banner, or the soft keyboard never shrinks the agent's pane; a width change starts over from the current height. The agent keeps running while you read.
 
 ## Copy and scroll
 
