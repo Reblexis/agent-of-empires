@@ -44,6 +44,10 @@
     {
       "path": "web/src/components/sidebar/SidebarModal.tsx",
       "reason": "Shared sidebar modal shell; behavior covered through each modal that uses it"
+    },
+    {
+      "path": "web/src/components/ContextPane.tsx",
+      "reason": "Local-build Context pane; its behavior is covered by the vitest suite in __tests__/ContextPane.test.tsx"
     }
   ]
 }
