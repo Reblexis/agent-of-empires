@@ -87,6 +87,26 @@ Except for [managed native Prime](../structured-view.md#prime-runtime-ownership)
 | Any agent in an Apple Container sandbox | Refused | Refused | Set `sandbox.container_runtime` to Docker or Podman, per [Configuration](sandbox.md#configuration) |
 | An opaque wrapper missing `session.agent_execution_as` or `session.agent_config_dir` | Refused | Refused | Declare the wrapper contract, per [Execution identity and wrappers](#execution-identity-and-wrappers) |
 
+## How the conversation ID stays correct
+
+Contract: **a tab's recorded conversation (`agent_session_id`) is always the conversation that tab's own agent process is running, and it changes only on evidence produced by that process.** Applies to Claude and Codex tabs, host and sandboxed.
+
+The only sources allowed to change it:
+
+1. **Launch.** The ID AoE hands the agent when it starts the pane (a resume target, or a fresh ID it mints), recorded before the process starts.
+2. **The tab's own hook.** The pane-scoped native hook (see the [capture matrix](#automatic-capture-matrix)) publishes the conversation the process is running. Claude and Codex publish on `SessionStart` and on every `UserPromptSubmit`, so a `/clear`, `/resume` or `/new` is picked up by the next turn at the latest. Only the tab's pane can write its publication, so AoE's one-shots and any agent run outside AoE never can.
+3. **The user.** `aoe session set-session-id`.
+
+Every write except the user's is guarded; a refused write leaves the pointer unchanged and is logged at WARN with the reason:
+
+- **Never a one-shot.** A conversation whose first user message is one of AoE's own one-shot prompts (smart-rename title, context recap, conversation summary) is refused. One-shots also run in an isolated scratch directory (`<AoE config dir>/oneshot` on the host, `/tmp` in a sandbox), never the project directory.
+- **Never another tab's conversation.** An ID held by another non-archived tab is refused.
+
+Trackability:
+
+- **Pointer journal.** Every change and every refusal is appended to `<AoE config dir>/pointer-journal.jsonl`, one JSON object per line: `ts`, `instance_id`, `title`, `old`, `new`, `source` (`launch`, `hook`, `user`, `repair`), and `refused` with the reason. Append-only, never rotated.
+- **Verifier.** `aoe session verify-pointers` checks every non-archived tab and exits non-zero on any violation: an ID recorded on two tabs, an ID that is a one-shot run, or a running pane launched with a different ID than recorded while no hook has reported since its launch. With no violation it prints `✓ every tab records the conversation it runs`. The daemon runs the same check at startup and every 5 minutes and logs each violation at ERROR under `session.pointer_invariant`.
+
 ## Pinning or resetting a conversation
 
 Pin a terminal session to a specific native conversation:

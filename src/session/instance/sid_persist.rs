@@ -116,7 +116,29 @@ pub(super) fn persist_session_with_storage(
     if observation.execution != expected.active {
         return SidWrite::Skipped;
     }
+    let source = crate::session::pointer_guard::observation_source(observation);
+    // Never a one-shot: a title or summary run is not a conversation, whatever
+    // reported it (docs/guides/session-resume.md). Checked outside the storage
+    // lock because it reads the agent's store; refused like a foreign owner, so
+    // callers acknowledge rather than retry it.
+    if let Some(row) = storage
+        .load()
+        .ok()
+        .and_then(|rows| rows.into_iter().find(|row| row.id == instance_id))
+    {
+        if crate::session::pointer_guard::observation_is_oneshot(&row, observation) {
+            crate::session::pointer_guard::journal_refusal(
+                &row,
+                session_id,
+                source,
+                crate::session::pointer_guard::REFUSED_ONESHOT,
+            );
+            return SidWrite::OwnershipConflict;
+        }
+    }
+    let _journal_source = crate::session::pointer_guard::SourceScope::new(source);
     let binding = observation.conversation_binding();
+    let mut refused_owner: Option<Instance> = None;
     let result = storage.update(|instances, _groups| {
         let Some(index) = instances
             .iter()
@@ -181,11 +203,11 @@ pub(super) fn persist_session_with_storage(
         if conflict {
             // A pin confirmation is not a fresh claim: the row armed the pin and
             // must be able to re-prove it, so it keeps the retryable outcome.
-            return Ok(if confirms_pin {
-                SidWrite::Skipped
-            } else {
-                SidWrite::OwnershipConflict
-            });
+            if confirms_pin {
+                return Ok(SidWrite::Skipped);
+            }
+            refused_owner = Some(instance.clone());
+            return Ok(SidWrite::OwnershipConflict);
         }
         let pi_session_path = instance.observed_pi_session_path(observation);
         let instance = &mut instances[index];
@@ -205,6 +227,14 @@ pub(super) fn persist_session_with_storage(
         }
         Ok(SidWrite::Applied)
     });
+    if let Some(row) = refused_owner {
+        crate::session::pointer_guard::journal_refusal(
+            &row,
+            session_id,
+            source,
+            crate::session::pointer_guard::REFUSED_HELD,
+        );
+    }
     match result {
         Ok(outcome) => outcome,
         Err(error) => {
@@ -314,6 +344,9 @@ impl Instance {
         storage: &crate::session::storage::Storage,
         expected: &ConversationState,
     ) -> SidPersistOutcome {
+        let _journal_source = crate::session::pointer_guard::SourceScope::new(
+            crate::session::pointer_guard::Source::Launch,
+        );
         let expected_prior_intent = expected.intent.clone();
         let new_sid = self.agent_session_id.clone();
         // Cleared and Fork are one-shot launch directives. Use stays durable

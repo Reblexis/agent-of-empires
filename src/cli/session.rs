@@ -52,6 +52,12 @@ pub enum SessionCommands {
     /// AoE cannot resolve is refused
     SetSessionId(SetSessionIdArgs),
 
+    /// Check that every tab records the conversation it actually runs: no
+    /// conversation on two tabs, no aoe one-shot recorded as a conversation,
+    /// no pane running a different ID than recorded. Exits non-zero on any
+    /// violation.
+    VerifyPointers,
+
     /// Set or clear the per-session diff base branch. The diff view
     /// compares the worktree against this ref instead of the
     /// auto-detected default. Useful when the PR target differs from
@@ -402,6 +408,7 @@ pub async fn run(profile: &str, command: SessionCommands) -> Result<()> {
         SessionCommands::SetWorktreeName(args) => set_worktree_name(profile, args).await,
         SessionCommands::Current(args) => current_session(args).await,
         SessionCommands::SetSessionId(args) => set_session_id(profile, args).await,
+        SessionCommands::VerifyPointers => verify_pointers(profile).await,
         SessionCommands::AddProject(args) => add_project(profile, args).await,
         SessionCommands::SetBase(args) => set_base(profile, args).await,
         SessionCommands::Snooze(args) => snooze_session(profile, args).await,
@@ -2654,7 +2661,7 @@ async fn set_session_id(profile: &str, args: SetSessionIdArgs) -> Result<()> {
     let lifecycle_lock = storage
         .acquire_instance_lifecycle_lock(&target_id)
         .context("failed to acquire instance resume-target lock")?;
-    let title = storage.update(|instances, _groups| {
+    let (title, old_sid) = storage.update(|instances, _groups| {
         super::patch_instance(instances, &target_id, |inst| {
             inst.source_profile = storage.profile().to_string();
             if inst.is_structured() {
@@ -2670,10 +2677,25 @@ async fn set_session_id(profile: &str, args: SetSessionIdArgs) -> Result<()> {
             inst.resume_binding = binding;
             inst.resume_intent = new_intent.clone();
             inst.resume_probe_failed_sid = None;
-            Ok(inst.title.clone())
+            Ok((inst.title.clone(), inst.agent_session_id.clone()))
         })
     })?;
     drop(lifecycle_lock);
+
+    // The pin is the user's word on the tab's conversation: journal it as
+    // such (docs/guides/session-resume.md). The launch that adopts it is
+    // journaled again when it moves the recorded pointer.
+    let pinned = match &new_intent {
+        crate::session::ResumeIntent::Use(id) => Some(id.as_str()),
+        _ => None,
+    };
+    crate::session::pointer_guard::journal(&crate::session::pointer_guard::JournalEntry::new(
+        &target_id,
+        &title,
+        old_sid.as_deref(),
+        pinned,
+        crate::session::pointer_guard::Source::User,
+    ));
 
     match &new_intent {
         crate::session::ResumeIntent::Use(id) => {
@@ -2690,6 +2712,24 @@ async fn set_session_id(profile: &str, args: SetSessionIdArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// `aoe session verify-pointers`: the pointer invariant check from
+/// docs/guides/session-resume.md, over every non-archived tab.
+async fn verify_pointers(profile: &str) -> Result<()> {
+    let instances = Storage::open_unwatched(profile)?.load()?;
+    let violations = tokio::task::spawn_blocking(move || {
+        crate::session::pointer_guard::verify_instances(&instances)
+    })
+    .await?;
+    if violations.is_empty() {
+        println!("✓ every tab records the conversation it runs");
+        return Ok(());
+    }
+    for v in &violations {
+        println!("✗ {v}");
+    }
+    bail!("{} pointer violation(s)", violations.len())
 }
 
 async fn add_project(profile: &str, args: AddProjectArgs) -> Result<()> {

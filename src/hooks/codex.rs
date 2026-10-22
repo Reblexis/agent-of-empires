@@ -371,6 +371,30 @@ mod tests {
         (text, value)
     }
 
+    /// docs/guides/session-resume.md: Codex publishes its conversation on SessionStart and on every
+    /// prompt, so a mid-pane `/new` or `/resume` is reported by the tab's own process.
+    #[test]
+    fn codex_tab_reports_its_own_conversation_on_start_and_every_prompt() {
+        let tmp = TempDir::new().unwrap();
+        let hooks = tmp.path().join("hooks.json");
+        install_codex_json_hooks(&hooks, codex_events(), HookInstallTarget::Host).unwrap();
+        let parsed: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&hooks).unwrap()).unwrap();
+        for event in ["SessionStart", "UserPromptSubmit"] {
+            let commands: Vec<String> = parsed["hooks"][event]
+                .as_array()
+                .unwrap_or_else(|| panic!("codex {event} hooks missing: {parsed}"))
+                .iter()
+                .flat_map(|m| m["hooks"].as_array().cloned().unwrap_or_default())
+                .filter_map(|h| h["command"].as_str().map(str::to_string))
+                .collect();
+            assert!(
+                commands.iter().any(|c| c.contains("__extract-session-id")),
+                "codex {event} must run the session-id extractor, got {commands:?}"
+            );
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn codex_json_config_links_are_host_only() {

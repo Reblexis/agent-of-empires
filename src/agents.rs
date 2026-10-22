@@ -490,7 +490,13 @@ const CODEX_HOOK_EVENTS: &[HookEvent] = &[
         identity_field: Some(HookIdentityField::SessionId),
         ..hook("SessionStart", HookStatus::Idle)
     },
-    hook("UserPromptSubmit", HookStatus::Running),
+    // Every prompt republishes the id too, so a conversation Codex switched to
+    // mid-pane (`/new`, `/resume`) is reported by the tab's own process by the
+    // next turn at the latest (docs/guides/session-resume.md).
+    HookEvent {
+        identity_field: Some(HookIdentityField::SessionId),
+        ..hook("UserPromptSubmit", HookStatus::Running)
+    },
     hook("PreToolUse", HookStatus::Running),
     hook("PermissionRequest", HookStatus::Waiting),
     hook("PostToolUse", HookStatus::Running),

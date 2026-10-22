@@ -24,6 +24,7 @@ pub mod import;
 mod instance;
 pub mod mcp;
 mod move_journal;
+pub(crate) mod pointer_guard;
 pub mod poller;
 pub(crate) mod projection;
 pub mod projects;

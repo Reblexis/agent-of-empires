@@ -1020,13 +1020,16 @@ mod tests {
         for (field, user_action, sink_present) in cases {
             let mut pre = inst();
             pre.live_status_baseline = Some(Status::Idle);
-            pre.status = Status::Idle;
             pre.last_accessed_at = Some(Utc::now() - chrono::Duration::seconds(60));
             pre.idle_dormant_since = Some(Utc::now() - chrono::Duration::hours(5));
+            // A dormant terminal row is a hibernated one (session.hibernate_max_live): its tmux is
+            // gone on purpose and it is never probed into Error, so its passive transition is the
+            // heal of a stale transient status back to parked Idle.
+            pre.status = Status::Starting;
             let mut disk = pre.clone();
             let _cache = force_session_absent();
             disk.update_status_with_metadata(None, None);
-            assert_eq!(disk.status, Status::Error);
+            assert_eq!(disk.status, Status::Idle, "{field}: the passive heal ran");
             let mut post = pre.clone();
             user_action(&mut post);
             disk.merge_user_action_diff(&pre, &post);

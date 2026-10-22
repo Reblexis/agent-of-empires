@@ -1225,6 +1225,7 @@ impl Storage {
     {
         let (mut instances, mut groups) = self.load_with_groups()?;
         let groups_before = groups.clone();
+        let pointers_before = crate::session::pointer_guard::snapshot(&instances);
         let result = f(&mut instances, &mut groups)?;
 
         // Pre-serialise both buffers so a serde failure on either side
@@ -1250,6 +1251,15 @@ impl Storage {
 
         atomic_write(&self.sessions_path, &instances_buf)?;
         self.file_watch.notify_local_change(&self.sessions_path);
+        // Every persisted change of a tab's recorded conversation leaves a
+        // journal line, whichever writer made it (docs/guides/session-resume.md).
+        if let Some(profile_dir) = self.sessions_path.parent() {
+            crate::session::pointer_guard::journal_changes(
+                app_dir_for_profile_dir(profile_dir),
+                &pointers_before,
+                &instances,
+            );
+        }
         Ok(result)
     }
 
