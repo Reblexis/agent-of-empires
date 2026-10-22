@@ -1135,6 +1135,19 @@ pub struct SessionConfig {
     )]
     pub agent_command_override: HashMap<String, String>,
 
+    /// Start Claude Code with its inline renderer even when your Claude
+    /// settings choose fullscreen (`"tui": "fullscreen"`). Inline output lands
+    /// in tmux's scrollback, where the web dashboard can scroll it; fullscreen
+    /// keeps the history inside Claude. Applies when a session's Claude starts
+    /// or restarts.
+    #[serde(default)]
+    #[setting(
+        label = "Claude Inline Renderer",
+        widget = "toggle",
+        category = "Agents"
+    )]
+    pub claude_inline_tui: bool,
+
     /// Install status-detection hooks into the agent's config file (e.g.
     /// ~/.claude/settings.json). When disabled, AoE will not modify the
     /// agent's settings file; status detection falls back to tmux pane
@@ -2014,6 +2027,7 @@ impl Default for SessionConfig {
             inherit_host_environment: false,
             agent_extra_args: HashMap::new(),
             agent_command_override: HashMap::new(),
+            claude_inline_tui: false,
             agent_status_hooks: true,
             merge_hooks_into_selected_agent: true,
             conversation_summary: false,

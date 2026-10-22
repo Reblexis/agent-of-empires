@@ -422,6 +422,23 @@ pub(super) fn append_resume_flags(
 }
 
 /// Prepend agent-specific environment overrides to a launch command.
+/// Claude Code's `--settings` layer outranks `~/.claude/settings.json`, so this
+/// switches a fullscreen user to the inline renderer for aoe's sessions only
+/// (session.claude_inline_tui).
+fn apply_claude_inline_tui(
+    cmd: &mut String,
+    agent: Option<&'static crate::agents::AgentDef>,
+    profile: &str,
+) {
+    if agent.map(|a| a.name) == Some("claude")
+        && crate::session::config::profile_config::resolve_config_or_warn(profile)
+            .session
+            .claude_inline_tui
+    {
+        cmd.push_str(r#" --settings '{"tui":"default"}'"#);
+    }
+}
+
 fn apply_agent_launch_env(cmd: &mut String, agent: Option<&'static crate::agents::AgentDef>) {
     if !matches!(agent.map(|a| a.name), Some("antigravity" | "codex")) {
         return;
@@ -1155,6 +1172,7 @@ impl Instance {
             if let Some(crate::agents::YoloMode::EnvVar(key, value)) = yolo {
                 tool_cmd = format_env_var_prefix(key, value, &tool_cmd);
             }
+            apply_claude_inline_tui(&mut tool_cmd, agent, &self.effective_profile());
             apply_agent_launch_env(&mut tool_cmd, agent);
 
             let env_part = format!("{} ", env_info.docker_args);
@@ -1364,6 +1382,7 @@ impl Instance {
                     }
                     apply_first_launch_agent_name(&mut cmd, agent, self, execution, is_existing);
                     apply_no_daemon_flag(&mut cmd, agent, self, execution);
+                    apply_claude_inline_tui(&mut cmd, agent, profile);
                     apply_agent_launch_env(&mut cmd, agent);
                     let raw_command = format!(
                         "{}{}",
@@ -1458,6 +1477,7 @@ impl Instance {
             }
             apply_first_launch_agent_name(&mut cmd, agent, self, execution, is_existing);
             apply_no_daemon_flag(&mut cmd, agent, self, execution);
+            apply_claude_inline_tui(&mut cmd, agent, profile);
             apply_agent_launch_env(&mut cmd, agent);
             let raw_command = format!(
                 "{}{}",
@@ -1561,6 +1581,52 @@ mod tests {
             &config,
         )
         .unwrap();
+    }
+
+    fn set_claude_inline_tui(inst: &Instance, on: bool) {
+        let mut config = crate::session::config::profile_config::ProfileConfig::default();
+        config.overrides.insert(
+            "session".to_string(),
+            serde_json::json!({ "claude_inline_tui": on }),
+        );
+        crate::session::config::profile_config::save_profile_config(
+            &inst.effective_profile(),
+            &config,
+        )
+        .unwrap();
+    }
+
+    /// session.claude_inline_tui (docs/guides/configuration.md): a fullscreen Claude keeps its history inside
+    /// the app where the dashboard cannot scroll it, so with the setting on aoe starts Claude inline.
+    #[test]
+    #[serial_test::serial]
+    fn claude_inline_tui_keeps_claude_history_in_tmux() {
+        let temp_home = tempfile::tempdir().unwrap();
+        let _home = crate::session::test_support::isolate_home(temp_home.path());
+        let project = temp_home.path().join("proj");
+        std::fs::create_dir_all(&project).unwrap();
+        // (tool, command override, setting on, expect the inline override)
+        let cases = [
+            ("claude", "", true, true),
+            ("claude", "", false, false),
+            // A wrapper still launches Claude Code, so it gets the override too.
+            ("claude", "my-claude-wrapper", true, true),
+            // Only Claude reads `--settings`; other agents are left alone.
+            ("codex", "", true, false),
+        ];
+        for (tool, command, enabled, expected) in cases {
+            let mut inst = tool_instance(tool, project.to_str().unwrap());
+            inst.command = command.to_string();
+            inst.extra_args = "--model opus".to_string();
+            set_claude_inline_tui(&inst, enabled);
+            let cmd = host_command(&mut inst);
+            assert_eq!(
+                cmd.contains(r#"--settings '{"tui":"default"}'"#),
+                expected,
+                "{tool} command={command:?} enabled={enabled}: {cmd}"
+            );
+            assert!(cmd.contains("--model"), "per-session args survive: {cmd}");
+        }
     }
 
     // The sidecar env var has to survive into the docker argv; no CI container would catch it.
