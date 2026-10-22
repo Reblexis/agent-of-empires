@@ -35,8 +35,10 @@ export function hasAnsi(text: string): boolean {
   return HAS_ANSI.test(text);
 }
 
+const ANY_OSC = /\x1b\][0-9]+(?:;[^\x07\x1b]*)?(?:\x1b\\|\x07)/g;
+
 export function stripAnsi(text: string): string {
-  return text.replace(ANY_CSI, "");
+  return text.replace(ANY_OSC, "").replace(ANY_CSI, "");
 }
 
 /** Keep only the text after the last `\r` in each line so progress bars show their final state; CRLF is preserved. */
