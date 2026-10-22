@@ -179,6 +179,8 @@ To make `aoe acp logs --session <id>` useful, the daemon's `SessionTeeLayer` (`s
 
 Browser-side `window.onerror`, `unhandledrejection`, React `ErrorBoundary`, and explicit `reportError()` calls are batched and POSTed to `/api/client-log`. The server re-emits them through `tracing` at target `web.client` so they land in the same `debug.log` as everything else.
 
+The live terminal reports one more event, at `warn` with target `live-terminal.jump`: its view moved up by more than a row although the user did not scroll up (no upward wheel, touch, or press on the scroller in the last half second). The message carries the scroll geometry before and after (scrollTop, scrollHeight, clientHeight) and the follow state (reading, detached, coarse pointer, cursor anchor, spacer and window lines, rendered rows, frame rows and history), so a reported jump can be traced from `debug.log`. At most one per 10 seconds.
+
 Throttle (frontend): token-bucket 10 cap, 10/s refill, batches flush every 2s / 20 entries / ~48 KB. `pagehide` and `visibilitychange === "hidden"` flush via `navigator.sendBeacon` with a JSON Blob so logs survive page navigation.
 
 Caps (server): max 50 entries per batch (413 otherwise), message truncated to 4 KB, stack to 16 KB, dynamic-target field sanitised and capped at 64 characters. URL is sanitised client-side to drop the `?token=` query param before transmission.

@@ -1,4 +1,13 @@
-import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type { CSSProperties, ReactNode, RefObject } from "react";
 import type { AnsiSegment, AnsiStyle } from "../lib/ansi";
 import {
@@ -13,7 +22,10 @@ import {
 import { EchoTracker } from "../lib/liveEcho";
 import { reportError } from "../lib/logger";
 import { wheelNotches } from "../lib/liveMouse";
-import { registerMobileKeyboardProxyReceiver, type MobileKeyboardProxyInput } from "../lib/mobileKeyboardProxy";
+import {
+  registerMobileKeyboardProxyReceiver,
+  type MobileKeyboardProxyInput,
+} from "../lib/mobileKeyboardProxy";
 import { writeClipboard } from "../lib/clipboard";
 import type { LiveFrame } from "../hooks/useLiveTerminal";
 import { useWebSettings } from "../hooks/useWebSettings";
@@ -75,6 +87,10 @@ const RESIZE_DEBOUNCE_MS = 150;
  *  on the next grow. 1.5s leaves ample margin while still snapping trailing
  *  blanks up within ~a second of an agent going quiet. */
 const SHRINK_DELAY_MS = 1500;
+/** Jump report: an upward intent this recent explains a move up. */
+const JUMP_INTENT_MS = 500;
+/** Jump report: at most one per this interval. */
+const JUMP_REPORT_INTERVAL_MS = 10_000;
 /** Live-edge capture window in screenfuls: the visible screen plus this much
  *  scrollback kept loaded ABOVE it, so a scroll-up lands on real content
  *  instead of the blank history spacer (which otherwise only fills on a
@@ -194,7 +210,10 @@ function segStyle(style: AnsiStyle): CSSProperties | undefined {
   let fg = style.fg;
   let bg = style.bg;
   if (style.inverse) {
-    [fg, bg] = [bg ?? "var(--term-bg, #1c1c1f)", fg ?? "var(--term-fg, #e4e4e7)"];
+    [fg, bg] = [
+      bg ?? "var(--term-bg, #1c1c1f)",
+      fg ?? "var(--term-fg, #e4e4e7)",
+    ];
   }
   if (fg) css.color = fg;
   if (bg) css.backgroundColor = bg;
@@ -209,7 +228,9 @@ function segStyle(style: AnsiStyle): CSSProperties | undefined {
 // with `?livedebug=1` and the live view shows the geometry the overlay math
 // ran on (frame rows/history, content lines, spacer, computed line index).
 // Screenshot-friendly; no behavior changes.
-const LIVE_DEBUG = typeof location !== "undefined" && new URLSearchParams(location.search).has("livedebug");
+const LIVE_DEBUG =
+  typeof location !== "undefined" &&
+  new URLSearchParams(location.search).has("livedebug");
 
 // Cursor drawn AS A CELL inside the text flow, the way a real terminal
 // renders it, rather than a separate absolutely-positioned block whose pixel
@@ -232,7 +253,11 @@ interface KeyboardLayoutReader {
   get: (code: string) => string | undefined;
 }
 
-function layoutLetterForCode(layoutMap: KeyboardLayoutReader | null, code: string, shiftKey: boolean): string | null {
+function layoutLetterForCode(
+  layoutMap: KeyboardLayoutReader | null,
+  code: string,
+  shiftKey: boolean,
+): string | null {
   const mapped = layoutMap?.get(code);
   if (!mapped || mapped.length !== 1 || !/^[a-z]$/i.test(mapped)) return null;
   const letter = mapped.toLowerCase();
@@ -266,7 +291,13 @@ function altPrintableMetaKey(
 // Enter sends and that CLI agents read as "insert newline". Plain Enter and the
 // other chords still submit. Supersedes the Shift+Enter-submits mapping from
 // #2765.
-function liveEnterSequence(e: { key: string; ctrlKey: boolean; shiftKey: boolean; altKey: boolean; metaKey: boolean }) {
+function liveEnterSequence(e: {
+  key: string;
+  ctrlKey: boolean;
+  shiftKey: boolean;
+  altKey: boolean;
+  metaKey: boolean;
+}) {
   if (e.key !== "Enter") return null;
   if ((e.shiftKey || e.ctrlKey) && !e.altKey && !e.metaKey) return "\x1b\r";
   return "\r";
@@ -280,8 +311,11 @@ interface TerminalKeyLike {
   metaKey: boolean;
 }
 
-function xtermModifierParam(e: Pick<TerminalKeyLike, "shiftKey" | "altKey" | "ctrlKey">): number | null {
-  const modifier = 1 + Number(e.shiftKey) + 2 * Number(e.altKey) + 4 * Number(e.ctrlKey);
+function xtermModifierParam(
+  e: Pick<TerminalKeyLike, "shiftKey" | "altKey" | "ctrlKey">,
+): number | null {
+  const modifier =
+    1 + Number(e.shiftKey) + 2 * Number(e.altKey) + 4 * Number(e.ctrlKey);
   return modifier === 1 ? null : modifier;
 }
 
@@ -338,14 +372,19 @@ function specialKeySequence(e: TerminalKeyLike): string | null {
 // one link with the full href, not per-segment fragments. Each overlapping
 // segment piece gets its own anchor carrying the same href; visually they
 // read as one underlined run.
-function renderSegsWithLinks(segs: AnsiSegment[], links: LinkSpan[]): ReactNode[] {
+function renderSegsWithLinks(
+  segs: AnsiSegment[],
+  links: LinkSpan[],
+): ReactNode[] {
   const out: ReactNode[] = [];
   let offset = 0;
   segs.forEach((seg, i) => {
     const segStart = offset;
     const segEnd = offset + seg.text.length;
     offset = segEnd;
-    const overlapping = links.filter((l) => l.start < segEnd && l.end > segStart);
+    const overlapping = links.filter(
+      (l) => l.start < segEnd && l.end > segStart,
+    );
     if (overlapping.length === 0) {
       out.push(
         <span key={i} style={segStyle(seg.style)}>
@@ -359,9 +398,16 @@ function renderSegsWithLinks(segs: AnsiSegment[], links: LinkSpan[]): ReactNode[
     for (const l of overlapping) {
       const from = Math.max(l.start, segStart);
       const to = Math.min(l.end, segEnd);
-      if (from > pos) children.push(seg.text.slice(pos - segStart, from - segStart));
+      if (from > pos)
+        children.push(seg.text.slice(pos - segStart, from - segStart));
       children.push(
-        <a key={`${from}`} href={l.href} target="_blank" rel="noopener noreferrer" className="underline cursor-pointer">
+        <a
+          key={`${from}`}
+          href={l.href}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="underline cursor-pointer"
+        >
           {seg.text.slice(from - segStart, to - segStart)}
         </a>,
       );
@@ -390,7 +436,9 @@ export const Row = memo(function Row({
    *  Defaults to the shared empty constant so memo identity holds. */
   links?: LinkSpan[];
 }) {
-  const cursorStyle = focused ? CURSOR_CELL_STYLE_FOCUSED : CURSOR_CELL_STYLE_BLURRED;
+  const cursorStyle = focused
+    ? CURSOR_CELL_STYLE_FOCUSED
+    : CURSOR_CELL_STYLE_BLURRED;
   if (cursorCol == null) {
     if (segs.length === 0) return <div> </div>; // keep empty rows at full height
     return <div>{renderSegsWithLinks(segs, links)}</div>;
@@ -447,7 +495,8 @@ export const Row = memo(function Row({
   if (!placed) {
     // Cursor sits past the row's text (blank input cell): pad to the column
     // and box a space.
-    if (cursorCol > col) out.push(<span key="pad">{" ".repeat(cursorCol - col)}</span>);
+    if (cursorCol > col)
+      out.push(<span key="pad">{" ".repeat(cursorCol - col)}</span>);
     out.push(
       <span
         key="cursor"
@@ -504,8 +553,12 @@ export function MobileLiveTerminal({
   // missing/mistyped family degrades gracefully instead of blanking the grid.
   // Strip quotes so a stray `"` can't produce a malformed (and silently
   // ignored) font-family value.
-  const termFontFamily = (settings.terminalFontFamily ?? "").trim().replace(/"/g, "");
-  const fontFamily = termFontFamily ? `"${termFontFamily}", var(--font-mono)` : undefined;
+  const termFontFamily = (settings.terminalFontFamily ?? "")
+    .trim()
+    .replace(/"/g, "");
+  const fontFamily = termFontFamily
+    ? `"${termFontFamily}", var(--font-mono)`
+    : undefined;
   // Drives the cursor cell's filled-vs-hollow style; separate from the
   // `onInputFocusChange` bubble-up, which only drives the parent's chrome
   // ring (see LiveTerminalView).
@@ -515,7 +568,8 @@ export function MobileLiveTerminal({
   // pointer class flipping which font key applies) via the adjust-state-
   // during-render pattern. Pinch-zoom on touch still drives fontSize live
   // below; mid-gesture the setting is unchanged so this never clobbers it.
-  const [lastConfiguredFontSize, setLastConfiguredFontSize] = useState(configuredFontSize);
+  const [lastConfiguredFontSize, setLastConfiguredFontSize] =
+    useState(configuredFontSize);
   if (configuredFontSize !== lastConfiguredFontSize) {
     setLastConfiguredFontSize(configuredFontSize);
     setFontSize(configuredFontSize);
@@ -565,7 +619,9 @@ export function MobileLiveTerminal({
     remeasure();
   }, [remeasure, fontSize, fontFamily]);
   useEffect(() => {
-    const fonts = (document as Document & { fonts?: { ready: Promise<unknown> } }).fonts;
+    const fonts = (
+      document as Document & { fonts?: { ready: Promise<unknown> } }
+    ).fonts;
     fonts?.ready
       ?.then(() => remeasure())
       .catch(() => {
@@ -601,7 +657,13 @@ export function MobileLiveTerminal({
       if (mouseSelectingRef.current && e.type === "pointerup") {
         const sel = window.getSelection();
         const el = scrollerRef.current;
-        if (sel && !sel.isCollapsed && el && sel.anchorNode && el.contains(sel.anchorNode)) {
+        if (
+          sel &&
+          !sel.isCollapsed &&
+          el &&
+          sel.anchorNode &&
+          el.contains(sel.anchorNode)
+        ) {
           const text = sel.toString();
           if (text) void writeClipboard(text);
         }
@@ -646,7 +708,10 @@ export function MobileLiveTerminal({
   // non-blank row was tried and reverted, because capture-pane catches
   // mid-repaint states whose lowest non-blank row jumps around
   // (spinner / footer redraws), and every flutter moved the viewport.
-  const latchRef = useRef<{ width: number; maxHeight: number }>({ width: 0, maxHeight: 0 });
+  const latchRef = useRef<{ width: number; maxHeight: number }>({
+    width: 0,
+    maxHeight: 0,
+  });
   // Pixel top of the cursor row. Sticky across frames that momentarily
   // hide the cursor (mid-redraw captures) so the target cannot flap.
   const cursorAnchorRef = useRef<number | null>(null);
@@ -662,12 +727,16 @@ export function MobileLiveTerminal({
       // Only a touch device has a soft keyboard to shrink the container. On a
       // fine pointer a shorter container is just a shorter window, and the
       // live edge stays the literal bottom (status rows included).
-      const shrunken = coarse && latchRef.current.maxHeight - el.clientHeight > lineH * 1.5;
+      const shrunken =
+        coarse && latchRef.current.maxHeight - el.clientHeight > lineH * 1.5;
       const anchor = cursorAnchorRef.current;
       if (!shrunken || anchor == null) return bottom;
       // One spare line under the cursor row keeps the input box border
       // visible beneath it.
-      return Math.min(bottom, Math.max(0, anchor + 2 * lineH - el.clientHeight));
+      return Math.min(
+        bottom,
+        Math.max(0, anchor + 2 * lineH - el.clientHeight),
+      );
     },
     [coarse, lineH],
   );
@@ -691,7 +760,8 @@ export function MobileLiveTerminal({
     if (!el) return;
     const prev = geomRef.current;
     const target = liveScrollTarget(el);
-    const heightChanged = prev.target >= 0 && Math.abs(el.clientHeight - prev.clientHeight) > 1;
+    const heightChanged =
+      prev.target >= 0 && Math.abs(el.clientHeight - prev.clientHeight) > 1;
     // scrollTop fell since the last pin: the user is dragging up (or iOS
     // momentum is carrying up after a flick).
     const movingUp = prev.target >= 0 && el.scrollTop < prev.scrollTop - 0.5;
@@ -706,7 +776,12 @@ export function MobileLiveTerminal({
     // is why a height change suppresses the detach test entirely: the
     // scrollTop delta there is the keyboard's doing, not the user's, and it
     // must instead trigger the anchor pin below.
-    if (!heightChanged && prev.target >= 0 && el.scrollTop < prev.scrollTop - 0.5 && el.scrollTop < target - 2) {
+    if (
+      !heightChanged &&
+      prev.target >= 0 &&
+      el.scrollTop < prev.scrollTop - 0.5 &&
+      el.scrollTop < target - 2
+    ) {
       liveDetachedRef.current = true;
     }
     // Re-attaching (following again) is NOT done here: re-grabbing whenever
@@ -738,12 +813,18 @@ export function MobileLiveTerminal({
       // pin scrollTop back to the bottom and cancel iOS momentum (the residual
       // flutter where gentle flicks die before they get going). A keyboard
       // pin still bypasses it: there the scrollTop drop is a clamp, not a drag.
-      (prev.target < 0 || pendingHeightPinRef.current || (!movingUp && target > el.scrollTop))
+      (prev.target < 0 ||
+        pendingHeightPinRef.current ||
+        (!movingUp && target > el.scrollTop))
     ) {
       el.scrollTop = target;
       pendingHeightPinRef.current = false;
     }
-    geomRef.current = { target, clientHeight: el.clientHeight, scrollTop: el.scrollTop };
+    geomRef.current = {
+      target,
+      clientHeight: el.clientHeight,
+      scrollTop: el.scrollTop,
+    };
   }, [liveScrollTarget]);
   // Frame-to-frame parse cache: unchanged lines keep their segment-array
   // identity across streamed frames, so the wrap cache below and the
@@ -753,7 +834,10 @@ export function MobileLiveTerminal({
   // state initializer (never set) rather than a ref so the render-time
   // read is legal; re-running on the same frame converges (see the class).
   const [parseCache] = useState(() => new LineParseCache());
-  const parsedLines = useMemo(() => (frame ? parseCache.lines(frame.content) : []), [frame, parseCache]);
+  const parsedLines = useMemo(
+    () => (frame ? parseCache.lines(frame.content) : []),
+    [frame, parseCache],
+  );
   // Columns this viewer renders at. Normally the pane is exactly this
   // wide and wrapping is the identity; when another writer resizes the
   // window wider (see the server-side drift re-assert), wrapping keeps
@@ -769,7 +853,15 @@ export function MobileLiveTerminal({
   const [echoVersion, setEchoVersion] = useState(0);
   const echoRow = useMemo(() => {
     const cursor = frame?.cursor;
-    if (!predictEcho || reading || !frame || !cursor || frame.altScreen || frame.pane0) return null;
+    if (
+      !predictEcho ||
+      reading ||
+      !frame ||
+      !cursor ||
+      frame.altScreen ||
+      frame.pane0
+    )
+      return null;
     const idx = Math.max(0, parsedLines.length - frame.rows) + cursor.y;
     const segs = parsedLines[idx];
     const width = renderCols > 0 ? renderCols : undefined;
@@ -828,7 +920,9 @@ export function MobileLiveTerminal({
   // unchanged visual rows keep THEIR identity too, which is what lets
   // memo(Row) skip them. State initializer, not a ref, for the same
   // render-read legality as the parse cache above.
-  const [wrapCache] = useState(() => new WeakMap<AnsiSegment[], { cols: number; rows: AnsiSegment[][] }>());
+  const [wrapCache] = useState(
+    () => new WeakMap<AnsiSegment[], { cols: number; rows: AnsiSegment[][] }>(),
+  );
   const visual = useMemo(() => {
     const cols = renderCols > 0 ? renderCols : Number.POSITIVE_INFINITY;
     const rows: AnsiSegment[][] = [];
@@ -851,8 +945,12 @@ export function MobileLiveTerminal({
   // are keyed by row segment-array identity (stable via LineParseCache /
   // wrapCache), so a streamed frame only pays regex work for changed rows and
   // unchanged rows keep span identity for the Row memo.
-  const [linkMatchCache] = useState(() => new WeakMap<AnsiSegment[], { index: number; raw: string }[]>());
-  const [linkSpanCache] = useState(() => new WeakMap<AnsiSegment[], LinkSpan[]>());
+  const [linkMatchCache] = useState(
+    () => new WeakMap<AnsiSegment[], { index: number; raw: string }[]>(),
+  );
+  const [linkSpanCache] = useState(
+    () => new WeakMap<AnsiSegment[], LinkSpan[]>(),
+  );
   const [linkTextCache] = useState(() => new WeakMap<AnsiSegment[], string>());
   const rowLinks = useMemo(
     () =>
@@ -877,12 +975,21 @@ export function MobileLiveTerminal({
   const forwardMode = (frame?.altScreen ?? false) && (frame?.mouse ?? false);
   const mouseSgr = frame?.mouseSgr ?? false;
   const effectiveSpacerLines = forwardMode ? 0 : spacerLines;
-  const { forwardModeRef, mouseSgrRef } = useTerminalGestureBoundary({ scrollerRef, forwardMode, mouseSgr });
+  const { forwardModeRef, mouseSgrRef } = useTerminalGestureBoundary({
+    scrollerRef,
+    forwardMode,
+    mouseSgr,
+  });
   // Sub-notch scroll remainder (px) carried across events, and the last
   // touch Y while forwarding a single-finger drag.
   const wheelAccumRef = useRef(0);
   const touchForwardYRef = useRef<number | null>(null);
-  const touchWheelQueueRef = useRef<{ notches: number; x: number; y: number; raf: number }>({
+  const touchWheelQueueRef = useRef<{
+    notches: number;
+    x: number;
+    y: number;
+    raf: number;
+  }>({
     notches: 0,
     x: 0,
     y: 0,
@@ -954,7 +1061,8 @@ export function MobileLiveTerminal({
       // Release the stray-paste claim when this terminal goes away (paired
       // tab closed, session switched), so the claim falls back to the agent
       // pane rather than being held by a terminal that no longer exists.
-      if (lastInteractedTerminal.id === instanceIdRef.current) lastInteractedTerminal.id = null;
+      if (lastInteractedTerminal.id === instanceIdRef.current)
+        lastInteractedTerminal.id = null;
     },
     [],
   );
@@ -988,7 +1096,8 @@ export function MobileLiveTerminal({
     if (!frameCursor) return { row: -1, col: -1, top: null as number | null };
     const cursor = predicted ? { ...frameCursor, x: predicted.x } : frameCursor;
     const lineIdx = Math.max(0, lines.length - screenRows) + cursor.y;
-    if (lineIdx < 0 || lineIdx >= lines.length) return { row: -1, col: -1, top: null };
+    if (lineIdx < 0 || lineIdx >= lines.length)
+      return { row: -1, col: -1, top: null };
     const cols = renderCols > 0 ? renderCols : Number.POSITIVE_INFINITY;
     const baseRow = visual.lineStartRow[lineIdx] ?? -1;
     if (baseRow < 0) return { row: -1, col: -1, top: null };
@@ -1047,6 +1156,64 @@ export function MobileLiveTerminal({
   // Last scrollTop seen by onScroll, to read the scroll DIRECTION (our pin
   // filters itself out by landing exactly on the target).
   const onScrollLastTopRef = useRef(0);
+  const onScrollLastHeightRef = useRef(0);
+  // Jump report (docs/development/logging.md, `live-terminal.jump`): when the
+  // user last gave an upward scroll intent (upward wheel, press on the
+  // scroller, touch), and when the last report went out. The follow state the
+  // report carries is mirrored into a ref so onScroll stays stable per frame.
+  const upIntentAtRef = useRef(Number.NEGATIVE_INFINITY);
+  const lastJumpReportRef = useRef(Number.NEGATIVE_INFINITY);
+  const jumpStateRef = useRef({
+    spacer: 0,
+    lines: 0,
+    renderRows: 0,
+    frameRows: 0,
+    history: 0,
+    cols: 0,
+  });
+  useEffect(() => {
+    jumpStateRef.current = {
+      spacer: effectiveSpacerLines,
+      lines: lines.length,
+      renderRows: renderRowCount,
+      frameRows: screenRows,
+      history,
+      cols: renderCols,
+    };
+  }, [
+    effectiveSpacerLines,
+    lines.length,
+    renderRowCount,
+    screenRows,
+    history,
+    renderCols,
+  ]);
+  const reportJumpIfUnasked = useCallback(
+    (el: HTMLDivElement, prevTop: number, prevHeight: number) => {
+      if (el.scrollTop >= prevTop - lineH) return;
+      const now = performance.now();
+      if (
+        touchActiveRef.current ||
+        mouseSelectingRef.current ||
+        now - upIntentAtRef.current < JUMP_INTENT_MS
+      )
+        return;
+      if (now - lastJumpReportRef.current < JUMP_REPORT_INTERVAL_MS) return;
+      lastJumpReportRef.current = now;
+      const st = jumpStateRef.current;
+      const r = Math.round;
+      reportError(
+        `live terminal view moved up without an upward scroll: scrollTop ${r(prevTop)} -> ${r(el.scrollTop)}, ` +
+          `scrollHeight ${prevHeight} -> ${el.scrollHeight}, clientHeight ${el.clientHeight}, ` +
+          `target ${r(liveScrollTarget(el))}, reading ${readingRef.current}, detached ${liveDetachedRef.current}, ` +
+          `coarse ${coarse}, latchHeight ${latchRef.current.maxHeight}, cursorAnchor ${cursorAnchorRef.current ?? "none"}, ` +
+          `lineH ${lineH}, spacer ${st.spacer}, lines ${st.lines}, renderRows ${st.renderRows}, ` +
+          `frameRows ${st.frameRows}, history ${st.history}, cols ${st.cols}`,
+        { level: "warn", target: "live-terminal.jump" },
+      );
+    },
+    [coarse, lineH, liveScrollTarget],
+  );
   const onScroll = useCallback(() => {
     // Forward mode pins the live edge (overflow hidden); the wheel goes to
     // the app, so there is no scrollback reading state to enter.
@@ -1054,6 +1221,12 @@ export function MobileLiveTerminal({
     if (forwardModeRef.current) return;
     const el = scrollerRef.current;
     if (!el) return;
+    reportJumpIfUnasked(
+      el,
+      onScrollLastTopRef.current,
+      onScrollLastHeightRef.current,
+    );
+    onScrollLastHeightRef.current = el.scrollHeight;
     const movingUp = el.scrollTop < onScrollLastTopRef.current - 0.5;
     onScrollLastTopRef.current = el.scrollTop;
     if (forceLiveRef.current) {
@@ -1080,11 +1253,23 @@ export function MobileLiveTerminal({
     // stops a few px short returns to live above, which trims the trailing
     // blank rows, and the resulting clamp is an upward move that would never
     // re-attach, leaving the view parked while output streams past it.
-    const atLiteralBottom = el.scrollHeight - el.clientHeight - el.scrollTop < 2;
-    if (!movingUp && (atLiteralBottom || (!touchActiveRef.current && atBottom()))) {
+    const atLiteralBottom =
+      el.scrollHeight - el.clientHeight - el.scrollTop < 2;
+    if (
+      !movingUp &&
+      (atLiteralBottom || (!touchActiveRef.current && atBottom()))
+    ) {
       liveDetachedRef.current = false;
     }
-  }, [atBottom, enterReading, forwardModeRef, reading, returnToLive, scheduleViewSync]);
+  }, [
+    atBottom,
+    enterReading,
+    forwardModeRef,
+    reading,
+    reportJumpIfUnasked,
+    returnToLive,
+    scheduleViewSync,
+  ]);
 
   const jumpToLatest = useCallback(() => {
     const el = scrollerRef.current;
@@ -1123,15 +1308,29 @@ export function MobileLiveTerminal({
       const content = el.querySelector<HTMLElement>("[data-live-content]");
       const gridTop = content?.getBoundingClientRect().top ?? r.top;
       const cols = frame?.pane0?.cols ?? (renderCols > 0 ? renderCols : 1);
-      const rows = frame?.pane0?.rows ?? Math.max(1, screenRows || rowsRef.current);
-      const col = Math.min(cols, Math.max(1, Math.floor((clientX - r.left) / charW) + 1));
-      const visualRow = Math.floor((clientY - gridTop) / lineH) - effectiveSpacerLines;
+      const rows =
+        frame?.pane0?.rows ?? Math.max(1, screenRows || rowsRef.current);
+      const col = Math.min(
+        cols,
+        Math.max(1, Math.floor((clientX - r.left) / charW) + 1),
+      );
+      const visualRow =
+        Math.floor((clientY - gridTop) / lineH) - effectiveSpacerLines;
       const firstScreenLine = Math.max(0, lines.length - screenRows);
       const screenTopVisual = visual.lineStartRow[firstScreenLine] ?? 0;
       const row = Math.min(rows, Math.max(1, visualRow - screenTopVisual + 1));
       return { col, row };
     },
-    [charW, lineH, renderCols, screenRows, effectiveSpacerLines, lines.length, visual, frame?.pane0],
+    [
+      charW,
+      lineH,
+      renderCols,
+      screenRows,
+      effectiveSpacerLines,
+      lines.length,
+      visual,
+      frame?.pane0,
+    ],
   );
   const inputPaneMiddleRow = useCallback(
     () => Math.max(1, Math.round((frame?.pane0?.rows ?? rowsRef.current) / 2)),
@@ -1148,15 +1347,26 @@ export function MobileLiveTerminal({
   // anywhere on the pane means "scroll the transcript"; the middle row is
   // inside it for any plausible layout. The column keeps the finger's x.
   const forwardWheelDelta = useCallback(
-    (deltaPx: number, clientX: number, clientY: number, touchCell = false, maxNotches = 8) => {
+    (
+      deltaPx: number,
+      clientX: number,
+      clientY: number,
+      touchCell = false,
+      maxNotches = 8,
+    ) => {
       wheelAccumRef.current += deltaPx;
-      const { notches, remainder } = wheelNotches(wheelAccumRef.current, lineH || 16, maxNotches);
+      const { notches, remainder } = wheelNotches(
+        wheelAccumRef.current,
+        lineH || 16,
+        maxNotches,
+      );
       wheelAccumRef.current = remainder;
       if (notches === 0) return;
       const { col, row } = pointerCell(clientX, clientY);
       const wheelRow = touchCell ? inputPaneMiddleRow() : row;
       const up = notches < 0;
-      for (let i = 0; i < Math.abs(notches); i++) forwardWheel(up, mouseSgrRef.current, col, wheelRow);
+      for (let i = 0; i < Math.abs(notches); i++)
+        forwardWheel(up, mouseSgrRef.current, col, wheelRow);
     },
     [lineH, pointerCell, forwardWheel, mouseSgrRef, inputPaneMiddleRow],
   );
@@ -1170,13 +1380,18 @@ export function MobileLiveTerminal({
   const enqueueTouchWheelDelta = useCallback(
     (deltaPx: number, clientX: number, clientY: number) => {
       wheelAccumRef.current += deltaPx;
-      const { notches, remainder } = wheelNotches(wheelAccumRef.current, lineH || 16, MAX_QUEUED_TOUCH_NOTCHES);
+      const { notches, remainder } = wheelNotches(
+        wheelAccumRef.current,
+        lineH || 16,
+        MAX_QUEUED_TOUCH_NOTCHES,
+      );
       wheelAccumRef.current = remainder;
       if (notches === 0) return;
 
       const queued = touchWheelQueueRef.current;
       const direction = Math.sign(notches);
-      if (queued.notches && Math.sign(queued.notches) !== direction) queued.notches = 0;
+      if (queued.notches && Math.sign(queued.notches) !== direction)
+        queued.notches = 0;
       queued.notches = Math.max(
         -MAX_QUEUED_TOUCH_NOTCHES,
         Math.min(MAX_QUEUED_TOUCH_NOTCHES, queued.notches + notches),
@@ -1201,15 +1416,28 @@ export function MobileLiveTerminal({
       // swipe track remote redraws instead of arriving as a wheel storm.
       if (!queued.raf) flushOne();
     },
-    [lineH, pointerCell, forwardWheel, forwardModeRef, mouseSgrRef, inputPaneMiddleRow],
+    [
+      lineH,
+      pointerCell,
+      forwardWheel,
+      forwardModeRef,
+      mouseSgrRef,
+      inputPaneMiddleRow,
+    ],
   );
   useEffect(() => cancelTouchWheelQueue, [cancelTouchWheelQueue]);
 
   const onWheel = useCallback(
     (e: React.WheelEvent) => {
+      if (e.deltaY < 0) upIntentAtRef.current = performance.now();
       if (!forwardModeRef.current) return;
       // Normalize line/page deltas to pixels so a notch is ~one row.
-      const factor = e.deltaMode === 1 ? lineH || 16 : e.deltaMode === 2 ? (lineH || 16) * (rowsRef.current || 1) : 1;
+      const factor =
+        e.deltaMode === 1
+          ? lineH || 16
+          : e.deltaMode === 2
+            ? (lineH || 16) * (rowsRef.current || 1)
+            : 1;
       forwardWheelDelta(e.deltaY * factor, e.clientX, e.clientY);
     },
     [lineH, forwardWheelDelta, forwardModeRef],
@@ -1223,10 +1451,18 @@ export function MobileLiveTerminal({
   // coast a decaying velocity through the same forwardWheelDelta path.
   // Recent finger positions for the release-velocity estimate, pruned to
   // FLICK_VELOCITY_WINDOW_MS.
-  const flickSamplesRef = useRef<Array<{ x: number; y: number; t: number }>>([]);
+  const flickSamplesRef = useRef<Array<{ x: number; y: number; t: number }>>(
+    [],
+  );
   // In-flight momentum. Identity-guarded: a stale rAF step from a superseded
   // or stopped coast bails when it no longer owns this ref.
-  const momentumRef = useRef<{ v: number; lastT: number; x: number; y: number; raf: number } | null>(null);
+  const momentumRef = useRef<{
+    v: number;
+    lastT: number;
+    x: number;
+    y: number;
+    raf: number;
+  } | null>(null);
   const stopMomentum = useCallback(() => {
     const m = momentumRef.current;
     if (m) cancelAnimationFrame(m.raf);
@@ -1236,7 +1472,13 @@ export function MobileLiveTerminal({
   const startMomentum = useCallback(
     (velocity: number, clientX: number, clientY: number) => {
       stopMomentum();
-      const state = { v: velocity, lastT: performance.now(), x: clientX, y: clientY, raf: 0 };
+      const state = {
+        v: velocity,
+        lastT: performance.now(),
+        x: clientX,
+        y: clientY,
+        raf: 0,
+      };
       momentumRef.current = state;
       const step = (now: number) => {
         if (momentumRef.current !== state) return;
@@ -1249,7 +1491,11 @@ export function MobileLiveTerminal({
         const dt = Math.min(64, Math.max(0, now - state.lastT));
         state.lastT = now;
         // Same sign convention as the drag: finger-space delta, negated.
-        enqueueTouchWheelDelta(-state.v * dt * FORWARD_TOUCH_GAIN, state.x, state.y);
+        enqueueTouchWheelDelta(
+          -state.v * dt * FORWARD_TOUCH_GAIN,
+          state.x,
+          state.y,
+        );
         state.v *= Math.pow(MOMENTUM_DECAY_PER_MS, dt);
         if (Math.abs(state.v) < MOMENTUM_STOP_VELOCITY) {
           momentumRef.current = null;
@@ -1291,6 +1537,7 @@ export function MobileLiveTerminal({
   // the user can still select page text. Coordinates come from `pointerCell`.
   const onPointerDown = useCallback(
     (e: React.PointerEvent) => {
+      upIntentAtRef.current = performance.now();
       if (e.pointerType !== "mouse") return;
       if (!forwardModeRef.current || e.shiftKey) {
         // A left press outside forward mode starts a native selection drag;
@@ -1300,7 +1547,8 @@ export function MobileLiveTerminal({
         if (e.button === 0) mouseSelectingRef.current = true;
         return;
       }
-      const base = e.button === 1 ? 1 : e.button === 2 ? 2 : e.button === 0 ? 0 : -1;
+      const base =
+        e.button === 1 ? 1 : e.button === 2 ? 2 : e.button === 0 ? 0 : -1;
       if (base < 0) return;
       e.preventDefault();
       // Keep the hidden input focused so the physical keyboard still types
@@ -1326,7 +1574,14 @@ export function MobileLiveTerminal({
       if (last && last.col === col && last.row === row) return; // one report per cell
       e.preventDefault();
       lastForwardCellRef.current = { col, row };
-      forwardButton(forwardBtnRef.current, false, true, mouseSgrRef.current, col, row);
+      forwardButton(
+        forwardBtnRef.current,
+        false,
+        true,
+        mouseSgrRef.current,
+        col,
+        row,
+      );
     },
     [pointerCell, forwardButton, mouseSgrRef],
   );
@@ -1355,7 +1610,11 @@ export function MobileLiveTerminal({
   );
 
   // --- pinch zoom (two-finger) ---------------------------------------------
-  const pinchRef = useRef<{ startDist: number; startSize: number; changed: boolean } | null>(null);
+  const pinchRef = useRef<{
+    startDist: number;
+    startSize: number;
+    changed: boolean;
+  } | null>(null);
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Finger Y at the start of a single-finger capture-mode drag, used to tell a
   // real scroll from a tap before the native scroll has moved far.
@@ -1363,6 +1622,7 @@ export function MobileLiveTerminal({
   const onTouchStart = useCallback(
     (e: React.TouchEvent) => {
       touchActiveRef.current = true;
+      upIntentAtRef.current = performance.now();
       // A touch anywhere halts an in-flight momentum coast, the native
       // touch-to-stop convention.
       stopMomentum();
@@ -1387,7 +1647,9 @@ export function MobileLiveTerminal({
         touchStartRef.current = { x: t0.clientX, y: t0.clientY };
         suppressTouchClickRef.current = false;
         wheelAccumRef.current = 0;
-        flickSamplesRef.current = [{ x: t0.clientX, y: t0.clientY, t: performance.now() }];
+        flickSamplesRef.current = [
+          { x: t0.clientX, y: t0.clientY, t: performance.now() },
+        ];
       } else if (e.touches.length === 1) {
         // Taking hold of the scroller to drag. Detach from the live tail NOW so
         // the pin cannot snap the view back to the bottom mid-drag: iOS fires
@@ -1396,7 +1658,10 @@ export function MobileLiveTerminal({
         // otherwise re-arm the pin. A tap (no scroll) re-attaches on touchend.
         liveDetachedRef.current = true;
         touchScrollStartYRef.current = e.touches[0]!.clientY;
-        touchStartRef.current = { x: e.touches[0]!.clientX, y: e.touches[0]!.clientY };
+        touchStartRef.current = {
+          x: e.touches[0]!.clientX,
+          y: e.touches[0]!.clientY,
+        };
         suppressTouchClickRef.current = false;
       }
     },
@@ -1410,13 +1675,22 @@ export function MobileLiveTerminal({
         const dist = Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
         const { startDist, startSize } = pinchRef.current;
         if (startDist > 0) {
-          const next = Math.round(Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, startSize * (dist / startDist))));
+          const next = Math.round(
+            Math.max(
+              MIN_FONT_SIZE,
+              Math.min(MAX_FONT_SIZE, startSize * (dist / startDist)),
+            ),
+          );
           if (next !== startSize) pinchRef.current.changed = true;
           setFontSize(next);
         }
         return;
       }
-      if (e.touches.length === 1 && forwardModeRef.current && touchForwardYRef.current != null) {
+      if (
+        e.touches.length === 1 &&
+        forwardModeRef.current &&
+        touchForwardYRef.current != null
+      ) {
         // Translate the drag into wheel notches. Finger moving DOWN reveals
         // older content = wheel up, so the delta is negated (and geared up by
         // the touch gain). No preventDefault: React's delegated touch
@@ -1425,7 +1699,10 @@ export function MobileLiveTerminal({
         // instead (see the style below).
         const t0 = e.touches[0]!;
         const start = touchStartRef.current;
-        if (start && Math.hypot(t0.clientX - start.x, t0.clientY - start.y) > 8) {
+        if (
+          start &&
+          Math.hypot(t0.clientX - start.x, t0.clientY - start.y) > 8
+        ) {
           suppressTouchClickRef.current = true;
         }
         const y = t0.clientY;
@@ -1434,11 +1711,19 @@ export function MobileLiveTerminal({
         const now = performance.now();
         const samples = flickSamplesRef.current;
         samples.push({ x: t0.clientX, y, t: now });
-        while (samples.length > 1 && now - samples[0]!.t > FLICK_VELOCITY_WINDOW_MS) samples.shift();
+        while (
+          samples.length > 1 &&
+          now - samples[0]!.t > FLICK_VELOCITY_WINDOW_MS
+        )
+          samples.shift();
         enqueueTouchWheelDelta(-dy * FORWARD_TOUCH_GAIN, t0.clientX, y);
         return;
       }
-      if (e.touches.length === 1 && !forwardModeRef.current && touchScrollStartYRef.current != null) {
+      if (
+        e.touches.length === 1 &&
+        !forwardModeRef.current &&
+        touchScrollStartYRef.current != null
+      ) {
         // Once the finger has clearly started a scroll (not a tap), switch to
         // the reading model immediately: anchor the capture window to the
         // history and drop to idle cadence. At the live edge the window is "the
@@ -1447,7 +1732,9 @@ export function MobileLiveTerminal({
         // window so appends only add off-screen rows at the bottom. enterReading
         // is idempotent; the 8px gate keeps a tap (or a horizontal swipe) from
         // tripping it.
-        if (Math.abs(e.touches[0]!.clientY - touchScrollStartYRef.current) > 8) {
+        if (
+          Math.abs(e.touches[0]!.clientY - touchScrollStartYRef.current) > 8
+        ) {
           suppressTouchClickRef.current = true;
           enterReading();
         }
@@ -1471,24 +1758,51 @@ export function MobileLiveTerminal({
             const dy = finalTouch.clientY - touchForwardYRef.current;
             if (dy !== 0) {
               const start = touchStartRef.current;
-              if (start && Math.hypot(finalTouch.clientX - start.x, finalTouch.clientY - start.y) > 8) {
+              if (
+                start &&
+                Math.hypot(
+                  finalTouch.clientX - start.x,
+                  finalTouch.clientY - start.y,
+                ) > 8
+              ) {
                 suppressTouchClickRef.current = true;
               }
               touchForwardYRef.current = finalTouch.clientY;
               const now = performance.now();
               const samples = flickSamplesRef.current;
-              samples.push({ x: finalTouch.clientX, y: finalTouch.clientY, t: now });
-              while (samples.length > 1 && now - samples[0]!.t > FLICK_VELOCITY_WINDOW_MS) samples.shift();
-              enqueueTouchWheelDelta(-dy * FORWARD_TOUCH_GAIN, finalTouch.clientX, finalTouch.clientY);
+              samples.push({
+                x: finalTouch.clientX,
+                y: finalTouch.clientY,
+                t: now,
+              });
+              while (
+                samples.length > 1 &&
+                now - samples[0]!.t > FLICK_VELOCITY_WINDOW_MS
+              )
+                samples.shift();
+              enqueueTouchWheelDelta(
+                -dy * FORWARD_TOUCH_GAIN,
+                finalTouch.clientX,
+                finalTouch.clientY,
+              );
             }
           }
           const samples = flickSamplesRef.current;
           const first = samples[0];
           const last = samples[samples.length - 1];
-          if (first && last && last.t > first.t && performance.now() - last.t <= FLICK_MAX_PAUSE_MS) {
+          if (
+            first &&
+            last &&
+            last.t > first.t &&
+            performance.now() - last.t <= FLICK_MAX_PAUSE_MS
+          ) {
             const raw = (last.y - first.y) / (last.t - first.t);
-            const v = Math.max(-FLICK_MAX_VELOCITY, Math.min(FLICK_MAX_VELOCITY, raw));
-            if (Math.abs(v) >= FLICK_MIN_VELOCITY) startMomentum(v, last.x, last.y);
+            const v = Math.max(
+              -FLICK_MAX_VELOCITY,
+              Math.min(FLICK_MAX_VELOCITY, raw),
+            );
+            if (Math.abs(v) >= FLICK_MIN_VELOCITY)
+              startMomentum(v, last.x, last.y);
           }
         }
         flickSamplesRef.current = [];
@@ -1517,7 +1831,16 @@ export function MobileLiveTerminal({
         }, 400);
       }
     },
-    [fontKey, fontSize, update, returnToLive, atBottom, startMomentum, enqueueTouchWheelDelta, forwardModeRef],
+    [
+      fontKey,
+      fontSize,
+      update,
+      returnToLive,
+      atBottom,
+      startMomentum,
+      enqueueTouchWheelDelta,
+      forwardModeRef,
+    ],
   );
   // touchcancel is NOT touchend: iOS fires it when it promotes the drag to
   // native scrolling, with the finger usually STILL down. Treat it as "stop
@@ -1617,7 +1940,16 @@ export function MobileLiveTerminal({
       ro.disconnect();
       if (timer) clearTimeout(timer);
     };
-  }, [active, charW, coarse, lineH, sendResize, setWindow, pinIfWasAtBottom, keyboardOpen]);
+  }, [
+    active,
+    charW,
+    coarse,
+    lineH,
+    sendResize,
+    setWindow,
+    pinIfWasAtBottom,
+    keyboardOpen,
+  ]);
 
   // Opening the soft keyboard is an intent to type, not to continue reading
   // scrollback. Return to the live prompt before the keyboard reduces the
@@ -1641,7 +1973,8 @@ export function MobileLiveTerminal({
   // at the live edge. Reading scrollback drops to idle: the window is
   // wide (big frames), and the reader is not watching the live tail.
   useEffect(() => {
-    const sync = () => setCadence(active && document.visibilityState === "visible" && !reading);
+    const sync = () =>
+      setCadence(active && document.visibilityState === "visible" && !reading);
     sync();
     document.addEventListener("visibilitychange", sync);
     return () => document.removeEventListener("visibilitychange", sync);
@@ -1684,7 +2017,15 @@ export function MobileLiveTerminal({
     // when not reading (trailing blanks trimmed); without it a settle that
     // grows/shrinks the document by a few rows would change scrollHeight while
     // following WITHOUT re-pinning, leaving scrollTop short of the new bottom.
-  }, [lines, spacerLines, lineH, live, renderRowCount, pinIfWasAtBottom, syncView]);
+  }, [
+    lines,
+    spacerLines,
+    lineH,
+    live,
+    renderRowCount,
+    pinIfWasAtBottom,
+    syncView,
+  ]);
 
   // --- keyboard input -----------------------------------------------------------
   const composingRef = useRef(false);
@@ -1778,7 +2119,13 @@ export function MobileLiveTerminal({
       // target the empty textarea rather than the rendered selection; read the
       // document selection and copy it explicitly. No selection is a no-op, not
       // a control code.
-      if (e.ctrlKey && e.shiftKey && !e.metaKey && !e.altKey && e.key.toLowerCase() === "c") {
+      if (
+        e.ctrlKey &&
+        e.shiftKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        e.key.toLowerCase() === "c"
+      ) {
         e.preventDefault();
         const text = window.getSelection()?.toString() ?? "";
         if (text) void writeClipboard(text);
@@ -1789,7 +2136,13 @@ export function MobileLiveTerminal({
       // shortcut, so let the browser's native paste event fire (onPaste turns
       // it into a bracketed paste) instead of swallowing it into a literal ^V
       // to tmux. Mac's Cmd+C / Cmd+V already fall through via the metaKey guard.
-      if (e.ctrlKey && !e.metaKey && !e.altKey && e.key.length === 1 && e.key.toLowerCase() !== "v") {
+      if (
+        e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        e.key.length === 1 &&
+        e.key.toLowerCase() !== "v"
+      ) {
         const code = e.key.toUpperCase().charCodeAt(0);
         if (code >= 65 && code <= 90) {
           e.preventDefault();
@@ -1838,10 +2191,12 @@ export function MobileLiveTerminal({
       // typed into the pane. Upload each blob to the host, then paste the
       // file path(s) the CLI agent reads to attach them. See #2678.
       void (async () => {
-        const paths = (await Promise.all(imageFiles.map((f) => uploadPastedImage(f)))).filter(
-          (p): p is string => p != null,
+        const paths = (
+          await Promise.all(imageFiles.map((f) => uploadPastedImage(f)))
+        ).filter((p): p is string => p != null);
+        const parts = [text.trim(), ...paths.map(escapePastePath)].filter(
+          (s) => s.length > 0,
         );
-        const parts = [text.trim(), ...paths.map(escapePastePath)].filter((s) => s.length > 0);
         if (parts.length === 0) return;
         // Leading and trailing spaces keep the path from gluing onto queued
         // text or the user's next keystroke. No newline: never auto-submit.
@@ -1858,7 +2213,8 @@ export function MobileLiveTerminal({
     (e: CompositionEvent) => {
       composingRef.current = false;
       if (e.data) sendKeys(e.data);
-      if (e.currentTarget instanceof HTMLTextAreaElement) e.currentTarget.value = "";
+      if (e.currentTarget instanceof HTMLTextAreaElement)
+        e.currentTarget.value = "";
     },
     [sendKeys],
   );
@@ -1869,9 +2225,13 @@ export function MobileLiveTerminal({
   // works in desktop tests but iOS can drop it as untrusted input.
   useEffect(() => {
     if (!active) return;
-    const proxy = document.querySelector<HTMLTextAreaElement>("[data-keyboard-proxy]");
+    const proxy = document.querySelector<HTMLTextAreaElement>(
+      "[data-keyboard-proxy]",
+    );
     if (!proxy) return;
-    const unregisterProxyInput = registerMobileKeyboardProxyReceiver(handleMobileKeyboardProxyInput);
+    const unregisterProxyInput = registerMobileKeyboardProxyReceiver(
+      handleMobileKeyboardProxyInput,
+    );
 
     proxy.addEventListener("keydown", handleKeyDownCapture, true);
     proxy.addEventListener("keydown", handleKeyDown);
@@ -1908,16 +2268,23 @@ export function MobileLiveTerminal({
   // interaction is recorded. Any focused input/textarea/contenteditable
   // (composer, dialogs, the terminal's own hidden input) keeps its paste.
   const claimsStrayPaste = useCallback(
-    () => (lastInteractedTerminal.id ? lastInteractedTerminal.id === instanceId : bottomAlign),
+    () =>
+      lastInteractedTerminal.id
+        ? lastInteractedTerminal.id === instanceId
+        : bottomAlign,
     [bottomAlign, instanceId],
   );
   useEffect(() => {
     if (!active) return;
     const isEditable = (t: HTMLElement | null) =>
-      !!t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
+      !!t &&
+      (t.tagName === "INPUT" ||
+        t.tagName === "TEXTAREA" ||
+        t.isContentEditable);
     const onDocPaste = (e: ClipboardEvent) => {
       const t = e.target as HTMLElement | null;
-      if (t === inputRef.current || isEditable(t) || !claimsStrayPaste()) return;
+      if (t === inputRef.current || isEditable(t) || !claimsStrayPaste())
+        return;
       handlePaste(e);
       inputRef.current?.focus();
     };
@@ -1926,9 +2293,11 @@ export function MobileLiveTerminal({
     // where a stray paste event would not fire at all. Verified against real
     // Firefox and Chromium.
     const onDocKeyDown = (e: KeyboardEvent) => {
-      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.key?.toLowerCase() !== "v") return;
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.key?.toLowerCase() !== "v")
+        return;
       const t = e.target as HTMLElement | null;
-      if (t === inputRef.current || isEditable(t) || !claimsStrayPaste()) return;
+      if (t === inputRef.current || isEditable(t) || !claimsStrayPaste())
+        return;
       inputRef.current?.focus();
     };
     document.addEventListener("paste", onDocPaste);
@@ -1947,7 +2316,9 @@ export function MobileLiveTerminal({
   // reading scrollback the spacer model keeps above-viewport pixels invariant
   // so the position holds as the agent streams; trimming there would change
   // scrollHeight under the reader and snap the viewport.
-  const visibleRowCount = reading ? visual.rows.length : Math.min(renderRowCount, visual.rows.length);
+  const visibleRowCount = reading
+    ? visual.rows.length
+    : Math.min(renderRowCount, visual.rows.length);
 
   // Virtualization windows over [0, visibleRowCount): the rows whose document
   // positions fall within the viewport, plus one viewport of overscan each side
@@ -1964,12 +2335,16 @@ export function MobileLiveTerminal({
   // becomes visible; scrolling re-measures and restores the real ranges.
   const FALLBACK_MOUNT_CAP = 400;
   let mountedRanges: Array<{ start: number; end: number }> = [
-    { start: Math.max(0, visibleRowCount - FALLBACK_MOUNT_CAP), end: visibleRowCount },
+    {
+      start: Math.max(0, visibleRowCount - FALLBACK_MOUNT_CAP),
+      end: visibleRowCount,
+    },
   ];
   if (view.height > 0 && lineH > 0) {
     const overscan = Math.ceil(view.height / lineH);
     const firstVisible = Math.floor(view.top / lineH) - effectiveSpacerLines;
-    const lastVisible = Math.ceil((view.top + view.height) / lineH) - effectiveSpacerLines;
+    const lastVisible =
+      Math.ceil((view.top + view.height) / lineH) - effectiveSpacerLines;
     const viewportRange = {
       start: Math.max(0, Math.min(visibleRowCount, firstVisible - overscan)),
       end: Math.max(0, Math.min(visibleRowCount, lastVisible + overscan)),
@@ -2003,7 +2378,10 @@ export function MobileLiveTerminal({
       blocks: [
         ...acc.blocks,
         {
-          padLines: rangeIndex === 0 ? effectiveSpacerLines + range.start : range.start - acc.nextStart,
+          padLines:
+            rangeIndex === 0
+              ? effectiveSpacerLines + range.start
+              : range.start - acc.nextStart,
           start: range.start,
           end: range.end,
         },
@@ -2012,7 +2390,9 @@ export function MobileLiveTerminal({
     { nextStart: 0, blocks: [] },
   );
   const bottomPadLines =
-    mounted.blocks.length === 0 ? effectiveSpacerLines + visibleRowCount : visibleRowCount - mounted.nextStart;
+    mounted.blocks.length === 0
+      ? effectiveSpacerLines + visibleRowCount
+      : visibleRowCount - mounted.nextStart;
 
   return (
     <div className="absolute inset-0" data-live-terminal>
@@ -2105,11 +2485,19 @@ export function MobileLiveTerminal({
             sidestepping the flex+overflow top-clip bug. The paired shells
             opt out (`bottomAlign=false`) so a near-empty bash prompt sits at
             the top like a normal terminal. */}
-        <div className={`relative whitespace-pre ${bottomAlign ? "mt-auto" : ""}`} data-live-content>
+        <div
+          className={`relative whitespace-pre ${bottomAlign ? "mt-auto" : ""}`}
+          data-live-content
+        >
           {mounted.blocks.map(({ padLines, start, end }) => {
             return (
               <Fragment key={`${start}-${end}`}>
-                {padLines > 0 && <div style={{ height: `${padLines * lineH}px` }} aria-hidden="true" />}
+                {padLines > 0 && (
+                  <div
+                    style={{ height: `${padLines * lineH}px` }}
+                    aria-hidden="true"
+                  />
+                )}
                 {visual.rows.slice(start, end).map((segs, j) => {
                   const i = start + j;
                   // Keyed by ABSOLUTE buffer position (spacer + window row),
@@ -2131,7 +2519,12 @@ export function MobileLiveTerminal({
               </Fragment>
             );
           })}
-          {bottomPadLines > 0 && <div style={{ height: `${bottomPadLines * lineH}px` }} aria-hidden="true" />}
+          {bottomPadLines > 0 && (
+            <div
+              style={{ height: `${bottomPadLines * lineH}px` }}
+              aria-hidden="true"
+            />
+          )}
         </div>
       </div>
 
@@ -2181,7 +2574,11 @@ export function MobileLiveTerminal({
         // IGNORES the element's opacity, so a focused hidden input grows
         // a ghost caret floating over the terminal. caret-color is the
         // documented off switch; color guards select-all artifacts.
-        style={{ fontSize: "16px", caretColor: "transparent", color: "transparent" }}
+        style={{
+          fontSize: "16px",
+          caretColor: "transparent",
+          color: "transparent",
+        }}
         onFocus={() => {
           markInteracted();
           setFocused(true);

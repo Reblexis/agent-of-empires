@@ -5,6 +5,9 @@ import { currentWebBuildId, isWebUpdateAvailable } from "../lib/webBuildId";
 // Re-check cadence floor. Visibility flips can arrive in bursts (iOS
 // fires several when a PWA resumes); one /api/about per window is plenty.
 const CHECK_THROTTLE_MS = 30_000;
+// A desktop window that is never hidden gets no visibility flip, so it would
+// keep running the old bundle after a deploy without ever being told.
+const POLL_INTERVAL_MS = 5 * 60_000;
 
 /**
  * "Dashboard updated, reload" banner. The aoe binary embeds the web
@@ -13,7 +16,7 @@ const CHECK_THROTTLE_MS = 30_000;
  * refresh affordance on iOS) keeps running the old code until reloaded.
  * Compares this page's own entry-bundle hash against the server's
  * `web_build_id` on mount, whenever the tab becomes visible or comes
- * back online, and immediately when a lazy chunk fails to load
+ * back online, every 5 minutes while it stays visible, and immediately when a lazy chunk fails to load
  * (`vite:preloadError`, the classic stale-deploy signature).
  */
 export function DashboardUpdateBanner() {
@@ -47,11 +50,15 @@ export function DashboardUpdateBanner() {
     const onPreloadError = () => void check(true);
 
     void check(true);
+    const poll = setInterval(() => {
+      if (document.visibilityState === "visible") void check(false);
+    }, POLL_INTERVAL_MS);
     document.addEventListener("visibilitychange", onVisibility);
     window.addEventListener("online", onOnline);
     window.addEventListener("vite:preloadError", onPreloadError);
     return () => {
       cancelled = true;
+      clearInterval(poll);
       document.removeEventListener("visibilitychange", onVisibility);
       window.removeEventListener("online", onOnline);
       window.removeEventListener("vite:preloadError", onPreloadError);

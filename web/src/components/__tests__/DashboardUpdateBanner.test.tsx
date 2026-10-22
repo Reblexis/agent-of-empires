@@ -46,14 +46,20 @@ afterEach(() => {
 
 describe("DashboardUpdateBanner", () => {
   it("shows the reload prompt when the server's bundle differs", async () => {
-    vi.spyOn(api, "fetchAbout").mockResolvedValue(aboutWith("index-NewerBuild.js"));
+    vi.spyOn(api, "fetchAbout").mockResolvedValue(
+      aboutWith("index-NewerBuild.js"),
+    );
     render(<DashboardUpdateBanner />);
-    expect(await screen.findByRole("status", { name: "Dashboard update available" })).toBeDefined();
+    expect(
+      await screen.findByRole("status", { name: "Dashboard update available" }),
+    ).toBeDefined();
     expect(screen.getByRole("button", { name: "Reload now" })).toBeDefined();
   });
 
   it("renders nothing when the bundle matches", async () => {
-    vi.spyOn(api, "fetchAbout").mockResolvedValue(aboutWith("index-PageBuild.js"));
+    vi.spyOn(api, "fetchAbout").mockResolvedValue(
+      aboutWith("index-PageBuild.js"),
+    );
     const { container } = render(<DashboardUpdateBanner />);
     // Let the mount-time check settle.
     await act(async () => {});
@@ -80,7 +86,62 @@ describe("DashboardUpdateBanner", () => {
     await act(async () => {
       window.dispatchEvent(new Event("vite:preloadError"));
     });
-    expect(await screen.findByRole("status", { name: "Dashboard update available" })).toBeDefined();
+    expect(
+      await screen.findByRole("status", { name: "Dashboard update available" }),
+    ).toBeDefined();
     expect(spy).toHaveBeenCalledTimes(2);
+  });
+  // docs/guides/remote-phone-access.md: the check runs on load, whenever the
+  // tab becomes visible, and every 5 minutes while it stays open. A desktop
+  // window that is never hidden otherwise kept running the old bundle after a
+  // deploy, so a shipped fix looked like it had not landed.
+  it("finds a new bundle every 5 minutes while the tab stays visible", async () => {
+    vi.useFakeTimers();
+    try {
+      const spy = vi
+        .spyOn(api, "fetchAbout")
+        .mockResolvedValueOnce(aboutWith("index-PageBuild.js"))
+        .mockResolvedValue(aboutWith("index-NewerBuild.js"));
+      render(<DashboardUpdateBanner />);
+      await act(async () => {});
+      expect(spy).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4 * 60_000);
+      });
+      expect(spy).toHaveBeenCalledTimes(1);
+      expect(screen.queryByRole("status")).toBeNull();
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      expect(spy).toHaveBeenCalledTimes(2);
+      expect(
+        screen.getByRole("status", { name: "Dashboard update available" }),
+      ).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("skips the 5-minute check while the tab is hidden", async () => {
+    vi.useFakeTimers();
+    const hidden = vi
+      .spyOn(document, "visibilityState", "get")
+      .mockReturnValue("hidden");
+    try {
+      const spy = vi
+        .spyOn(api, "fetchAbout")
+        .mockResolvedValue(aboutWith("index-PageBuild.js"));
+      render(<DashboardUpdateBanner />);
+      await act(async () => {});
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(10 * 60_000);
+      });
+      expect(spy).toHaveBeenCalledTimes(1);
+    } finally {
+      hidden.mockRestore();
+      vi.useRealTimers();
+    }
   });
 });
