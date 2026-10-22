@@ -7,6 +7,7 @@ import { buttonMouseBytes, wheelMouseBytes } from "../lib/liveMouse";
 import { createFrameInflater, supportsFrameDeflate, type FrameInflater } from "../lib/frameStream";
 import { MAX_RETRIES, retryDelayMs } from "../lib/wsBackoff";
 import { reportTelemetrySeen } from "../lib/api";
+import { recallScreen, rememberScreen, screenKey } from "../lib/screenCache";
 import type { LiveClientMessage, LivePane0, LiveServerMessage } from "../lib/generated/liveWire";
 
 export type { LiveCursor, LivePane0 as LivePaneRect } from "../lib/generated/liveWire";
@@ -114,7 +115,9 @@ export function useLiveTerminal(
     if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
     if (countdownRef.current) clearInterval(countdownRef.current);
     retryCountRef.current = 0;
-    setState(() => INITIAL_STATE);
+    // A screen this page showed before draws at once while the socket connects.
+    const memoryKey = screenKey(sessionId, wsPath);
+    setState(() => ({ ...INITIAL_STATE, frame: recallScreen(memoryKey) ?? null }));
 
     let disposed = false;
     const stats: LiveStats = { frames: 0, patches: 0, wireBytes: 0, resyncs: 0 };
@@ -252,6 +255,7 @@ export function useLiveTerminal(
           const full = Math.min(4000, incoming.rows + incoming.history);
           if (full > (desiredRef.current.window ?? 0)) setWindowInternal(full);
         }
+        rememberScreen(memoryKey, incoming);
         setState((prev) => ({
           ...prev,
           retryCount: retryCountRef.current,

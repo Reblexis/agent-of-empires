@@ -5,6 +5,7 @@ import { act, cleanup, fireEvent, screen } from "@testing-library/react";
 
 import type { SessionResponse } from "../../lib/types";
 import { OPEN_SESSION_EVENT } from "../../lib/sessionRoute";
+import { forgetAllScreens } from "../../lib/screenCache";
 import { OPEN_SWITCH_AGENT_EVENT, consumePendingSwitchAgent } from "../../lib/switchAgentTrigger";
 import { firstRequest, makeSession, makeWorkspace, openRowMenu, renderRow, stubFetch } from "./fixtures";
 
@@ -17,6 +18,7 @@ const click = (id: string) => fireEvent.click(screen.getByTestId(id));
 
 let fetchSpy: ReturnType<typeof stubFetch>;
 beforeEach(() => {
+  forgetAllScreens();
   fetchSpy = stubFetch();
 });
 afterEach(() => {
@@ -394,5 +396,35 @@ describe("SessionRow keyboard navigation", () => {
 
     expect(event.defaultPrevented).toBe(true);
     expect(document.activeElement).toBe(row);
+  });
+});
+
+// docs/guides/web/terminal.md, "Switching sessions".
+describe("SessionRow screen prefetch", () => {
+  const outputCalls = () =>
+    fetchSpy.mock.calls.map((c) => String(c[0])).filter((u) => u.includes("/output?format=ansi"));
+  const hover = () => fireEvent.mouseEnter(screen.getAllByTestId("sidebar-session-row")[0]!);
+
+  it("resting the pointer on a running terminal session fetches its screen", () => {
+    renderRow(makeWorkspace("w1", [makeSession({ id: "s1", status: "Running" })]));
+    hover();
+    expect(outputCalls()).toEqual(["/api/sessions/s1/output?format=ansi&lines=1"]);
+  });
+
+  it("does not fetch for a stopped or structured-view session", () => {
+    renderRow(
+      makeWorkspace("w1", [
+        makeSession({ id: "s1", status: "Stopped" }),
+        makeSession({ id: "s2", status: "Running", view: "structured" }),
+      ]),
+    );
+    hover();
+    expect(outputCalls()).toEqual([]);
+  });
+
+  it("does not fetch for the session already open", () => {
+    renderRow(makeWorkspace("w1", [makeSession({ id: "s1", status: "Running" })]), { isActive: true });
+    hover();
+    expect(outputCalls()).toEqual([]);
   });
 });

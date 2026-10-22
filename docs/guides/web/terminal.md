@@ -22,6 +22,14 @@ What you type shows up at once, without waiting for the server to echo it, the w
 - A prediction the server contradicts (the cursor or the text left of it ends up somewhere else) is dropped as soon as that frame arrives, and one the server has not confirmed within 1.5 s is dropped and its row has to earn trust again. The cost of a wrong guess is that for up to one round trip you see a character the app then draws differently or not at all.
 - Prediction can only ever add a preview; it never stands between a key and the session. Every key is sent exactly as if prediction were off, and a key the pane did not receive drops every prediction. A row prediction cannot reason about is simply not predicted, never an error: the cursor past the row's last visible character (the screen does not keep trailing spaces, so this is the normal state right after typing a space), an empty row, a window split into panes (whose cursor row carries the other pane's text). If predicting fails anyway, the predictions are dropped and the view shows the server's screen as it is.
 
+### Switching sessions
+
+Opening a session shows a screen at once instead of a "Starting session..." placeholder:
+
+- The browser remembers the last screen of the 32 sessions it showed most recently, per terminal (agent pane, each paired shell), for as long as the page stays open. Opening one of them draws that screen immediately while the session is started (if it was stopped) and its live stream connects, which takes a few round trips to the server; the live stream then replaces it. Only the screen is remembered: scrolling up waits for the live stream.
+- Resting the pointer on a session in the sidebar fetches its current agent screen in the background (at most once every 10 seconds per session), so a session not yet opened in this page also appears at once when clicked.
+- Without a remembered or prefetched screen (the first open on a touch device, say), the placeholder shows until the stream connects.
+
 ## Copy and scroll
 
 The terminal uses tmux for scrollback and selection, so no modifier keys are involved. Scroll with the wheel or a one-finger swipe. Select by click-dragging; dragging past the top edge scrolls into scrollback and extends the selection, and releasing copies to your system clipboard automatically.
