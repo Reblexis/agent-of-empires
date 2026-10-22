@@ -117,10 +117,8 @@ pub fn bound_transcript(s: &str) -> String {
 /// land where a tab's conversation lives (docs/guides/session-resume.md).
 pub(crate) use crate::session::smart_rename::oneshot_cwd;
 
-#[cfg(feature = "serve")]
 pub use serve::try_terminal_context;
 
-#[cfg(feature = "serve")]
 mod serve {
     use super::*;
     use crate::server::AppState;
