@@ -780,6 +780,38 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         );
     }
 
+    // Pointer invariant check (docs/guides/session-resume.md): at startup and
+    // every 5 minutes, log every tab whose recorded conversation is not the one
+    // it runs. Read-only: it reports, it never rewrites a pointer.
+    {
+        let check_state = state.clone();
+        let shutdown = state.shutdown.clone();
+        crate::task_util::spawn_supervised(
+            "server.pointer_invariant",
+            crate::task_util::PanicPolicy::Log,
+            async move {
+                let mut interval = tokio::time::interval(Duration::from_secs(5 * 60));
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                loop {
+                    tokio::select! {
+                        _ = interval.tick() => {
+                            let snapshot = check_state.instances.read().await.clone();
+                            let violations = tokio::task::spawn_blocking(move || {
+                                crate::session::pointer_guard::verify_instances(&snapshot)
+                            })
+                            .await
+                            .unwrap_or_default();
+                            for v in &violations {
+                                tracing::error!(target: "session.pointer_invariant", "{v}");
+                            }
+                        }
+                        _ = shutdown.cancelled() => break,
+                    }
+                }
+            },
+        );
+    }
+
     // Trash retention sweep.
     if !state.read_only {
         let sweep_state = state.clone();

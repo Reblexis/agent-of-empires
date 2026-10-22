@@ -181,6 +181,12 @@ fn drain_and_persist_session_ids_inner(
                         }
                 })
             }) {
+                crate::session::pointer_guard::journal_refusal(
+                    inst,
+                    &sid,
+                    crate::session::pointer_guard::observation_source(&observation),
+                    crate::session::pointer_guard::REFUSED_HELD,
+                );
                 acknowledge_poller_observation(inst, &observation);
                 filtered_ids.insert(inst.id.clone());
                 continue;
@@ -271,6 +277,14 @@ fn drain_and_persist_session_ids_inner(
     };
     updates.retain(|update| {
         if collisions.contains(&update.id) {
+            if let Some(inst) = instances.iter().find(|i| i.id == update.id) {
+                crate::session::pointer_guard::journal_refusal(
+                    inst,
+                    &update.sid,
+                    crate::session::pointer_guard::observation_source(&update.observation),
+                    crate::session::pointer_guard::REFUSED_CONTESTED,
+                );
+            }
             acknowledge_poller_observation_for(instances, &update.id, &update.observation);
             filtered_ids.insert(update.id.clone());
             false

@@ -1361,6 +1361,14 @@ pub(super) fn hook_session_observation(
 }
 
 impl Instance {
+    /// Whether this tab's own hook has published a conversation since its
+    /// current pane launched. The sidecar is launch-scoped, so a value left by
+    /// an earlier process never counts. Used by the pointer verifier
+    /// (docs/guides/session-resume.md).
+    pub(crate) fn hook_reported_since_launch(&self) -> bool {
+        hook_session_observation(&self.id, self.active_execution.as_ref(), None).is_some()
+    }
+
     pub(super) fn sandbox_launch_environment(
         &self,
         agent: Option<&AgentDef>,

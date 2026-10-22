@@ -153,6 +153,22 @@ impl Instance {
             return;
         }
 
+        // Hibernated plain sessions (the LRU cap, `session.hibernate_max_live`) have their tmux
+        // torn down on purpose, same as archived rows: probing would only manufacture a
+        // spurious "tmux session is gone" Error. Any wake path (ensure, start, user touch) clears
+        // `idle_dormant_since`, and polling resumes on the next tick.
+        if self.is_idle_dormant() {
+            // A dormant row's true state is parked-Idle. If it carries a stale transient status
+            // (a `Starting` left by a launch that hibernation interrupted, or by a pre-fix
+            // recovery pass), heal it here: the poller skips dormant rows, so nothing else ever
+            // corrects it, and `is_shown_dormant` would otherwise render an incoherent
+            // Starting-but-dormant row.
+            if self.status != Status::Idle {
+                self.status = Status::Idle;
+            }
+            return;
+        }
+
         // A peer process is launching this row and has not created its pane yet; the owner's
         // commit or failure write decides the outcome.
         if self.has_fresh_launch_reservation(Utc::now()) {
@@ -1555,6 +1571,57 @@ Esc to cancel \u{b7} Tab to amend \u{b7} ctrl+e to explain\n\
             inst.status,
             Status::Error,
             "death outranks a protected wrapper and title"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn hibernated_plain_session_is_not_probed_into_error() {
+        // A hibernated session's tmux is gone ON PURPOSE (the LRU cap,
+        // `session.hibernate_max_live`): the status poller must skip it the
+        // way it skips archived rows, or every hibernated session decays to
+        // a red "tmux session is gone" Error within one poll tick and the
+        // dormant glyph never shows.
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.status = Status::Idle;
+        inst.mark_idle_dormant();
+        let _cache = force_session_absent();
+
+        inst.update_status_with_metadata(None, None);
+
+        assert_eq!(
+            inst.status,
+            Status::Idle,
+            "a dormant row keeps its status instead of decaying to Error"
+        );
+        assert!(
+            inst.last_error.is_none(),
+            "no tmux-gone error may be recorded for a deliberate teardown"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn dormant_row_with_stale_transient_status_heals_to_idle() {
+        // A hibernation that interrupted a launch, or a pre-fix recovery
+        // pass, can leave a dormant row at Starting. The poller skips
+        // dormant rows, so this heal is the only thing that corrects the
+        // incoherent Starting+dormant state back to parked-Idle.
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.status = Status::Starting;
+        inst.mark_idle_dormant();
+        let _cache = force_session_absent();
+
+        inst.update_status_with_metadata(None, None);
+
+        assert_eq!(
+            inst.status,
+            Status::Idle,
+            "a dormant row heals to parked Idle"
+        );
+        assert!(
+            inst.is_idle_dormant(),
+            "healing status must not clear dormancy"
         );
     }
 }

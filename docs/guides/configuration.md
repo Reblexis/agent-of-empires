@@ -77,6 +77,7 @@ agent_status_hooks = true
 smart_rename = true
 name_agent_session = false
 auto_stop_idle_secs = 0   # 0 disables; e.g. 7200 = stop after 2h idle
+hibernate_max_live = 0    # 0 disables; e.g. 10 = keep at most 10 idle sessions live (LRU)
 row_tag = "branch"        # none | auto | profile | sandbox | branch
 sidebar_position = "left" # left | right; TUI session list
 ```
@@ -90,6 +91,7 @@ You can browse tips from **Ctrl+K > Show tips** even with the bar hidden.
 | `default_tool` | (auto-detect) | Default agent for new sessions, including a custom agent name. Falls back to the first available tool. |
 | `yolo_mode_default` | `false` | Start sessions with permission prompts skipped. In the terminal view this passes `--dangerously-skip-permissions`; in the structured view it maps to ACP `bypassPermissions` (see [Modes and YOLO](../structured-view/controls.md#permission-modes-and-yolo)). |
 | `auto_stop_idle_secs` | `0` | Seconds a plain tmux session may sit `Idle` before its tmux session and container are killed, leaving a restartable `Stopped` row. Idle age counts from the later of the last `Idle` transition and the last interaction, a session with an attached tmux client is spared, and the check runs about once a minute. Structured view workers use `acp.auto_stop_idle_secs`. |
+| `hibernate_max_live` | `0` | Cap on plain sessions kept live at once, per profile. When more than this many have a running tmux/agent process, the least-recently-used idle ones are hibernated: tmux and any sandbox container are torn down, the row stays in every list marked dormant, and selecting it restarts the agent with its conversation resumed (the same resume path a dead session's ensure uses). Selecting a session counts as using it. Working sessions and sessions with an attached tmux client are never hibernated, so the live count may exceed the cap while agents are busy. `0` disables it. Enforced by the `aoe serve` daemon about once a minute. |
 | `prevent_sleep_when_active` | `false` | Have the `aoe serve` daemon hold an OS sleep inhibitor (`caffeinate -i`, `systemd-inhibit`) while any session is active. Global only; a TUI without a daemon gets nothing. |
 | `prevent_sleep_idle_grace_minutes` | `15` | Minutes (0 to 240) every session must stay idle before the inhibitor is released. A session that never reaches `Idle` (`Waiting` on a prompt, `Creating` forever) holds it indefinitely. |
 | `session_id_poller_max_threads` | `50` | Ceiling on concurrent session-id pollers per process. Past the ceiling, an overflow session's id is not refreshed until it gets a poller; starting one is retried on a 5 s to 60 s backoff. Global only, applied at process start. |

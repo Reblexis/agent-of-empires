@@ -83,6 +83,11 @@ pub async fn ensure_session(
     };
 
     if !needs_restart {
+        // Selecting a session is a "use" for the LRU live cap
+        // (`session.hibernate_max_live`): stamp last_accessed_at in memory
+        // and on disk so merely viewing a session keeps it out of the
+        // hibernation tail.
+        touch_selected(&state, &id, instance.effective_profile()).await;
         return (StatusCode::OK, Json(serde_json::json!({"status": "alive"}))).into_response();
     }
 
@@ -134,10 +139,17 @@ pub async fn ensure_session(
 
     match restart_result {
         Ok(Ok((started, outcome))) => {
-            let mut instances = state.instances.write().await;
-            if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
-                sync_live_after_restart(&state.status_tx, inst, &sync_base, &started);
+            {
+                let mut instances = state.instances.write().await;
+                if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
+                    sync_live_after_restart(&state.status_tx, inst, &sync_base, &started);
+                }
             }
+            // A wake from hibernation: the restart cascade does not touch
+            // `idle_dormant_since`, and a live pane behind a still-dormant row
+            // would be skipped by the status poller forever. Touching clears
+            // the marker and stamps the LRU rank in one move.
+            touch_selected(&state, &id, sync_base.effective_profile()).await;
             let resume_outcome = match &outcome {
                 crate::session::StartOutcome::Resumed => "resumed",
                 crate::session::StartOutcome::ResumeFailed { .. } => "resume_failed",
@@ -199,6 +211,29 @@ pub async fn ensure_session(
                 .into_response()
         }
     }
+}
+
+/// Stamp `last_accessed_at` (which also clears the hibernation dormant marker)
+/// on the live row and on disk: the session was just selected.
+async fn touch_selected(state: &Arc<AppState>, id: &str, profile: String) {
+    {
+        let mut instances = state.instances.write().await;
+        if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
+            inst.touch_last_accessed();
+        }
+    }
+    let id = id.to_string();
+    let file_watch = state.file_watch.clone();
+    tokio::task::spawn_blocking(move || {
+        if let Ok(storage) = Storage::new(&profile, file_watch) {
+            let _ = storage.update(|all, _groups| {
+                if let Some(disk_inst) = all.iter_mut().find(|i| i.id == id) {
+                    disk_inst.touch_last_accessed();
+                }
+                Ok(())
+            });
+        }
+    });
 }
 
 // --- Paired terminal ---

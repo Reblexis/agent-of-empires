@@ -972,7 +972,14 @@ impl Session {
         Ok((content.to_string(), merge_cursor_probes(before, after)))
     }
 
-    /// Deliver raw bytes via `send-keys -H`, chunked to stay under ARG_MAX.
+    /// Deliver raw bytes to the session's active pane via `tmux send-keys
+    /// -H`, one hex argument per byte, chunked by [`MAX_RAW_BYTES_PER_SEND`]
+    /// so a large paste stays under tmux's per-command argument cap and
+    /// `execve` ARG_MAX (the TUI's live-send hex runs share this path). tmux injects the bytes in
+    /// order, so a bracketed paste split across forks reassembles
+    /// transparently on the agent's PTY. This is the web live view's
+    /// input path: raw bytes from the browser (printables, CSI sequences,
+    /// control bytes) all ride the same encoding.
     pub fn send_raw_bytes(&self, bytes: &[u8]) -> Result<()> {
         // A bare session target follows the active pane; pin `^.0` like capture.
         let target = format!("{}:^.0", self.name);
@@ -1831,8 +1838,12 @@ fn sanitize_session_name(name: &str) -> String {
         .collect()
 }
 
-/// Each byte is one argv entry; macOS caps argv+envp at 256KB.
-const MAX_RAW_BYTES_PER_SEND: usize = 4096;
+/// Max bytes per `send-keys -H` fork. Each byte becomes one argument, and
+/// tmux 3.7 refuses any command with more than 1000 arguments ("command too
+/// long"), four of which are `send-keys -t <target> -H`. A larger batch is
+/// rejected whole, so a paste over ~1000 bytes vanished. 512 leaves headroom
+/// under that cap and is far below `execve` ARG_MAX on every platform.
+const MAX_RAW_BYTES_PER_SEND: usize = 512;
 
 fn raw_byte_batches(bytes: &[u8]) -> Vec<Vec<String>> {
     bytes
@@ -2312,6 +2323,67 @@ mod tests {
                 })
                 .collect();
             assert_eq!(roundtrip, payload, "{len}");
+        }
+    }
+
+    /// tmux 3.7 rejects any command with more than 1000 arguments ("command
+    /// too long"). `send-keys -t <target> -H` spends four of them, so a batch
+    /// of more than 996 bytes is refused whole and the paste vanishes.
+    #[test]
+    fn every_send_keys_batch_stays_under_tmux_37_argument_cap() {
+        const TMUX_37_MAX_ARGS: usize = 1000;
+        const FIXED_ARGS: usize = 4; // send-keys, -t, <target>, -H
+        let payload: Vec<u8> = (0..20_000).map(|i| (i % 256) as u8).collect();
+        for batch in raw_byte_batches(&payload) {
+            assert!(
+                batch.len() + FIXED_ARGS <= TMUX_37_MAX_ARGS,
+                "a {}-byte batch exceeds tmux 3.7's {TMUX_37_MAX_ARGS}-argument cap",
+                batch.len()
+            );
+        }
+    }
+
+    /// A paste must reach the agent whole, whatever its length. Pastes over
+    /// ~1000 bytes into the web live terminal used to be dropped entirely,
+    /// because tmux 3.7 refused the oversized `send-keys` batch.
+    #[test]
+    #[serial_test::serial]
+    fn paste_longer_than_1000_bytes_reaches_the_pane_whole() {
+        require_tmux!();
+        // Mixed ASCII and two-byte Czech letters, like a real pasted note.
+        let unit = "Paste from the dashboard: Číhal, žluťoučký kůň. ".as_bytes();
+        for len in [1usize, 996, 997, 1128, 4097, 20_000] {
+            let payload: Vec<u8> = unit.iter().copied().cycle().take(len).collect();
+            let dir = tempfile::tempdir().expect("tempdir");
+            let out = dir.path().join("received");
+            let guard = TmuxTestSession::new("aoe_test_long_paste");
+            // Raw mode so the tty hands `head` every byte untouched and
+            // unechoed; `head -c` stops after exactly the expected length.
+            let cmd = format!(
+                "sh -c 'stty raw -echo; exec head -c {len} > {}'",
+                out.display()
+            );
+            let session = start_composite_session(guard.name(), 80, 24, &cmd);
+            wait_for_pane_command(&only_pane_id(guard.name()), "head");
+
+            let sent = session.send_raw_bytes(&payload);
+            assert!(sent.is_ok(), "a {len}-byte paste was refused: {sent:?}");
+
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let got = std::fs::read(&out).unwrap_or_default();
+                if got.len() >= len || Instant::now() >= deadline {
+                    assert_eq!(
+                        got.len(),
+                        len,
+                        "a {len}-byte paste arrived as {} bytes",
+                        got.len()
+                    );
+                    assert!(got == payload, "a {len}-byte paste arrived altered");
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
         }
     }
 

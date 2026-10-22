@@ -27,6 +27,12 @@ Sandbox config and conversation stores are staged per AoE instance, including cu
 
 `agent_detect_as` controls status detection and ACP adapter inheritance, not terminal execution identity. Direct built-in commands identify their native agent independently. Opaque wrappers need the explicit contract described below for explicit resume or fork and capture from shared stores.
 
+## How the conversation ID stays correct
+
+AoE's own one-shot agent runs (the smart-rename title and the conversation summary) never execute in a session's project directory. They run in an isolated scratch directory (`<AoE config dir>/oneshot` on the host, `/tmp` inside a sandbox), so their throwaway transcripts are never written beside a session's real conversation in the agent's store. The prompts carry everything the run needs, so the project directory is not needed.
+
+Without this, a title or summary job could be mistaken for the session's conversation, and resuming the session would resume the title job.
+
 ## Execution identity and wrappers
 
 A conflicting built-in tool and command, such as tool `claude` with command `codex`, is rejected for managed resume and fork. An opaque wrapper requires both `session.agent_execution_as` and `session.agent_config_dir` in trusted global or profile configuration. This asserts that the wrapper invokes that native agent, forwards native arguments unchanged, and uses only the declared store and working-directory/filesystem context. Repository overrides are refused because a repository must not grant itself access to another native conversation store.
@@ -80,6 +86,26 @@ Except for [managed native Prime](../structured-view.md#prime-runtime-ownership)
 | Prime Agent fork on a host terminal | n/a | Refused | Run Prime in a sandbox: it mints the child id, and only the sandbox captures it. The fork launches `prime-agent --fork <parent-id>` after AoE copies the parent's persisted transcript into the child's own sandbox store; a parent whose transcript cannot be found there refuses the fork |
 | Any agent in an Apple Container sandbox | Refused | Refused | Set `sandbox.container_runtime` to Docker or Podman, per [Configuration](sandbox.md#configuration) |
 | An opaque wrapper missing `session.agent_execution_as` or `session.agent_config_dir` | Refused | Refused | Declare the wrapper contract, per [Execution identity and wrappers](#execution-identity-and-wrappers) |
+
+## How the conversation ID stays correct
+
+Contract: **a tab's recorded conversation (`agent_session_id`) is always the conversation that tab's own agent process is running, and it changes only on evidence produced by that process.** Applies to Claude and Codex tabs, host and sandboxed.
+
+The only sources allowed to change it:
+
+1. **Launch.** The ID AoE hands the agent when it starts the pane (a resume target, or a fresh ID it mints), recorded before the process starts.
+2. **The tab's own hook.** The pane-scoped native hook (see the [capture matrix](#automatic-capture-matrix)) publishes the conversation the process is running. Claude and Codex publish on `SessionStart` and on every `UserPromptSubmit`, so a `/clear`, `/resume` or `/new` is picked up by the next turn at the latest. Only the tab's pane can write its publication, so AoE's one-shots and any agent run outside AoE never can.
+3. **The user.** `aoe session set-session-id`.
+
+Every write except the user's is guarded; a refused write leaves the pointer unchanged and is logged at WARN with the reason:
+
+- **Never a one-shot.** A conversation whose first user message is one of AoE's own one-shot prompts (smart-rename title, context recap, conversation summary) is refused. One-shots also run in an isolated scratch directory (`<AoE config dir>/oneshot` on the host, `/tmp` in a sandbox), never the project directory.
+- **Never another tab's conversation.** An ID held by another non-archived tab is refused.
+
+Trackability:
+
+- **Pointer journal.** Every change and every refusal is appended to `<AoE config dir>/pointer-journal.jsonl`, one JSON object per line: `ts`, `instance_id`, `title`, `old`, `new`, `source` (`launch`, `hook`, `user`, `repair`), and `refused` with the reason. Append-only, never rotated.
+- **Verifier.** `aoe session verify-pointers` checks every non-archived tab and exits non-zero on any violation: an ID recorded on two tabs, an ID that is a one-shot run, or a running pane launched with a different ID than recorded while no hook has reported since its launch. With no violation it prints `✓ every tab records the conversation it runs`. The daemon runs the same check at startup and every 5 minutes and logs each violation at ERROR under `session.pointer_invariant`.
 
 ## Pinning or resetting a conversation
 

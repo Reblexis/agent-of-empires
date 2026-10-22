@@ -56,6 +56,11 @@ pub fn is_recovery_candidate(inst: &Instance) -> bool {
         && !inst.is_snoozed()
         && !inst.is_trashed()
         && inst.status != super::Status::Stopped
+        // A hibernated session (the LRU live cap) has its tmux gone on
+        // purpose; recovering it would resurrect it on every daemon
+        // restart and defeat the cap. Waking clears the marker and
+        // restores eligibility, same shape as Stopped/snoozed.
+        && !inst.is_idle_dormant()
         && inst.agent_session_id != inst.resume_probe_failed_sid
         && inst.supports_native_resume()
         && resumable_id
@@ -513,7 +518,7 @@ mod tests {
         );
     }
 
-    /// Parked sessions (archive, stop, live snooze), an ambiguously failed resume sid, and a
+    /// Parked sessions (archive, stop, live snooze, hibernation dormancy), an ambiguously failed resume sid, and a
     /// wrapper without native resume identity (#3678) are never startup-recovery candidates;
     /// clearing the state restores eligibility. Archive and stop both kill the pane, so a
     /// dead pane alone must not trigger recovery.
@@ -521,7 +526,7 @@ mod tests {
     fn recovery_candidacy_follows_parked_state_and_resume_identity() {
         let sid = "11111111-1111-4111-8111-111111111111";
         type Set = fn(&mut Instance);
-        let cases: [(&str, Set, Set); 5] = [
+        let cases: [(&str, Set, Set); 6] = [
             ("archived", |i| i.archive(), |i| i.unarchive()),
             (
                 "stopped",
@@ -532,6 +537,11 @@ mod tests {
                 "snoozed",
                 |i| i.snooze(30),
                 |i| i.snoozed_until = Some(chrono::Utc::now() - chrono::Duration::minutes(1)),
+            ),
+            (
+                "dormant",
+                |i| i.mark_idle_dormant(),
+                |i| i.idle_dormant_since = None,
             ),
             (
                 "probe-failed",
