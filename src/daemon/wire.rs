@@ -180,6 +180,13 @@ pub struct SessionResponse {
     pub color: Option<String>,
     #[serde(default)]
     pub urgent: bool,
+    /// Effective session priority, 0 to 10: how soon this session needs the
+    /// user, from its live status and the agent's current score
+    /// (`Instance::effective_priority`). The web Attention sort ranks on it
+    /// and the sidebar row shows it when above 0. See
+    /// docs/guides/session-priority.md.
+    #[serde(default)]
+    pub priority: u8,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pinned_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -202,6 +209,12 @@ pub struct SessionResponse {
     pub smart_rename: crate::session::smart_rename::SmartRenameState,
     #[serde(default)]
     pub default_name: bool,
+    /// The session's forecast card in brief, for the sidebar chip: `null`, or
+    /// `{ verdict, headline, updated_at }`. Overlaid in `list_sessions` from
+    /// `<app_dir>/session-forecasts/`; single-session responses leave it
+    /// `null`. See docs/guides/session-forecast.md.
+    #[serde(default)]
+    pub forecast: Option<crate::session::forecast::ForecastSummary>,
     #[serde(default)]
     pub has_terminal: bool,
     #[serde(default)]

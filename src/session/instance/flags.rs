@@ -221,6 +221,39 @@ impl Instance {
         Ok(())
     }
 
+    /// How soon this session needs the user, 0 to 10, from its live status
+    /// and the agent's current score. See docs/guides/session-priority.md.
+    pub fn effective_priority(&self) -> u8 {
+        let sunk =
+            self.is_archived() || self.is_snoozed() || self.is_trashed() || self.pane_dead_observed;
+        let unread = self.is_unread() && crate::session::unread_enabled();
+        crate::session::priority::effective_priority(
+            self.status,
+            sunk,
+            unread,
+            self.priority,
+            self.run_started_at,
+        )
+    }
+
+    /// Record the agent's score (`None` clears it), stamped now.
+    pub fn set_priority(&mut self, value: Option<u8>) {
+        self.priority = value.map(|value| crate::session::priority::PriorityScore {
+            value,
+            set_at: Utc::now(),
+        });
+    }
+
+    /// Fold an observed `old -> self.status` change into `run_started_at`.
+    pub fn note_status_transition(&mut self, old: Status, now: DateTime<Utc>) {
+        self.run_started_at = crate::session::priority::run_started_at_after(
+            old,
+            self.status,
+            now,
+            self.run_started_at,
+        );
+    }
+
     /// Read the agent-raised urgent flag from `attention.json`.
     pub fn is_urgent(&self) -> bool {
         if self.is_archived() || self.is_snoozed() {
@@ -331,6 +364,36 @@ mod tests {
 
     fn inst() -> Instance {
         Instance::new("test", "/tmp/test")
+    }
+
+    #[test]
+    fn replying_to_a_scored_session_makes_its_old_score_stop_counting() {
+        let mut inst = Instance::new("scored", "/tmp/scored");
+        inst.status = Status::Running;
+        inst.set_priority(Some(9));
+        inst.status = Status::Idle;
+        inst.note_status_transition(Status::Running, Utc::now());
+        assert_eq!(
+            inst.effective_priority(),
+            9,
+            "the ask the agent just scored"
+        );
+
+        inst.status = Status::Running;
+        inst.note_status_transition(Status::Idle, Utc::now() + chrono::Duration::seconds(1));
+        assert_eq!(
+            inst.effective_priority(),
+            0,
+            "working again, does not need you"
+        );
+
+        inst.status = Status::Idle;
+        inst.note_status_transition(Status::Running, Utc::now() + chrono::Duration::seconds(2));
+        assert_eq!(
+            inst.effective_priority(),
+            3,
+            "unscored next ask gets the default"
+        );
     }
 
     #[test]

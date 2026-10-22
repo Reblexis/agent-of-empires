@@ -111,9 +111,10 @@ describe("buildSessionGroups", () => {
 
   it("ranks a plugin danger/warn session with Error under attention sort (#4446)", () => {
     const workspaces = [
-      ws("w-running", "feature", { status: "Running" }),
-      ws("w-toned", "feature", { status: "Idle" }),
-      ws("w-waiting", "feature", { status: "Waiting" }),
+      // The server's default priorities (docs/guides/session-priority.md).
+      ws("w-running", "feature", { status: "Running", priority: 0 }),
+      ws("w-toned", "feature", { status: "Idle", priority: 3 }),
+      ws("w-waiting", "feature", { status: "Waiting", priority: 5 }),
     ];
     const opts = { idleDecayWindowMs: IDLE_DECAY_WINDOW_MS, sortMode: "attention" as const, isCollapsed: () => false };
     const order = (pluginAttention?: ReadonlySet<string>) =>

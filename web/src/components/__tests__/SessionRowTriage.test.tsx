@@ -71,6 +71,22 @@ describe("SessionRow chips", () => {
   });
 });
 
+describe("SessionRow forecast chip", () => {
+  it("renders the forecast chip when a session in the row has a card", () => {
+    renderRow(
+      ws({ forecast: { verdict: "continue", headline: "+150 EUR revenue", updated_at: new Date().toISOString() } }),
+    );
+    const chip = screen.getByTestId("sidebar-forecast-chip");
+    expect(chip.textContent).toBe("+150 EUR revenue");
+    expect(chip.getAttribute("data-verdict")).toBe("continue");
+  });
+
+  it("renders no forecast chip without a card", () => {
+    renderRow(ws({ forecast: null }));
+    expect(testId("sidebar-forecast-chip")).toBeNull();
+  });
+});
+
 describe("SessionRow row tags", () => {
   it("renders a compact branch tag instead of the branch subtitle, and nothing for none", () => {
     const branched = makeWorkspace("w", [makeSession({ branch: "feature/web-row-tag" })], {
@@ -96,6 +112,25 @@ describe("SessionRow row tags", () => {
     expect(testId("sidebar-session-row-tag")!.textContent).toBe("[web-tags+2]");
     expect(screen.getByText("api")).not.toBeNull();
     expect(screen.getByText("web")).not.toBeNull();
+  });
+});
+
+describe("SessionRow priority badge", () => {
+  it("shows the session's priority when it is above zero", () => {
+    renderRow(ws({ priority: 8 }));
+    const badge = screen.getByTestId("sidebar-session-priority");
+    expect(badge.textContent).toBe("8");
+    expect(badge.getAttribute("aria-label")).toBe("Priority 8");
+  });
+
+  it("shows nothing for a session that does not need you", () => {
+    renderRow(ws({ status: "Running", priority: 0 }));
+    expect(testId("sidebar-session-priority")).toBeNull();
+  });
+
+  it("hides the badge on a snoozed row even if a stale priority came in", () => {
+    renderRow(ws({ priority: 6, snoozed_until: inMinutes(90) }));
+    expect(testId("sidebar-session-priority")).toBeNull();
   });
 });
 

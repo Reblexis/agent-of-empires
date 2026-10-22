@@ -811,6 +811,19 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
             },
         );
     }
+    // Forecast cards whose session no longer exists in any profile are
+    // removed once per daemon start (docs/guides/session-forecast.md).
+    // Housekeeping of files no session owns, so it runs in read-only mode
+    // too.
+    tokio::task::spawn_blocking(|| match crate::session::forecast::prune_orphans() {
+        Ok(0) => {}
+        Ok(removed) => {
+            tracing::info!(target: "server.forecast", removed, "removed orphaned forecast cards")
+        }
+        Err(e) => {
+            tracing::warn!(target: "server.forecast", "forecast orphan cleanup skipped: {e:#}")
+        }
+    });
 
     // Trash retention sweep.
     if !state.read_only {

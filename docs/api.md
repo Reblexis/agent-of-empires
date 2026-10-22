@@ -137,6 +137,17 @@ Responses are `200` with `{"id", "lines", "format", "content"}`, `400 format_inv
 
 Status transitions also reach `callback_url` and push subscribers.
 
+## GET /api/sessions/{id}/forecast
+
+The session's forecast card as stored, including the `updated_at` aoe stamps on every write. Cards are written by the agent in the session with `aoe session forecast set`; there is no HTTP write. Each session in `GET /api/sessions` also carries `forecast`: `null`, or `{"verdict", "headline", "updated_at"}`. See the [Session Forecast guide](guides/session-forecast.md) for the card schema.
+
+| Status | Body | When |
+| --- | --- | --- |
+| `200` | the card | The session has a card |
+| `404` | `{"error": "not_found", ...}` | No session with that id, or it has no card |
+
+It is a read, so it works under `--read-only`.
+
 ## MCP server
 
 With `[web] mcp_enabled = true` in `config.toml` (read at daemon startup), the daemon serves a [Model Context Protocol](https://modelcontextprotocol.io) server over Streamable HTTP at `POST /mcp`. With the setting off the route does not exist. It takes the same token as the rest of the API and reports `401` without one.

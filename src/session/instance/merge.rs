@@ -248,6 +248,7 @@ impl Instance {
         self.lifecycle_generation = patch.lifecycle_generation;
         self.status = patch.status;
         self.idle_entered_at = patch.idle_entered_at;
+        self.run_started_at = self.run_started_at.max(patch.run_started_at);
         // A patch decided from a pane observed before a concurrent archive landed is stale by
         // construction: the archive tore the tmux down.
         if self.is_archived() {
@@ -413,6 +414,7 @@ mod tests {
             lifecycle_generation: 0,
             status,
             idle_entered_at,
+            run_started_at: None,
             last_accessed_at,
         }
     }
@@ -436,6 +438,28 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .stop();
+    }
+
+    #[test]
+    fn a_passive_patch_never_rewinds_run_started_at() {
+        let now = Utc::now();
+        let mut disk = Instance::new("disk", "/tmp/disk");
+        disk.run_started_at = Some(now);
+        let older = PassiveStatusPatch {
+            run_started_at: Some(now - chrono::Duration::seconds(30)),
+            ..patch(Status::Idle, None, None)
+        };
+        disk.merge_passive_status_patch(&disk.id.clone(), &older);
+        assert_eq!(disk.run_started_at, Some(now));
+        let newer = PassiveStatusPatch {
+            run_started_at: Some(now + chrono::Duration::seconds(30)),
+            ..older
+        };
+        disk.merge_passive_status_patch(&disk.id.clone(), &newer);
+        assert_eq!(
+            disk.run_started_at,
+            Some(now + chrono::Duration::seconds(30))
+        );
     }
 
     #[test]

@@ -223,6 +223,37 @@ fn apply_status_update_persists_genuine_transition_to_disk() {
     assert_eq!(row.last_accessed_at, Some(now));
 }
 
+// docs/guides/session-priority.md: once the user replies and the session
+// runs again, the score the agent gave the previous ask stops counting, on
+// disk too, so the daemon and the web see the same thing.
+#[test]
+#[serial]
+fn a_scored_session_that_starts_running_again_drops_its_old_score() {
+    use crate::session::{Status, Storage};
+    use crate::tui::status_poller::IdleIntent;
+
+    let mut env = create_test_env_with_sessions(1);
+    let id = session_id_at(&env.view, 0).expect("a seeded session row");
+    env.view
+        .mutate_instance(&id, |inst| inst.set_priority(Some(9)));
+    assert_eq!(env.view.get_instance(&id).unwrap().effective_priority(), 9);
+
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    env.view
+        .apply_one_status_update(status_update(&id, Status::Running, IdleIntent::Keep));
+    env.view
+        .apply_one_status_update(status_update(&id, Status::Idle, IdleIntent::Keep));
+
+    assert_eq!(
+        env.view.get_instance(&id).unwrap().effective_priority(),
+        4,
+        "the next unscored ask gets the unread-Idle default, not the stale 9"
+    );
+    let reloaded = Storage::new_unwatched("test").unwrap().load().unwrap();
+    let row = reloaded.iter().find(|i| i.id == id).expect("row present");
+    assert!(row.run_started_at.is_some(), "the run start is persisted");
+}
+
 /// An Idle -> Running update clears `idle_entered_at` so a Running row claims no freshness age,
 /// and updates for rows in a terminal state (Deleting) are ignored entirely.
 #[test]

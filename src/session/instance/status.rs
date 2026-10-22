@@ -88,6 +88,8 @@ pub(crate) struct PassiveStatusPatch {
     pub status: Status,
     pub lifecycle_generation: u64,
     pub idle_entered_at: Option<DateTime<Utc>>,
+    /// Monotone: merged with `max`, so a slower writer never rewinds it.
+    pub run_started_at: Option<DateTime<Utc>>,
     /// Stays `None` for a never-touched row; idle-reap and freshness sort rely on it.
     pub last_accessed_at: Option<DateTime<Utc>>,
 }
@@ -98,6 +100,7 @@ impl PassiveStatusPatch {
             status: inst.status,
             lifecycle_generation: inst.lifecycle_generation,
             idle_entered_at: inst.idle_entered_at,
+            run_started_at: inst.run_started_at,
             last_accessed_at: inst.last_accessed_at,
         }
     }

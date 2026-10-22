@@ -458,7 +458,7 @@ fn sort_sessions_inner(sessions: &mut [&Instance], sort_order: SortOrder, favori
         SortOrder::Newest => sessions.sort_by_key(|i| Reverse(i.created_at)),
         SortOrder::LastActivity => sessions.sort_by_key(|i| last_activity_session_key(i)),
         SortOrder::Attention => {
-            sessions.sort_by_key(|i| attention_session_key(i));
+            sessions.sort_by_key(|i| prioritized_session_key(i));
             return;
         }
         SortOrder::AZ | SortOrder::ZA => sort_by_name(sessions, sort_order, |i| &i.title),
@@ -525,7 +525,7 @@ fn sort_groups_inner<T, N, P, A>(
             items.sort_by_key(|g| last_activity_group_key(path(g), instances));
         }
         SortOrder::Attention => {
-            items.sort_by_key(|g| attention_group_key(path(g), archived(g), instances));
+            items.sort_by_key(|g| prioritized_group_key(path(g), archived(g), instances));
             return;
         }
         SortOrder::AZ | SortOrder::ZA => sort_by_name(items, sort_order, name),
@@ -681,6 +681,32 @@ fn attention_session_key(
     )
 }
 
+/// The Attention sort key: the urgent flag still outranks everything, then
+/// higher effective session priority, then the status-tier key above. See
+/// docs/guides/session-priority.md.
+fn prioritized_session_key(inst: &Instance) -> impl Ord {
+    let key = attention_session_key(inst);
+    (key.0, Reverse(inst.effective_priority()), key)
+}
+
+/// Group form of [`prioritized_session_key`]: a group ranks by its
+/// highest-priority direct or nested member.
+fn prioritized_group_key(
+    path: &str,
+    group_archived_at: Option<DateTime<Utc>>,
+    instances: &[Instance],
+) -> impl Ord {
+    let key = attention_group_key(path, group_archived_at, instances);
+    let prefix = format!("{}/", path);
+    let priority = instances
+        .iter()
+        .filter(|i| i.group_path == path || i.group_path.starts_with(&prefix))
+        .map(Instance::effective_priority)
+        .max()
+        .unwrap_or(0);
+    (key.0, Reverse(priority), key)
+}
+
 /// Key used to sort groups by Attention.
 #[allow(clippy::type_complexity)]
 fn attention_group_key(
@@ -813,7 +839,7 @@ pub fn flatten_tree_all_profiles(
         }
         SortOrder::Attention => {
             all_roots
-                .sort_by_key(|(_, g, insts)| attention_group_key(&g.path, g.archived_at, insts));
+                .sort_by_key(|(_, g, insts)| prioritized_group_key(&g.path, g.archived_at, insts));
         }
         SortOrder::AZ | SortOrder::ZA => {
             sort_by_name(&mut all_roots, sort_order, |(_, g, _)| &*g.name)
@@ -850,7 +876,7 @@ pub fn flatten_sessions_by_attention(instances: &[Instance]) -> Vec<Item> {
         .iter()
         .filter(|i| !i.is_archived() && !i.is_trashed())
         .collect();
-    refs.sort_by_key(|i| attention_session_key(i));
+    refs.sort_by_key(|i| prioritized_session_key(i));
     refs.into_iter()
         .map(|inst| Item::Session {
             id: inst.id.clone(),
@@ -1506,6 +1532,73 @@ mod tests {
             "unread must not promote sunk rows"
         );
         assert_eq!(attention_rank(99, false, true), 99);
+    }
+
+    fn scored(title: &str, status: crate::session::Status, value: Option<u8>) -> Instance {
+        let mut inst = Instance::new(title, &format!("/tmp/{title}"));
+        inst.group_path = title.to_string();
+        inst.status = status;
+        inst.set_priority(value);
+        inst
+    }
+
+    fn attention_order(instances: &[Instance]) -> Vec<String> {
+        let mut refs: Vec<&Instance> = instances.iter().collect();
+        sort_sessions_inner(&mut refs, SortOrder::Attention, false);
+        refs.iter().map(|i| i.title.clone()).collect()
+    }
+
+    #[test]
+    fn a_higher_priority_ask_gets_attention_before_a_lower_one() {
+        use crate::session::Status::*;
+        let order = attention_order(&[
+            scored("waiting-default", Waiting, None),
+            scored("idle-nine", Idle, Some(9)),
+            scored("waiting-two", Waiting, Some(2)),
+        ]);
+        assert_eq!(order, ["idle-nine", "waiting-default", "waiting-two"]);
+    }
+
+    #[test]
+    fn a_running_session_that_does_not_need_you_sorts_below_every_ready_one() {
+        use crate::session::Status::*;
+        let order = attention_order(&[
+            scored("running-ten", Running, Some(10)),
+            scored("idle-default", Idle, None),
+        ]);
+        assert_eq!(order, ["idle-default", "running-ten"]);
+    }
+
+    #[test]
+    fn the_urgent_flag_still_outranks_priority() {
+        use crate::session::Status::*;
+        // `is_urgent` reads the hook dir; with none on disk nothing is urgent,
+        // so this pins that priority sits *below* the urgent slot by checking
+        // the key shape: equal urgency, then priority.
+        let a = scored("a", Idle, Some(10));
+        let b = scored("b", Waiting, None);
+        assert!(prioritized_session_key(&a) < prioritized_session_key(&b));
+        assert_eq!(attention_session_key(&a).0, attention_session_key(&b).0);
+    }
+
+    #[test]
+    fn equal_priority_falls_back_to_the_status_order() {
+        use crate::session::Status::*;
+        let order = attention_order(&[
+            scored("idle-five", Idle, Some(5)),
+            scored("waiting-default", Waiting, None),
+        ]);
+        assert_eq!(order, ["waiting-default", "idle-five"]);
+    }
+
+    #[test]
+    fn a_group_ranks_by_its_highest_priority_member() {
+        use crate::session::Status::*;
+        let instances = [scored("plain", Waiting, None), scored("hot", Idle, Some(9))];
+        assert!(
+            prioritized_group_key("hot", None, &instances)
+                < prioritized_group_key("plain", None, &instances)
+        );
     }
 
     #[test]

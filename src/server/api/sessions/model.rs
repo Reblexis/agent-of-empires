@@ -68,6 +68,7 @@ impl SessionResponse {
             favorited: inst.is_favorited(),
             color: inst.color.clone(),
             urgent: inst.is_urgent(),
+            priority: inst.effective_priority(),
             pinned_at: timestamp(row.pinned_at),
             archived_at: timestamp(row.archived_at),
             snoozed_until: timestamp(row.active_snoozed_until),
@@ -83,6 +84,8 @@ impl SessionResponse {
             smart_rename: crate::session::smart_rename::SmartRenameState::Inactive,
             // Overlaid in list_sessions; single-session responses stay false.
             default_name: false,
+            // Overlaid in list_sessions; single-session responses stay null.
+            forecast: None,
             has_terminal: inst.terminal_info.is_some(),
             profile: row.profile.to_string(),
             cleanup_defaults: CleanupDefaults {

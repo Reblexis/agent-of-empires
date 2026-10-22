@@ -44,6 +44,19 @@ pub(super) fn decide_passive_transition(
     PassiveTransitionDecision { patch, mark_unread }
 }
 
+/// Record `run_started_at` on every row this tick saw enter `Running`, before
+/// the passive patches are built from them, so the stale-score rule of
+/// docs/guides/session-priority.md reaches disk.
+pub(super) fn stamp_run_starts(
+    instances: &mut [Instance],
+    transitions: &[(usize, Status)],
+    now: chrono::DateTime<chrono::Utc>,
+) {
+    for &(idx, old) in transitions {
+        instances[idx].note_status_transition(old, now);
+    }
+}
+
 /// Per-profile bundle of passive-status writes accumulated in one `status_poll_loop` tick.
 #[derive(Default)]
 pub(super) struct PassiveTransitionWrites {
@@ -227,7 +240,9 @@ pub(super) async fn status_poll_loop(state: Arc<AppState>) {
             // (plus its unread mark when applicable).
             let mut bundles: std::collections::HashMap<String, PassiveTransitionWrites> =
                 std::collections::HashMap::new();
-            for (idx, old) in observed_transitions(instances, &prev) {
+            let transitions = observed_transitions(instances, &prev);
+            stamp_run_starts(instances, &transitions, chrono::Utc::now());
+            for (idx, old) in transitions {
                 let inst = &instances[idx];
                 // First turn's `Running -> Idle` edge.
                 if old == Status::Running && inst.status == Status::Idle {
@@ -368,6 +383,39 @@ mod tests {
     /// fabricate a `last_accessed_at` a brand-new session never had, since idle-reap and
     /// the freshness sort both read its absence.
     #[test]
+    fn a_session_the_daemon_sees_start_running_drops_its_old_priority_score() {
+        let mut started = Instance::new("started", "/tmp/started");
+        started.set_priority(Some(9));
+        started.status = Status::Running;
+        let mut finished = Instance::new("finished", "/tmp/finished");
+        finished.status = Status::Idle;
+        let prev = std::collections::HashMap::from([
+            (started.id.clone(), Status::Idle),
+            (finished.id.clone(), Status::Running),
+        ]);
+        let mut instances = vec![started, finished];
+        let now = chrono::Utc::now() + chrono::Duration::seconds(1);
+
+        let transitions = observed_transitions(&instances, &prev);
+        stamp_run_starts(&mut instances, &transitions, now);
+
+        assert_eq!(instances[0].run_started_at, Some(now));
+        assert_eq!(instances[1].run_started_at, None);
+        let patch = crate::session::PassiveStatusPatch::from_instance(&instances[0]);
+        assert_eq!(
+            patch.run_started_at,
+            Some(now),
+            "the stamp rides the persisted patch"
+        );
+        instances[0].status = Status::Idle;
+        assert_eq!(
+            instances[0].effective_priority(),
+            3,
+            "the 9 belonged to the answered ask"
+        );
+    }
+
+    #[test]
     fn decide_passive_transition_patches_only_terminal_rows() {
         let mut structured = Instance::new("acp-session", "/tmp/test");
         structured.view = crate::session::View::Structured;
@@ -486,6 +534,7 @@ mod tests {
             .insert(
                 a1_id.clone(),
                 crate::session::PassiveStatusPatch {
+                    run_started_at: None,
                     lifecycle_generation: 0,
                     status: Status::Idle,
                     idle_entered_at: None,
@@ -504,6 +553,7 @@ mod tests {
             .insert(
                 b1_id.clone(),
                 crate::session::PassiveStatusPatch {
+                    run_started_at: None,
                     lifecycle_generation: 0,
                     status: Status::Running,
                     idle_entered_at: None,

@@ -109,6 +109,18 @@ pub enum SessionCommands {
     /// structured-view session with `--structured`.
     Import(ImportArgs),
 
+    /// Write, print, or remove the session's forecast card: what happens to
+    /// the numbers it works on if it stops now versus if it continues. The
+    /// web dashboard pins the card on the session. See
+    /// docs/guides/session-forecast.md.
+    #[command(subcommand)]
+    Forecast(super::session_forecast::ForecastCommands),
+
+    /// Score how soon this session needs you, 0 to 10, or `clear`. An agent
+    /// runs it at the end of its turn; the Attention sort and the TUI and web
+    /// rows use it. See docs/guides/session-priority.md.
+    Priority(super::session_priority::PriorityArgs),
+
     /// List the sessions currently in the trash.
     ListTrash,
 
@@ -426,6 +438,8 @@ pub async fn run(profile: &str, command: SessionCommands) -> Result<()> {
         }
         SessionCommands::Restore(args) => restore_session(profile, args).await,
         SessionCommands::Import(args) => import_sessions(profile, args).await,
+        SessionCommands::Forecast(command) => super::session_forecast::run(profile, command).await,
+        SessionCommands::Priority(args) => super::session_priority::run(profile, args).await,
         SessionCommands::ListTrash => list_trash(profile).await,
         SessionCommands::EmptyTrash => empty_trash(profile).await,
     }

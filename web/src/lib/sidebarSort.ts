@@ -231,6 +231,39 @@ export function workspaceIsUrgent(ws: Workspace): boolean {
   return ws.sessions.some((s) => s.urgent === true);
 }
 
+/** A session's effective priority (docs/guides/session-priority.md). The
+ *  server already reports 0 for sunk rows; the guard keeps an optimistic
+ *  archive or snooze from leaving a stale number in the sort. */
+export function sessionPriority(s: SessionResponse): number {
+  if (s.archived_at != null || s.snoozed_until != null || s.trashed_at != null) {
+    return 0;
+  }
+  return s.priority ?? 0;
+}
+
+/** The Error default (docs/guides/session-priority.md): a plugin danger/warn
+ *  tone floors the sort priority here, as it ranks a session like Error. */
+const PLUGIN_ATTENTION_PRIORITY = 4;
+
+/** The priority the Attention sort ranks on: {@link sessionPriority}, floored
+ *  at the Error default for a live session with a plugin danger/warn tone. */
+export function sessionSortPriority(s: SessionResponse, pluginAttention?: ReadonlySet<string>): number {
+  const priority = sessionPriority(s);
+  if (s.archived_at != null || s.snoozed_until != null || s.trashed_at != null) return priority;
+  return pluginAttention?.has(s.id) ? Math.max(priority, PLUGIN_ATTENTION_PRIORITY) : priority;
+}
+
+/** Highest priority across a workspace's sessions; with `pluginAttention`,
+ *  the sort priority. */
+export function workspacePriority(ws: Workspace, pluginAttention?: ReadonlySet<string>): number {
+  return Math.max(0, ...ws.sessions.map((s) => sessionSortPriority(s, pluginAttention)));
+}
+
+/** Highest sort priority across a repo group's workspaces. */
+export function repoGroupPriority(workspaces: readonly Workspace[], pluginAttention?: ReadonlySet<string>): number {
+  return Math.max(0, ...workspaces.map((ws) => workspacePriority(ws, pluginAttention)));
+}
+
 /** A live session that is Waiting, in Error, flagged urgent, or carries a plugin danger/warn tone. Shared by badges, markers, and jump-to-next so counts match. */
 export function sessionNeedsAttention(s: SessionResponse, pluginAttention?: ReadonlySet<string>): boolean {
   if (s.archived_at != null || s.snoozed_until != null || s.trashed_at != null) {
@@ -264,7 +297,7 @@ export function nextAttentionSessionId(
   return null;
 }
 
-/** Tier, urgent, attention rank, favorited, last activity, then id. */
+/** Tier, urgent, session priority (highest first, docs/guides/session-priority.md), attention rank, favorited, last activity, then id. */
 export function compareWorkspacesByAttention(
   a: Workspace,
   b: Workspace,
@@ -277,6 +310,10 @@ export function compareWorkspacesByAttention(
   const aUrgent = workspaceIsUrgent(a);
   const bUrgent = workspaceIsUrgent(b);
   if (aUrgent !== bUrgent) return aUrgent ? -1 : 1;
+
+  const aPriority = workspacePriority(a, pluginAttention);
+  const bPriority = workspacePriority(b, pluginAttention);
+  if (aPriority !== bPriority) return bPriority - aPriority;
 
   const aRank = workspaceAttentionRank(a, pluginAttention);
   const bRank = workspaceAttentionRank(b, pluginAttention);

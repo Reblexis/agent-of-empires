@@ -16,6 +16,7 @@ import {
   repoGroupHasLiveWorkspace,
   repoGroupIsUrgent,
   repoGroupLastActivityMs,
+  repoGroupPriority,
   saveSidebarSortMode,
   sessionAttentionRank,
   sessionNeedsAttention,
@@ -29,6 +30,9 @@ import {
   workspaceIsSunk,
   workspaceIsUrgent,
   workspaceLastActivityMs,
+  workspacePriority,
+  sessionPriority,
+  sessionSortPriority,
   workspaceTriageTier,
 } from "../sidebarSort";
 import type { PluginUiEntry } from "../api";
@@ -305,6 +309,68 @@ describe("attention sort (#1640)", () => {
   });
 });
 
+describe("session priority (docs/guides/session-priority.md)", () => {
+  const ws = (id: string, status: string, priority?: number) =>
+    workspace(id, [session({ id: `${id}-s`, status: status as never, priority, created_at: TS })]);
+  const order = (list: Workspace[], plugin?: ReadonlySet<string>) =>
+    [...list].sort((a, b) => compareWorkspacesByAttention(a, b, plugin)).map((w) => w.id);
+
+  it("a higher priority ask gets attention before a lower one", () => {
+    expect(order([ws("waiting-5", "Waiting", 5), ws("idle-9", "Idle", 9), ws("waiting-2", "Waiting", 2)])).toEqual([
+      "idle-9",
+      "waiting-5",
+      "waiting-2",
+    ]);
+  });
+
+  it("equal priority falls back to the status order", () => {
+    expect(order([ws("idle-5", "Idle", 5), ws("waiting-5", "Waiting", 5)])).toEqual(["waiting-5", "idle-5"]);
+  });
+
+  it("the urgent flag still outranks priority", () => {
+    const urgent = workspace("urgent", [
+      session({ id: "u", status: "Idle", urgent: true, priority: 1, created_at: TS }),
+    ]);
+    expect(order([ws("ten", "Idle", 10), urgent])).toEqual(["urgent", "ten"]);
+  });
+
+  it("a sunk session contributes no priority", () => {
+    const sunk = session({ id: "s", status: "Idle", priority: 9, snoozed_until: "2999-01-01T00:00:00Z" });
+    expect(sessionPriority(sunk)).toBe(0);
+    expect(sessionPriority(session({ id: "p", priority: 7 }))).toBe(7);
+    expect(sessionPriority(session({ id: "o" }))).toBe(0);
+  });
+
+  it("a workspace and a repo group rank by their highest-priority session", () => {
+    const mixed = workspace("m", [session({ id: "a", priority: 2 }), session({ id: "b", priority: 8 })]);
+    expect(workspacePriority(mixed)).toBe(8);
+    expect(repoGroupPriority([ws("x", "Idle", 3), mixed])).toBe(8);
+  });
+
+  it("a plugin danger/warn tone ranks a session at least like an unscored Error, Waiting stays ahead", () => {
+    const toned = new Set(["idle-3-s", "running-0-s"]);
+    // Server defaults: Waiting 5, Error 4, Idle 3, Running 0.
+    const sorted = order(
+      [
+        ws("idle-plain", "Idle", 3),
+        ws("idle-3", "Idle", 3),
+        ws("error-4", "Error", 4),
+        ws("waiting-5", "Waiting", 5),
+        ws("running-0", "Running", 0),
+      ],
+      toned,
+    );
+    expect(sorted[0]).toBe("waiting-5");
+    expect(sorted.slice(1, 4).sort()).toEqual(["error-4", "idle-3", "running-0"]);
+    expect(sorted[4]).toBe("idle-plain");
+    expect(sessionSortPriority(session({ id: "idle-3-s", priority: 3 }), toned)).toBe(4);
+    expect(sessionSortPriority(session({ id: "idle-3-s", priority: 9 }), toned)).toBe(9);
+    expect(sessionSortPriority(session({ id: "idle-3-s", priority: 3, ...snoozed }), toned)).toBe(0);
+    // The badge shows the server's number, not the sort floor.
+    expect(workspacePriority(ws("idle-3", "Idle", 3))).toBe(3);
+  });
+});
+
 describe("sort mode storage", () => {
   beforeEach(() => window.localStorage.clear());
 
@@ -473,7 +539,8 @@ describe("plugin tone attention (#4446)", () => {
     ["ahead for warn too", [idle("plain"), idle("toned")], [entry("toned-s", "warn")], ["toned", "plain"]],
     [
       "ahead of Running, behind Waiting",
-      [idle("running", { status: "Running" }), idle("toned"), idle("waiting", { status: "Waiting" })],
+      // Waiting and Error carry the server's default priorities (5 and 4, docs/guides/session-priority.md).
+      [idle("running", { status: "Running" }), idle("toned"), idle("waiting", { status: "Waiting", priority: 5 })],
       [entry("toned-s", "danger")],
       ["waiting", "toned", "running"],
     ],
@@ -485,7 +552,10 @@ describe("plugin tone attention (#4446)", () => {
     ],
     [
       "tied with Error, then newest first",
-      [idle("error", { status: "Error", created_at: "2025-01-01T00:00:00Z" }), idle("toned")],
+      [
+        idle("error", { status: "Error", priority: 4, created_at: "2025-01-01T00:00:00Z" }),
+        idle("toned", { priority: 3 }),
+      ],
       [entry("toned-s", "danger")],
       ["toned", "error"],
     ],
