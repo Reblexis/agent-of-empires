@@ -684,6 +684,7 @@ export function MobileLiveTerminal({
     sendData,
     sendPaste,
     uploadPastedImage,
+    isAgentPane: bottomAlign,
   });
 
   const cursorRow = connected && !reading ? live.row : -1;
@@ -699,6 +700,8 @@ export function MobileLiveTerminal({
         onScroll={onScrollerScroll}
         onWheel={forward.onWheel}
         onClick={focusInputOnTap}
+        // Capture, so a press consumed below (forward drags, selections) still makes this the stray paste's target.
+        onPointerDownCapture={input.markInteracted}
         onPointerDown={forward.onPointerDown}
         onPointerMove={forward.onPointerMove}
         onPointerUp={forward.endPointerForward}
@@ -815,6 +818,7 @@ export function MobileLiveTerminal({
         // iOS draws the caret ignoring opacity; caret-color hides it.
         style={{ fontSize: "16px", caretColor: "transparent", color: "transparent" }}
         onFocus={() => {
+          input.markInteracted();
           setFocused(true);
           onInputFocusChange(true);
         }}

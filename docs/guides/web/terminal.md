@@ -36,6 +36,8 @@ The terminal uses tmux for scrollback and selection, so no modifier keys are inv
 
 While a selection touches the terminal the pane stops repainting, so the agent cannot rewrite the text under it mid-gesture, and newly captured history loads in above the held rows. A full-screen mouse agent also gives up its grip on touch gestures while a selection is live, so the handles stay draggable. Such an agent copies through OSC 52 instead, which AoE forwards to the same browser clipboard path.
 
+A paste made while nothing editable has focus (after ending a selection or clicking a link) goes to the terminal you last clicked or typed in, or to the agent terminal before you have touched either, and focus returns to it.
+
 Copy relies on the browser Clipboard API, which needs a secure context: HTTPS or `http://localhost`. On a plain-HTTP LAN origin the selection stays visible but is not copied. Firefox is best-effort; Chromium and Safari copy reliably.
 
 ## Paired terminal
