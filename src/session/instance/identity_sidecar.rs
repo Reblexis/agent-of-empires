@@ -288,7 +288,9 @@ impl Instance {
             )
             && !self.is_capture_excluded(&observation.sid, observation.source())
             && match &self.resume_intent {
-                ResumeIntent::Fork { .. } | ResumeIntent::Cleared => false,
+                ResumeIntent::Fork { .. }
+                | ResumeIntent::Cleared
+                | ResumeIntent::Handoff { .. } => false,
                 ResumeIntent::Use(pinned) => {
                     pinned == &observation.sid
                         && self

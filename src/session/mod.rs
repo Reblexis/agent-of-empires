@@ -19,6 +19,7 @@ pub(crate) mod environment;
 pub mod fork;
 mod groups;
 pub mod hibernate;
+pub(crate) mod handoff;
 pub mod idle_reap;
 pub mod import;
 mod instance;

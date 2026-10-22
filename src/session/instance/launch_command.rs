@@ -124,6 +124,22 @@ fn apply_yolo_mode(cmd: &mut String, yolo: &crate::agents::YoloMode, is_sandboxe
     }
 }
 
+/// Append a cross-agent handoff's initial prompt, as the positional argument
+/// it has to be: after every flag, once per launch. The intent is one-shot, so
+/// it is gone by the next launch (`sid_persist` promotes it to `Default`).
+/// Silent for every other resume intent.
+fn append_handoff_prompt(inst: &Instance, cmd: &mut String) {
+    let ResumeIntent::Handoff { source_tool, from } = &inst.resume_intent else {
+        return;
+    };
+    let transcript = dirs::home_dir().and_then(|home| {
+        crate::session::handoff::locate_transcript(source_tool, from, &inst.project_path, &home)
+    });
+    let prompt = crate::session::handoff::handoff_prompt(source_tool, from, transcript.as_deref());
+    cmd.push(' ');
+    cmd.push_str(&shell_escape(&prompt));
+}
+
 /// Format an environment variable assignment as a shell-safe command prefix.
 fn format_env_var_prefix(key: &str, value: &str, cmd: &str) -> String {
     let escaped = shell_escape(value);
@@ -841,12 +857,14 @@ impl Instance {
                     .conversation_target()
                     .and_then(|(_, binding, _)| binding)
                     .is_some_and(ConversationBinding::is_known);
-            let managed = !matches!(self.resume_intent, ResumeIntent::Cleared)
-                && (self.agent_session_id.is_some()
-                    || matches!(
-                        self.resume_intent,
-                        ResumeIntent::Use(_) | ResumeIntent::Fork { .. }
-                    ));
+            let managed = !matches!(
+                self.resume_intent,
+                ResumeIntent::Cleared | ResumeIntent::Handoff { .. }
+            ) && (self.agent_session_id.is_some()
+                || matches!(
+                    self.resume_intent,
+                    ResumeIntent::Use(_) | ResumeIntent::Fork { .. }
+                ));
             let mut handoff_prior = None;
             let execution = match self.resolve_native_execution(self.conversation_target()) {
                 Ok(execution) => {
@@ -1173,6 +1191,7 @@ impl Instance {
                 tool_cmd = format_env_var_prefix(key, value, &tool_cmd);
             }
             apply_claude_inline_tui(&mut tool_cmd, agent, &self.effective_profile());
+            append_handoff_prompt(self, &mut tool_cmd);
             apply_agent_launch_env(&mut tool_cmd, agent);
 
             let env_part = format!("{} ", env_info.docker_args);
@@ -1383,6 +1402,7 @@ impl Instance {
                     apply_first_launch_agent_name(&mut cmd, agent, self, execution, is_existing);
                     apply_no_daemon_flag(&mut cmd, agent, self, execution);
                     apply_claude_inline_tui(&mut cmd, agent, profile);
+                    append_handoff_prompt(self, &mut cmd);
                     apply_agent_launch_env(&mut cmd, agent);
                     let raw_command = format!(
                         "{}{}",
@@ -1478,6 +1498,7 @@ impl Instance {
             apply_first_launch_agent_name(&mut cmd, agent, self, execution, is_existing);
             apply_no_daemon_flag(&mut cmd, agent, self, execution);
             apply_claude_inline_tui(&mut cmd, agent, profile);
+            append_handoff_prompt(self, &mut cmd);
             apply_agent_launch_env(&mut cmd, agent);
             let raw_command = format!(
                 "{}{}",
@@ -1919,6 +1940,55 @@ mod tests {
                 "{tool}/{generation:?}"
             );
         }
+    }
+
+    #[test]
+    fn handoff_intent_appends_a_single_quoted_prompt_and_no_parent_resume() {
+        // A cross-agent fork hands the transcript over in a prompt: the parent
+        // id must appear as text inside one argv entry, never as a resume
+        // selector the new agent could not honour anyway.
+        let mut inst = tool_instance("codex", "/tmp/x");
+        inst.resume_intent = ResumeIntent::Handoff {
+            source_tool: "claude".to_string(),
+            from: "11111111-2222-3333-4444-555555555555".to_string(),
+        };
+        let mut cmd = "codex".to_string();
+        inst.apply_session_flags(
+            &mut cmd,
+            "test",
+            crate::agents::get_agent("codex"),
+            None,
+            &super::execution::AgentLaunchContext::host(
+                crate::agents::get_agent("codex"),
+                inst.default_selector_agent()
+                    .and_then(|agent| inst.host_agent_command(agent, None))
+                    .as_ref(),
+            ),
+            &mut inst.conversation_state(),
+        )
+        .unwrap();
+        append_handoff_prompt(&inst, &mut cmd);
+        assert!(
+            cmd.starts_with("codex '") && cmd.ends_with('\''),
+            "the prompt must be one shell-quoted trailing argument: {cmd}"
+        );
+        for needle in [
+            "continue-claude-session",
+            "11111111-2222-3333-4444-555555555555",
+        ] {
+            assert!(cmd.contains(needle), "{needle:?} missing from {cmd}");
+        }
+        assert!(
+            !cmd.contains("fork ") && !cmd.contains("resume"),
+            "nothing is resumed across agents: {cmd}"
+        );
+
+        // Every other intent leaves the command alone.
+        let mut plain = tool_instance("codex", "/tmp/x");
+        plain.resume_intent = ResumeIntent::Cleared;
+        let mut plain_cmd = "codex".to_string();
+        append_handoff_prompt(&plain, &mut plain_cmd);
+        assert_eq!(plain_cmd, "codex");
     }
 
     #[test]

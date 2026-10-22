@@ -480,3 +480,89 @@ fn fork_from_an_unattributed_parent_dispatches_against_the_configured_store() {
         "the child runs against the configured store: {argv}"
     );
 }
+
+/// Forking a claude parent as codex is a CROSS-AGENT fork: codex cannot resume
+/// a Claude conversation, so AoE seeds a fresh codex session with a one-shot
+/// `Handoff` intent naming the parent's transcript. The child must therefore
+/// carry no pre-pinned agent id (codex mints its own) and must record the
+/// source agent alongside the parent id.
+#[test]
+#[parallel]
+fn fork_from_other_agent_seeds_a_handoff() {
+    let mut h = TuiTestHarness::new("fork_cli_cross_agent");
+    let project = h.project_path();
+    h.install_path_command("codex");
+    seed_parent(&h, &project, "CrossParent", "claude");
+    let parent_before = session_by_title(&h.read_sessions(), "CrossParent").clone();
+
+    h.run_cli_ok(&[
+        "add",
+        project.to_str().unwrap(),
+        "--tool",
+        "codex",
+        "-t",
+        "CrossChild",
+        "--fork-from",
+        "CrossParent",
+    ]);
+
+    let sessions = h.read_sessions();
+    let child = session_by_title(&sessions, "CrossChild");
+    assert_eq!(child["tool"].as_str(), Some("codex"));
+    assert_eq!(child["resume_intent"]["kind"].as_str(), Some("Handoff"));
+    assert_eq!(
+        child["resume_intent"]["value"]["source_tool"].as_str(),
+        Some("claude"),
+        "the handoff must record which agent's transcript it points at: {child}"
+    );
+    assert_eq!(
+        child["resume_intent"]["value"]["from"].as_str(),
+        Some(PARENT_AGENT_ID),
+        "the handoff must name the parent conversation: {child}"
+    );
+    assert!(
+        child["agent_session_id"].as_str().is_none_or(str::is_empty),
+        "a cross-agent fork pins no id: codex mints its own conversation: {child}"
+    );
+    assert!(
+        child["resume_binding"].is_null(),
+        "nothing is resumed across agents, so no binding is carried: {child}"
+    );
+    assert_eq!(
+        session_by_title(&sessions, "CrossParent"),
+        &parent_before,
+        "handing over must not mutate the parent"
+    );
+}
+
+/// A cross-agent fork needs a conversation to hand over, exactly like a
+/// same-agent fork: a parent with nothing recorded is refused and no child is
+/// persisted.
+#[test]
+#[parallel]
+fn fork_from_other_agent_without_a_conversation_is_refused() {
+    let mut h = TuiTestHarness::new("fork_cli_cross_agent_bare");
+    let project = h.project_path();
+    h.install_path_command("codex");
+    h.run_cli_ok(&[
+        "add",
+        project.to_str().unwrap(),
+        "--tool",
+        "claude",
+        "-t",
+        "BareParent",
+    ]);
+
+    let stderr = h.run_cli_err(&[
+        "add",
+        project.to_str().unwrap(),
+        "--tool",
+        "codex",
+        "-t",
+        "BareChild",
+        "--fork-from",
+        "BareParent",
+    ]);
+    assert!(stderr.contains("Nothing to hand over"), "{stderr}");
+    assert_not_persisted(&h, "BareChild");
+}

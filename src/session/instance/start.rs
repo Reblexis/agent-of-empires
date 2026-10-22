@@ -491,10 +491,10 @@ impl Instance {
             let mut desired = self.conversation_state();
             // Mirror persist_session_id's promotion of one-shot launch
             // directives, or the comparison below would reject the state it
-            // itself produces for Cleared, Fork and publisher-pinned Use.
+            // itself produces for Cleared, Fork, Handoff and publisher-pinned Use.
             if matches!(
                 desired.intent,
-                ResumeIntent::Cleared | ResumeIntent::Fork { .. }
+                ResumeIntent::Cleared | ResumeIntent::Fork { .. } | ResumeIntent::Handoff { .. }
             ) || (matches!(desired.intent, ResumeIntent::Use(_))
                 && self.launch_has_session_publisher())
             {

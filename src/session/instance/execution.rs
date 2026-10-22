@@ -2404,7 +2404,8 @@ impl Instance {
 
     pub(crate) fn conversation_target(&self) -> Option<(&str, Option<&ConversationBinding>, bool)> {
         Some(match &self.resume_intent {
-            ResumeIntent::Cleared => return None,
+            // A handoff's `from` belongs to another agent: nothing to target.
+            ResumeIntent::Cleared | ResumeIntent::Handoff { .. } => return None,
             ResumeIntent::Use(sid) => (sid.as_str(), self.resume_binding.as_ref(), true),
             ResumeIntent::Fork { from } => (from.as_str(), self.resume_binding.as_ref(), true),
             ResumeIntent::Default => (

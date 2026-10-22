@@ -349,12 +349,12 @@ impl Instance {
         );
         let expected_prior_intent = expected.intent.clone();
         let new_sid = self.agent_session_id.clone();
-        // Cleared and Fork are one-shot launch directives. Use stays durable
-        // only when no pane-scoped capture backend can observe a later `/new`;
-        // capture-backed agents hand ownership back to their poller.
+        // Cleared, Fork and Handoff are one-shot launch directives. Use stays
+        // durable only when no pane-scoped capture backend can observe a later
+        // `/new`; capture-backed agents hand ownership back to their poller.
         let promote_one_shot = matches!(
             self.resume_intent,
-            ResumeIntent::Cleared | ResumeIntent::Fork { .. }
+            ResumeIntent::Cleared | ResumeIntent::Fork { .. } | ResumeIntent::Handoff { .. }
         ) || matches!(self.resume_intent, ResumeIntent::Use(_))
             && self.launch_has_session_publisher();
         // OMP seeds its poller with the in-memory sid. Keeping the pin there
@@ -1407,6 +1407,32 @@ mod tests {
             SidWrite::Applied
         );
         assert_eq!(disk_sid(profile, &inst.id).as_deref(), Some(next_sid));
+    }
+
+    #[test]
+    #[serial]
+    fn handoff_promotes_so_the_handoff_prompt_is_sent_once() {
+        // A cross-agent handoff is one-shot: the prompt pointing at the other
+        // agent's transcript must not be re-sent on every restart.
+        let profile = "handoff-promote";
+        let mut inst = make_inst(profile, "Crossed");
+        inst.tool = "codex".into();
+        inst.agent_session_id = Some(VALID_SID.into());
+        inst.resume_intent = ResumeIntent::Handoff {
+            source_tool: "claude".into(),
+            from: "019342aa-2222-7eee-8fff-aaaabbbbcccc".into(),
+        };
+        let (_temp, _home, storage) = seeded(profile, &[&inst]);
+
+        let expected = expected_state(&inst.tool, Some(VALID_SID), inst.resume_intent.clone());
+        let _ = inst.persist_session_id(profile, &expected);
+        assert_eq!(inst.resume_intent, ResumeIntent::Default);
+        assert_eq!(
+            storage.load().unwrap()[0].resume_intent,
+            ResumeIntent::Default,
+            "Handoff must auto-promote so the handoff prompt is sent once, not on every restart"
+        );
+        assert_eq!(disk_sid(profile, &inst.id).as_deref(), Some(VALID_SID));
     }
 
     mod publish_captured_sid {

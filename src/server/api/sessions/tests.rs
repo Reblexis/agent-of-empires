@@ -893,6 +893,66 @@ fn fork_seed_and_structured_fork_guard_agree_per_agent() {
     }
 }
 
+#[test]
+fn handoff_seed_and_targets_agree_on_what_is_offered() {
+    use super::create::resolve_handoff_seed;
+
+    let mut claude = make_test_instance();
+    claude.tool = "claude".to_string();
+    claude.agent_session_id = Some("019342ab-1234-7def-8901-abcdef012345".to_string());
+
+    // The projection offers codex, and the create path accepts exactly that.
+    let projected = SessionResponse::from_instance(&claude, false).handoff_targets;
+    assert_eq!(projected, vec!["codex".to_string()]);
+    assert_eq!(
+        resolve_handoff_seed(Some(&claude), "codex"),
+        Ok(crate::session::ForkSeed::CrossAgent {
+            source_tool: "claude".to_string(),
+            parent_agent_session_id: "019342ab-1234-7def-8901-abcdef012345".to_string(),
+        })
+    );
+
+    // A session with no conversation yet offers nothing and is refused, so the
+    // button never appears for a handoff the server would reject.
+    let mut fresh = claude.clone();
+    fresh.agent_session_id = None;
+    assert!(SessionResponse::from_instance(&fresh, false)
+        .handoff_targets
+        .is_empty());
+    assert!(resolve_handoff_seed(Some(&fresh), "codex").is_err());
+
+    // An unlaunched fork or handoff holds no conversation of its own yet,
+    // whatever id it records, so it offers nothing either.
+    for pending in [
+        crate::session::ResumeIntent::Fork {
+            from: "019342aa-2222-7eee-8fff-aaaabbbbcccc".to_string(),
+        },
+        crate::session::ResumeIntent::Handoff {
+            source_tool: "codex".to_string(),
+            from: "019342aa-2222-7eee-8fff-aaaabbbbcccc".to_string(),
+        },
+    ] {
+        let mut unlaunched = claude.clone();
+        unlaunched.resume_intent = pending;
+        assert!(SessionResponse::from_instance(&unlaunched, false)
+            .handoff_targets
+            .is_empty());
+        assert!(resolve_handoff_seed(Some(&unlaunched), "codex").is_err());
+    }
+
+    // The remaining refusals: unknown source, same agent (that is a fork), and
+    // an agent whose transcript AoE cannot locate.
+    assert!(resolve_handoff_seed(None, "codex").is_err());
+    assert!(resolve_handoff_seed(Some(&claude), "claude").is_err());
+    let mut opencode = make_test_instance();
+    opencode.tool = "opencode".to_string();
+    opencode.agent_session_id = Some("ses_abc123".to_string());
+    assert!(SessionResponse::from_instance(&opencode, false)
+        .handoff_targets
+        .is_empty());
+    assert!(resolve_handoff_seed(Some(&opencode), "claude").is_err());
+}
+
 /// A binding migration left unattributed is enough to fork, because the row's
 /// own agent decides the capability, while a row with no binding at all names
 /// no agent and stays refused.
@@ -935,7 +995,8 @@ fn fork_from_resolves_the_conversation_the_parent_carries() {
         .expect("the pinned conversation is the one to fork")
     {
         crate::session::ForkSeed::Terminal { parent: seeded, .. } => assert_eq!(*seeded, carried),
-        crate::session::ForkSeed::Structured { .. } => panic!("expected Terminal seed"),
+        crate::session::ForkSeed::Structured { .. }
+        | crate::session::ForkSeed::CrossAgent { .. } => panic!("expected Terminal seed"),
     }
     // The superseded id names no conversation the row carries, so it resolves
     // nothing rather than a fork of the pinned one.
@@ -1050,7 +1111,8 @@ fn fork_from_rows_carrying_one_id_resolves_the_qualified_row_in_either_order() {
             .expect("the qualified row is the one to fork")
         {
             crate::session::ForkSeed::Terminal { parent, .. } => assert_eq!(*parent, qualified),
-            crate::session::ForkSeed::Structured { .. } => panic!("expected Terminal seed"),
+            crate::session::ForkSeed::Structured { .. }
+            | crate::session::ForkSeed::CrossAgent { .. } => panic!("expected Terminal seed"),
         }
     }
 }
