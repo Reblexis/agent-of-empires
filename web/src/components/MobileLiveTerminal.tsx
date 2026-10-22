@@ -1,24 +1,8 @@
-import {
-  useCallback,
-  useEffect,
-  useLayoutEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, RefObject } from "react";
 import type { AnsiSegment } from "../lib/ansi";
-import {
-  LineParseCache,
-  lineText,
-  textWidth,
-  wrapLine,
-} from "../lib/liveTermLines";
-import {
-  cursorLineIndex,
-  pointerPaneCell,
-  unwrapPointer,
-} from "../lib/liveMouse";
+import { LineParseCache, lineText, textWidth, wrapLine } from "../lib/liveTermLines";
+import { cursorLineIndex, pointerPaneCell, unwrapPointer } from "../lib/liveMouse";
 import type { LiveFrame, LiveStats } from "../hooks/useLiveTerminal";
 import { useWebSettings } from "../hooks/useWebSettings";
 import { useIsCoarsePointer } from "../hooks/useIsCoarsePointer";
@@ -31,15 +15,9 @@ import {
   scrollAnchor,
   type RowLayout,
 } from "./live-terminal/pacing";
-import {
-  FORWARD_TOUCH_GAIN,
-  useForwardInput,
-} from "./live-terminal/useForwardInput";
+import { FORWARD_TOUCH_GAIN, useForwardInput } from "./live-terminal/useForwardInput";
 import { Row } from "./live-terminal/TermRow";
-import {
-  LIVE_WINDOW_SCREENS,
-  useLiveEdgeScroll,
-} from "./live-terminal/useLiveEdgeScroll";
+import { LIVE_WINDOW_SCREENS, useLiveEdgeScroll } from "./live-terminal/useLiveEdgeScroll";
 import { useTerminalInput } from "./live-terminal/useTerminalInput";
 import { InputTraceOverlay } from "./live-terminal/InputTraceOverlay";
 import { StrokeIcon } from "./icons";
@@ -69,9 +47,7 @@ const TAP_SLOP_PX = 8;
 const TAP_MAX_MS = 350;
 
 // `?livedebug=1` shows the geometry and wire stats the view is working from.
-const LIVE_DEBUG =
-  typeof location !== "undefined" &&
-  new URLSearchParams(location.search).has("livedebug");
+const LIVE_DEBUG = typeof location !== "undefined" && new URLSearchParams(location.search).has("livedebug");
 
 export interface MobileLiveTerminalProps {
   frame: LiveFrame | null;
@@ -118,23 +94,16 @@ export interface MobileLiveTerminalProps {
 /** Heights behind the iOS standalone bottom band: the app root should reach `screen` in portrait. */
 function viewportDebugLine(): string {
   const html = document.documentElement;
-  const root =
-    document.getElementById("root")?.getBoundingClientRect().bottom ?? 0;
-  const inset = getComputedStyle(html)
-    .getPropertyValue("--safe-area-bottom")
-    .trim();
-  const flags = ["data-ios-standalone", "data-editing"]
-    .filter((a) => html.hasAttribute(a))
-    .join(",");
+  const root = document.getElementById("root")?.getBoundingClientRect().bottom ?? 0;
+  const inset = getComputedStyle(html).getPropertyValue("--safe-area-bottom").trim();
+  const flags = ["data-ios-standalone", "data-editing"].filter((a) => html.hasAttribute(a)).join(",");
   return `vp inner=${innerHeight} vv=${Math.round(visualViewport?.height ?? 0)} root=${Math.round(root)} screen=${screen.height} sab=${inset} ${flags}`;
 }
 
 /** A frame's rows; `lines` is authoritative when present, and `content` ends with a newline that is not a row. */
 function frameLines(frame: LiveFrame): string[] {
   if (frame.lines) return frame.lines;
-  const content = frame.content.endsWith("\n")
-    ? frame.content.slice(0, -1)
-    : frame.content;
+  const content = frame.content.endsWith("\n") ? frame.content.slice(0, -1) : frame.content;
   return content.split("\n");
 }
 
@@ -142,11 +111,7 @@ type FlickSample = { x: number; y: number; t: number };
 
 function pushFlickSample(samples: FlickSample[], sample: FlickSample) {
   samples.push(sample);
-  while (
-    samples.length > 1 &&
-    sample.t - samples[0]!.t > FLICK_VELOCITY_WINDOW_MS
-  )
-    samples.shift();
+  while (samples.length > 1 && sample.t - samples[0]!.t > FLICK_VELOCITY_WINDOW_MS) samples.shift();
 }
 
 export function MobileLiveTerminal({
@@ -179,17 +144,12 @@ export function MobileLiveTerminal({
   const fontKey = coarse ? "mobileFontSize" : "desktopFontSize";
   const configuredFontSize = settings[fontKey];
   // Quotes are stripped so a stray `"` cannot produce an ignored font-family.
-  const termFontFamily = (settings.terminalFontFamily ?? "")
-    .trim()
-    .replace(/"/g, "");
-  const fontFamily = termFontFamily
-    ? `"${termFontFamily}", var(--font-mono)`
-    : undefined;
+  const termFontFamily = (settings.terminalFontFamily ?? "").trim().replace(/"/g, "");
+  const fontFamily = termFontFamily ? `"${termFontFamily}", var(--font-mono)` : undefined;
   const [focused, setFocused] = useState(false);
   const [fontSize, setFontSize] = useState(() => configuredFontSize);
   // Adopt a changed setting during render; a pinch drives fontSize live without touching the setting.
-  const [lastConfiguredFontSize, setLastConfiguredFontSize] =
-    useState(configuredFontSize);
+  const [lastConfiguredFontSize, setLastConfiguredFontSize] = useState(configuredFontSize);
   if (configuredFontSize !== lastConfiguredFontSize) {
     setLastConfiguredFontSize(configuredFontSize);
     setFontSize(configuredFontSize);
@@ -202,19 +162,14 @@ export function MobileLiveTerminal({
       if (!reading || !held || !next) return null;
       const heldLines = frameLines(held);
       const nextLines = frameLines(next);
-      const older =
-        held.history - heldLines.length - (next.history - nextLines.length);
+      const older = held.history - heldLines.length - (next.history - nextLines.length);
       // A frame too short for the whole prefix (scrollback cleared mid-selection) would refold forever.
       if (older <= 0 || older > nextLines.length) return null;
       return { ...held, lines: nextLines.slice(0, older).concat(heldLines) };
     },
     [reading],
   );
-  const { value: frame, held: selectionHeld } = useSelectionHold(
-    streamFrame,
-    scrollerRef,
-    absorbExposedHistory,
-  );
+  const { value: frame, held: selectionHeld } = useSelectionHold(streamFrame, scrollerRef, absorbExposedHistory);
 
   const lineH = fontSize * LINE_RATIO;
   // Glyph advance measured in the scroller after fonts load, so cols sent to tmux match the real font.
@@ -228,9 +183,7 @@ export function MobileLiveTerminal({
     remeasure();
   }, [remeasure, fontSize, fontFamily]);
   useEffect(() => {
-    const fonts = (
-      document as Document & { fonts?: { ready: Promise<unknown> } }
-    ).fonts;
+    const fonts = (document as Document & { fonts?: { ready: Promise<unknown> } }).fonts;
     // No FontFaceSet in jsdom; the layout-effect measure stands.
     fonts?.ready?.then(() => remeasure()).catch(() => {});
   }, [remeasure]);
@@ -242,18 +195,11 @@ export function MobileLiveTerminal({
   }, [reading]);
   // Unchanged lines keep their parse and wrap identity across frames, so memoized rows skip them.
   const [parseCache] = useState(() => new LineParseCache());
-  const lines = useMemo(
-    () => (frame ? parseCache.lines(frame.lines ?? frame.content) : []),
-    [frame, parseCache],
-  );
+  const lines = useMemo(() => (frame ? parseCache.lines(frame.lines ?? frame.content) : []), [frame, parseCache]);
   // Columns rendered at; wrapping keeps a frame readable when another client widened the window.
   const [renderCols, setRenderCols] = useState(0);
   const [wrapCache] = useState(
-    () =>
-      new WeakMap<
-        AnsiSegment[],
-        { cols: number; rows: AnsiSegment[][]; key: string }
-      >(),
+    () => new WeakMap<AnsiSegment[], { cols: number; rows: AnsiSegment[][]; key: string }>(),
   );
   const visual = useMemo(() => {
     const cols = renderCols > 0 ? renderCols : Number.POSITIVE_INFINITY;
@@ -284,10 +230,7 @@ export function MobileLiveTerminal({
     return { keys, rows, lineStartRow, source, screenStart };
   }, [lines, frame?.rows, renderCols, wrapCache]);
   const screenRows = frame?.rows ?? 0;
-  const spacerLines = Math.max(
-    0,
-    (frame?.history ?? 0) - Math.max(0, lines.length - screenRows),
-  );
+  const spacerLines = Math.max(0, (frame?.history ?? 0) - Math.max(0, lines.length - screenRows));
   // A full-screen mouse app's scrollback is not capturable: no spacer, no native scroll, wheels go to the app.
   const altScreen = frame?.altScreen ?? false;
   const forwardMode = altScreen && (frame?.mouse ?? false);
@@ -301,9 +244,7 @@ export function MobileLiveTerminal({
   const forwardGestures = forwardMode && !selectionHeld;
   const touchForwardYRef = useRef<number | null>(null);
   // WebKit may synthesize a click after a custom forward-mode drag; a moved touch must not raise the keyboard.
-  const touchStartRef = useRef<{ x: number; y: number; t: number } | null>(
-    null,
-  );
+  const touchStartRef = useRef<{ x: number; y: number; t: number } | null>(null);
   const suppressTouchClickRef = useRef(false);
   useEffect(() => {
     rowsRef.current = screenRows || rowsRef.current;
@@ -361,29 +302,15 @@ export function MobileLiveTerminal({
     const cursor = !reading ? (frame?.cursor ?? null) : null;
     if (!cursor) return none;
     const lineIdx = cursorLineIndex(lines.length, screenRows, cursor.y);
-    const baseRow =
-      lineIdx < 0 || lineIdx >= lines.length
-        ? -1
-        : (visual.lineStartRow[lineIdx] ?? -1);
+    const baseRow = lineIdx < 0 || lineIdx >= lines.length ? -1 : (visual.lineStartRow[lineIdx] ?? -1);
     if (baseRow < 0) return none;
     const cols = renderCols > 0 ? renderCols : Number.POSITIVE_INFINITY;
-    const row =
-      baseRow + (Number.isFinite(cols) ? Math.floor(cursor.x / cols) : 0);
+    const row = baseRow + (Number.isFinite(cols) ? Math.floor(cursor.x / cols) : 0);
     // An agent may park the hardware cursor in blank rows below its UI; its own caret stays visible instead.
     if (row > lastNonBlankRow) return none;
     const col = Number.isFinite(cols) ? cursor.x % cols : cursor.x;
     return { row, col, top: (effectiveSpacerLines + row) * lineH };
-  }, [
-    reading,
-    frame,
-    lines.length,
-    screenRows,
-    visual,
-    renderCols,
-    effectiveSpacerLines,
-    lineH,
-    lastNonBlankRow,
-  ]);
+  }, [reading, frame, lines.length, screenRows, visual, renderCols, effectiveSpacerLines, lineH, lastNonBlankRow]);
 
   // One view sync per painted frame; scroll events fire per pixel.
   const viewSyncRafRef = useRef(0);
@@ -436,20 +363,15 @@ export function MobileLiveTerminal({
       const el = scrollerRef.current;
       if (!el || charW <= 0 || lineH <= 0) return { col: 1, row: 1 };
       const r = el.getBoundingClientRect();
-      const gridTop =
-        el
-          .querySelector<HTMLElement>("[data-live-content]")
-          ?.getBoundingClientRect().top ?? r.top;
+      const gridTop = el.querySelector<HTMLElement>("[data-live-content]")?.getBoundingClientRect().top ?? r.top;
       // An unsplit frame sends no width, and the pane may be wider than the wrapped render, so columns go unclamped.
       const pane0 = frame?.pane0 ?? {
         cols: Number.POSITIVE_INFINITY,
         rows: Math.max(1, screenRows || rowsRef.current),
       };
       const visualCol = Math.floor((clientX - r.left) / charW) + 1;
-      const visualRow =
-        Math.floor((clientY - gridTop) / lineH) - effectiveSpacerLines;
-      const rowWidth = (i: number) =>
-        visual.rows[i]!.reduce((n, s) => n + textWidth(s.text), 0);
+      const visualRow = Math.floor((clientY - gridTop) / lineH) - effectiveSpacerLines;
+      const rowWidth = (i: number) => visual.rows[i]!.reduce((n, s) => n + textWidth(s.text), 0);
       const screenTopLine = Math.max(0, lines.length - screenRows);
       const { compositeRow, compositeCol } = unwrapPointer(
         visualRow,
@@ -460,15 +382,7 @@ export function MobileLiveTerminal({
       );
       return pointerPaneCell(compositeCol, compositeRow, pane0);
     },
-    [
-      charW,
-      lineH,
-      screenRows,
-      effectiveSpacerLines,
-      lines.length,
-      visual,
-      frame?.pane0,
-    ],
+    [charW, lineH, screenRows, effectiveSpacerLines, lines.length, visual, frame?.pane0],
   );
   // Touch wheels report at pane 0's middle row: position-aware apps ignore wheels over their input box.
   const inputPaneMiddleRow = useCallback(
@@ -489,13 +403,7 @@ export function MobileLiveTerminal({
     inputRef,
     armAgentClipboard,
   });
-  const {
-    wheelAccumRef,
-    enqueueTouchWheelDelta,
-    cancelTouchWheelQueue,
-    startMomentum,
-    stopMomentum,
-  } = forward;
+  const { wheelAccumRef, enqueueTouchWheelDelta, cancelTouchWheelQueue, startMomentum, stopMomentum } = forward;
   // Recent drag samples for the release velocity.
   const flickSamplesRef = useRef<FlickSample[]>([]);
   // Every input path funnels through here, so typing interrupts a coast instead of queueing behind it.
@@ -528,19 +436,13 @@ export function MobileLiveTerminal({
     if (!changed) return;
     setPinchGeneration((g) => g + 1);
     if (persistTimerRef.current) clearTimeout(persistTimerRef.current);
-    persistTimerRef.current = setTimeout(
-      () => update({ [fontKey]: fontSize }),
-      400,
-    );
+    persistTimerRef.current = setTimeout(() => update({ [fontKey]: fontSize }), 400);
   };
   // Records forward-mode finger travel as queued wheel notches; returns false for a zero move.
   const trackForwardDrag = (touch: { clientX: number; clientY: number }) => {
     const dy = touch.clientY - touchForwardYRef.current!;
     const start = touchStartRef.current;
-    if (
-      start &&
-      Math.hypot(touch.clientX - start.x, touch.clientY - start.y) > TAP_SLOP_PX
-    ) {
+    if (start && Math.hypot(touch.clientX - start.x, touch.clientY - start.y) > TAP_SLOP_PX) {
       suppressTouchClickRef.current = true;
     }
     touchForwardYRef.current = touch.clientY;
@@ -550,11 +452,7 @@ export function MobileLiveTerminal({
       t: performance.now(),
     });
     // Finger down reveals older content, a wheel up, hence the negation.
-    enqueueTouchWheelDelta(
-      -dy * FORWARD_TOUCH_GAIN,
-      touch.clientX,
-      touch.clientY,
-    );
+    enqueueTouchWheelDelta(-dy * FORWARD_TOUCH_GAIN, touch.clientX, touch.clientY);
   };
 
   const onTouchStart = (e: React.TouchEvent) => {
@@ -582,9 +480,7 @@ export function MobileLiveTerminal({
     if (forwardModeRef.current) {
       touchForwardYRef.current = a.clientY;
       wheelAccumRef.current = 0;
-      flickSamplesRef.current = [
-        { x: a.clientX, y: a.clientY, t: performance.now() },
-      ];
+      flickSamplesRef.current = [{ x: a.clientX, y: a.clientY, t: performance.now() }];
     } else {
       // Detach now: iOS fires touchcancel when promoting the drag to a native scroll, finger still down.
       liveDetachedRef.current = true;
@@ -595,33 +491,17 @@ export function MobileLiveTerminal({
     const t0 = e.touches[0]!;
     if (e.touches.length === 2 && pinchRef.current) {
       e.preventDefault();
-      const dist = Math.hypot(
-        t0.clientX - e.touches[1]!.clientX,
-        t0.clientY - e.touches[1]!.clientY,
-      );
+      const dist = Math.hypot(t0.clientX - e.touches[1]!.clientX, t0.clientY - e.touches[1]!.clientY);
       const { startDist, startSize } = pinchRef.current;
       if (startDist > 0) {
-        const next = Math.round(
-          Math.max(
-            MIN_FONT_SIZE,
-            Math.min(MAX_FONT_SIZE, startSize * (dist / startDist)),
-          ),
-        );
+        const next = Math.round(Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, startSize * (dist / startDist))));
         if (next !== startSize) pinchRef.current.changed = true;
         setFontSize(next);
       }
-    } else if (
-      e.touches.length === 1 &&
-      forwardModeRef.current &&
-      touchForwardYRef.current != null
-    ) {
+    } else if (e.touches.length === 1 && forwardModeRef.current && touchForwardYRef.current != null) {
       // Page pan is blocked by touch-action on the scroller; React's touch listeners are passive.
       trackForwardDrag(t0);
-    } else if (
-      e.touches.length === 1 &&
-      !forwardModeRef.current &&
-      touchScrollStartYRef.current != null
-    ) {
+    } else if (e.touches.length === 1 && !forwardModeRef.current && touchScrollStartYRef.current != null) {
       // A real scroll (past 8px) enters reading mode at once, so live appends stop sliding rows under the finger.
       if (Math.abs(t0.clientY - touchScrollStartYRef.current) > 8) {
         suppressTouchClickRef.current = true;
@@ -640,10 +520,7 @@ export function MobileLiveTerminal({
         forwardModeRef.current &&
         touchForwardYRef.current != null &&
         !suppressTouchClickRef.current &&
-        Math.hypot(
-          finalTouch.clientX - start.x,
-          finalTouch.clientY - start.y,
-        ) <= TAP_SLOP_PX &&
+        Math.hypot(finalTouch.clientX - start.x, finalTouch.clientY - start.y) <= TAP_SLOP_PX &&
         performance.now() - start.t < TAP_MAX_MS &&
         !(e.target as Element | null)?.closest?.("a[href]")
           ? finalTouch
@@ -655,24 +532,14 @@ export function MobileLiveTerminal({
         forward.forwardTap(tap.clientX, tap.clientY);
       } else if (forwardModeRef.current && touchForwardYRef.current != null) {
         // A quick iOS swipe can coalesce every move into touchend.
-        if (finalTouch && finalTouch.clientY !== touchForwardYRef.current)
-          trackForwardDrag(finalTouch);
+        if (finalTouch && finalTouch.clientY !== touchForwardYRef.current) trackForwardDrag(finalTouch);
         const samples = flickSamplesRef.current;
         const first = samples[0];
         const last = samples[samples.length - 1];
-        if (
-          first &&
-          last &&
-          last.t > first.t &&
-          performance.now() - last.t <= FLICK_MAX_PAUSE_MS
-        ) {
+        if (first && last && last.t > first.t && performance.now() - last.t <= FLICK_MAX_PAUSE_MS) {
           const raw = (last.y - first.y) / (last.t - first.t);
-          const v = Math.max(
-            -FLICK_MAX_VELOCITY,
-            Math.min(FLICK_MAX_VELOCITY, raw),
-          );
-          if (Math.abs(v) >= FLICK_MIN_VELOCITY)
-            startMomentum(v, last.x, last.y);
+          const v = Math.max(-FLICK_MAX_VELOCITY, Math.min(FLICK_MAX_VELOCITY, raw));
+          if (Math.abs(v) >= FLICK_MIN_VELOCITY) startMomentum(v, last.x, last.y);
         }
       }
       flickSamplesRef.current = [];
@@ -713,10 +580,7 @@ export function MobileLiveTerminal({
       const latch = latchRef.current;
       const widthChanged = Math.abs(width - latch.width) > 1;
       // Mid-pinch, or with the keyboard up before a latch exists, only the render width may change.
-      if (
-        pinchRef.current ||
-        (keyboardOpen && (widthChanged || latch.maxHeight === 0))
-      ) {
+      if (pinchRef.current || (keyboardOpen && (widthChanged || latch.maxHeight === 0))) {
         if (cols >= 20) setRenderCols(cols);
         return;
       }
@@ -744,17 +608,7 @@ export function MobileLiveTerminal({
       ro.disconnect();
       if (timer) clearTimeout(timer);
     };
-  }, [
-    active,
-    charW,
-    lineH,
-    latchRef,
-    sendResize,
-    setWindow,
-    pinIfWasAtBottom,
-    keyboardOpen,
-    pinchGeneration,
-  ]);
+  }, [active, charW, lineH, latchRef, sendResize, setWindow, pinIfWasAtBottom, keyboardOpen, pinchGeneration]);
 
   // Opening the keyboard means typing: return to the live prompt before the viewport shrinks.
   useEffect(() => {
@@ -769,20 +623,11 @@ export function MobileLiveTerminal({
       syncView();
     });
     return () => cancelAnimationFrame(id);
-  }, [
-    focused,
-    keyboardOpen,
-    forceLiveRef,
-    liveDetachedRef,
-    liveScrollTarget,
-    returnToLive,
-    syncView,
-  ]);
+  }, [focused, keyboardOpen, forceLiveRef, liveDetachedRef, liveScrollTarget, returnToLive, syncView]);
 
   // Fast cadence only for the visible, active pane at the live edge.
   useEffect(() => {
-    const sync = () =>
-      setCadence(active && document.visibilityState === "visible" && !reading);
+    const sync = () => setCadence(active && document.visibilityState === "visible" && !reading);
     sync();
     document.addEventListener("visibilitychange", sync);
     return () => document.removeEventListener("visibilitychange", sync);
@@ -790,8 +635,7 @@ export function MobileLiveTerminal({
 
   const [frameTiming] = useState(() => new FrameTimingProbe());
   useLayoutEffect(() => {
-    if (LIVE_DEBUG && streamFrame)
-      frameTiming.record(performance.now(), streamFrame.receivedAt);
+    if (LIVE_DEBUG && streamFrame) frameTiming.record(performance.now(), streamFrame.receivedAt);
   }, [streamFrame, frameTiming]);
 
   // Loaded lines wrap to more rows than the spacer rows they replace, and trimming the oldest scrollback removes
@@ -845,14 +689,7 @@ export function MobileLiveTerminal({
       history: frame?.history ?? 0,
       cols: renderCols,
     };
-  }, [
-    effectiveSpacerLines,
-    lines.length,
-    renderRowCount,
-    screenRows,
-    frame,
-    renderCols,
-  ]);
+  }, [effectiveSpacerLines, lines.length, renderRowCount, screenRows, frame, renderCols]);
   const reportJumpIfUnasked = useCallback(
     (el: HTMLDivElement) => {
       const prev = lastScrollGeomRef.current;
@@ -862,12 +699,7 @@ export function MobileLiveTerminal({
       };
       if (el.scrollTop >= prev.top - lineH) return;
       const now = performance.now();
-      if (
-        touchActiveRef.current ||
-        selectionHeld ||
-        now - upIntentAtRef.current < JUMP_INTENT_MS
-      )
-        return;
+      if (touchActiveRef.current || selectionHeld || now - upIntentAtRef.current < JUMP_INTENT_MS) return;
       if (now - lastJumpReportRef.current < JUMP_REPORT_INTERVAL_MS) return;
       lastJumpReportRef.current = now;
       const st = jumpStateRef.current;
@@ -882,22 +714,11 @@ export function MobileLiveTerminal({
         { level: "warn", target: "live-terminal.jump" },
       );
     },
-    [
-      coarse,
-      lineH,
-      liveScrollTarget,
-      selectionHeld,
-      touchActiveRef,
-      liveDetachedRef,
-      latchRef,
-      cursorAnchorRef,
-    ],
+    [coarse, lineH, liveScrollTarget, selectionHeld, touchActiveRef, liveDetachedRef, latchRef, cursorAnchorRef],
   );
   const onScrollerScroll = useCallback(() => {
-    if (anchorLayoutRef.current && scrollerRef.current)
-      anchorLayoutRef.current.top = scrollerRef.current.scrollTop;
-    if (scrollerRef.current && !forwardModeRef.current)
-      reportJumpIfUnasked(scrollerRef.current);
+    if (anchorLayoutRef.current && scrollerRef.current) anchorLayoutRef.current.top = scrollerRef.current.scrollTop;
+    if (scrollerRef.current && !forwardModeRef.current) reportJumpIfUnasked(scrollerRef.current);
     onScroll();
   }, [onScroll, reportJumpIfUnasked, forwardModeRef]);
   useLayoutEffect(() => {
@@ -905,26 +726,12 @@ export function MobileLiveTerminal({
     pinIfWasAtBottom();
     const el = scrollerRef.current;
     const prev = anchorLayoutRef.current;
-    if (
-      el &&
-      prev &&
-      liveDetachedRef.current &&
-      !forwardMode &&
-      prev.lineH === lineH
-    ) {
+    if (el && prev && liveDetachedRef.current && !forwardMode && prev.lineH === lineH) {
       // Shrunken content has already clamped scrollTop to the bottom; the last known position predates that.
       const clamped = el.scrollTop >= el.scrollHeight - el.clientHeight - 1;
       const from = clamped ? Math.max(el.scrollTop, prev.top) : el.scrollTop;
-      const anchor = scrollAnchor(
-        from,
-        el.clientHeight,
-        prev.spacer,
-        prev.layout,
-        lineH,
-      );
-      const top =
-        anchor &&
-        anchoredScrollTop(anchor, effectiveSpacerLines, visual, lineH);
+      const anchor = scrollAnchor(from, el.clientHeight, prev.spacer, prev.layout, lineH);
+      const top = anchor && anchoredScrollTop(anchor, effectiveSpacerLines, visual, lineH);
       if (top != null && Math.abs(top - el.scrollTop) >= 1) el.scrollTop = top;
     }
     anchorLayoutRef.current = {
@@ -962,16 +769,8 @@ export function MobileLiveTerminal({
   const cursorRow = connected && !reading ? live.row : -1;
   // Trailing blanks are trimmed only at the normal-screen live edge: reading must keep scrollHeight stable, and
   // a full-screen app owns its whole grid.
-  const visibleRowCount =
-    reading || altScreen
-      ? visual.rows.length
-      : Math.min(renderRowCount, visual.rows.length);
-  const { blocks, bottomPadLines } = mountedBlocks(
-    visibleRowCount,
-    effectiveSpacerLines,
-    view,
-    lineH,
-  );
+  const visibleRowCount = reading || altScreen ? visual.rows.length : Math.min(renderRowCount, visual.rows.length);
+  const { blocks, bottomPadLines } = mountedBlocks(visibleRowCount, effectiveSpacerLines, view, lineH);
 
   return (
     <div className="absolute inset-0" data-live-terminal>
@@ -1026,17 +825,10 @@ export function MobileLiveTerminal({
           MMMMMMMMMMMMMMMMMMMM
         </span>
         {/* `mt-auto` bottom-aligns a short screen; it collapses once content overflows. */}
-        <div
-          className={`relative whitespace-pre ${bottomAlign ? "mt-auto" : ""}`}
-          data-live-content
-        >
+        <div className={`relative whitespace-pre ${bottomAlign ? "mt-auto" : ""}`} data-live-content>
           {blocks.flatMap(({ padLines, start, end }, block) => [
             padLines > 0 ? (
-              <div
-                key={`pad-${block}`}
-                style={{ height: `${padLines * lineH}px` }}
-                aria-hidden="true"
-              />
+              <div key={`pad-${block}`} style={{ height: `${padLines * lineH}px` }} aria-hidden="true" />
             ) : null,
             // Keyed by pane line (invariant as the agent appends) and wrap offset. Pads sit in the same flat
             // list because a wrapper keyed on the range would remount rows and drop the selection.
@@ -1053,12 +845,7 @@ export function MobileLiveTerminal({
               );
             }),
           ])}
-          {bottomPadLines > 0 && (
-            <div
-              style={{ height: `${bottomPadLines * lineH}px` }}
-              aria-hidden="true"
-            />
-          )}
+          {bottomPadLines > 0 && <div style={{ height: `${bottomPadLines * lineH}px` }} aria-hidden="true" />}
         </div>
       </div>
 

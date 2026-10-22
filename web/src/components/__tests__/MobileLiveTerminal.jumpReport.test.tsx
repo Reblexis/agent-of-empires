@@ -8,23 +8,9 @@
 // to scroll down" without a reproduction; the report is how the next one gets
 // traced.
 
-import {
-  afterAll,
-  afterEach,
-  beforeAll,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent } from "@testing-library/react";
-import {
-  LINE_H,
-  installResizeObserver,
-  liveFrame,
-  renderLiveTerminal,
-} from "./liveTerminalHarness";
+import { LINE_H, installResizeObserver, liveFrame, renderLiveTerminal } from "./liveTerminalHarness";
 
 vi.mock("../../hooks/useWebSettings", () => ({
   useWebSettings: () => ({
@@ -42,8 +28,7 @@ let scrollHeight = 1000;
 const bottom = () => scrollHeight - CLIENT_HEIGHT;
 const scrollTops = new WeakMap<Element, number>();
 const saved = ["clientHeight", "scrollHeight", "scrollTop"].map(
-  (p) =>
-    [p, Object.getOwnPropertyDescriptor(HTMLElement.prototype, p)] as const,
+  (p) => [p, Object.getOwnPropertyDescriptor(HTMLElement.prototype, p)] as const,
 );
 
 beforeAll(() => {
@@ -65,8 +50,7 @@ beforeAll(() => {
   });
 });
 afterAll(() => {
-  for (const [p, d] of saved)
-    if (d) Object.defineProperty(HTMLElement.prototype, p, d);
+  for (const [p, d] of saved) if (d) Object.defineProperty(HTMLElement.prototype, p, d);
 });
 beforeEach(() => {
   scrollHeight = 1000;
@@ -96,10 +80,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-const jumpReports = () =>
-  reportErrorMock.mock.calls.filter(
-    ([, ctx]) => ctx?.target === "live-terminal.jump",
-  );
+const jumpReports = () => reportErrorMock.mock.calls.filter(([, ctx]) => ctx?.target === "live-terminal.jump");
 
 function moveTo(scroller: HTMLElement, top: number) {
   scroller.scrollTop = top;
@@ -117,9 +98,7 @@ describe("MobileLiveTerminal jump report", () => {
     expect(jumpReports()).toHaveLength(1);
     const [message, ctx] = jumpReports()[0]!;
     expect(ctx.level).toBe("warn");
-    expect(String(message)).toContain(
-      `scrollTop ${Math.round(bottom())} -> ${Math.round(bottom() - 5 * LINE_H)}`,
-    );
+    expect(String(message)).toContain(`scrollTop ${Math.round(bottom())} -> ${Math.round(bottom() - 5 * LINE_H)}`);
     expect(String(message)).toContain(`clientHeight ${CLIENT_HEIGHT}`);
     expect(String(message)).toMatch(/detached (true|false)/);
     expect(String(message)).toMatch(/coarse (true|false)/);
