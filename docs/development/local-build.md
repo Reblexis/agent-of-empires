@@ -24,7 +24,7 @@ wrong conversation. Both branches were merged into `local-defaults` on
 Check that every branch that was ever deployed is contained in what you build:
 
     git fetch origin
-    for b in session-hibernation session-priority fix-terminal-jump-up fix-terminal-jump-up-2; do
+    for b in session-hibernation session-priority fix-terminal-jump-up fix-terminal-jump-up-2 fix-terminal-jump-up-3; do
       git merge-base --is-ancestor "origin/$b" HEAD || echo "MISSING: $b"
     done
 
