@@ -17,8 +17,11 @@ import {
   cacheSet,
   clearAcpCache,
   evictOldestPersistedAcpState,
+  flushPendingPersists,
   loadPersistedState,
+  MAX_PERSIST_BYTES,
   persistState,
+  schedulePersist,
   useBackgroundAgents,
 } from "./stateCache";
 
@@ -32,7 +35,12 @@ function writeEntry(id: string, state: Record<string, unknown> = { ...emptyAcpSt
 
 const quotaError = () => new DOMException("The quota has been exceeded.", "QuotaExceededError");
 
-beforeEach(() => localStorage.clear());
+beforeEach(() => {
+  // Settle debounced writes (and their timer) a previous test scheduled, so a late flush can't plant entries here.
+  flushPendingPersists();
+  clearAcpCache();
+  localStorage.clear();
+});
 afterEach(() => vi.restoreAllMocks());
 
 describe("loadPersistedState", () => {
@@ -163,6 +171,24 @@ describe("eviction on quota (#1345)", () => {
     expect(localStorage.getItem(CURRENT)).not.toBeNull();
   });
 
+  it("reads savedAt from the entry prefix without parsing sibling blobs", () => {
+    writeEntry("sess-old", undefined, Date.now() - DAY_MS);
+    writeEntry("sess-new");
+    const parse = vi.spyOn(JSON, "parse");
+    expect(evictOldestPersistedAcpState(CURRENT)).toBe(true);
+    expect(parse).not.toHaveBeenCalled();
+    expect(localStorage.getItem(key("sess-old"))).toBeNull();
+    expect(localStorage.getItem(key("sess-new"))).not.toBeNull();
+  });
+
+  it("treats an entry whose keys are not in persistState order as corrupt", () => {
+    writeEntry("sess-valid-old", undefined, Date.now() - DAY_MS);
+    localStorage.setItem(key("sess-foreign"), JSON.stringify({ state: emptyAcpState(), savedAt: Date.now() }));
+    evictOldestPersistedAcpState(CURRENT);
+    expect(localStorage.getItem(key("sess-foreign"))).toBeNull();
+    expect(localStorage.getItem(key("sess-valid-old"))).not.toBeNull();
+  });
+
   it("prefers a corrupt entry over an older valid one", () => {
     writeEntry("sess-valid-old", undefined, Date.now() - DAY_MS);
     localStorage.setItem(key("sess-corrupt"), "not valid json{{{");
@@ -194,6 +220,96 @@ describe("persistState (#1833)", () => {
     persistState("overlay", { ...emptyAcpState(), optimisticRows: [row], inflightPromptIds: ["o1"] });
     const { state } = JSON.parse(localStorage.getItem(key("overlay"))!) as { state: AcpState };
     expect([state.optimisticRows, state.inflightPromptIds]).toEqual([[], []]);
+  });
+});
+
+describe("persistState skips oversized states instead of fighting the quota", () => {
+  const huge = () => ({
+    ...emptyAcpState(),
+    activity: [
+      {
+        id: "r1",
+        kind: "message" as const,
+        text: "x".repeat(MAX_PERSIST_BYTES),
+        at: "t",
+      },
+    ] as ActivityRow[],
+  });
+
+  it("drops the stale entry and writes nothing when the body exceeds the cap", () => {
+    writeEntry("sess-huge");
+    const setItem = vi.spyOn(Storage.prototype, "setItem");
+    expect(() => persistState("sess-huge", huge())).not.toThrow();
+    // A reload must not hydrate an old prefix of a session known to have moved far past it.
+    expect(localStorage.getItem(key("sess-huge"))).toBeNull();
+    expect(setItem.mock.calls.filter(([k]) => k === key("sess-huge"))).toHaveLength(0);
+  });
+
+  it("does not evict siblings for an oversized write", () => {
+    writeEntry("sess-old", undefined, Date.now() - DAY_MS);
+    persistState("sess-huge", huge());
+    expect(localStorage.getItem(key("sess-old"))).not.toBeNull();
+  });
+
+  it("still persists a state just under the cap", () => {
+    persistState("sess-small", emptyAcpState());
+    expect(localStorage.getItem(key("sess-small"))).not.toBeNull();
+  });
+});
+
+describe("persist debounce", () => {
+  const writesFor = (spy: { mock: { calls: unknown[][] } }, id: string) =>
+    spy.mock.calls.filter(([k]) => k === key(id));
+
+  it("coalesces schedulePersist bursts into one write per session at the trailing edge", () => {
+    vi.useFakeTimers();
+    try {
+      const setItem = vi.spyOn(Storage.prototype, "setItem");
+      schedulePersist("sess-debounce", { ...emptyAcpState(), lastSeq: 1 });
+      schedulePersist("sess-debounce", { ...emptyAcpState(), lastSeq: 2 });
+      expect(writesFor(setItem, "sess-debounce")).toHaveLength(0);
+      vi.runOnlyPendingTimers();
+      const writes = writesFor(setItem, "sess-debounce");
+      expect(writes).toHaveLength(1);
+      // The last scheduled state wins.
+      expect((JSON.parse(writes[0]![1] as string) as { state: AcpState }).state.lastSeq).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("cacheSet updates memory and listeners at once but defers the storage write", () => {
+    vi.useFakeTimers();
+    try {
+      cacheSet("sess-deferred", { ...emptyAcpState(), lastSeq: 5 });
+      expect(cacheGet("sess-deferred")?.lastSeq).toBe(5);
+      expect(localStorage.getItem(key("sess-deferred"))).toBeNull();
+      vi.advanceTimersByTime(1_000);
+      expect(localStorage.getItem(key("sess-deferred"))).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("flushPendingPersists writes immediately (the pagehide path)", () => {
+    schedulePersist("sess-flush", { ...emptyAcpState(), lastSeq: 7 });
+    window.dispatchEvent(new Event("pagehide"));
+    const raw = localStorage.getItem(key("sess-flush"));
+    expect((JSON.parse(raw!) as { state: AcpState }).state.lastSeq).toBe(7);
+    flushPendingPersists();
+  });
+
+  it("clearAcpCache discards a pending write so the flush cannot resurrect the entry", () => {
+    schedulePersist("sess-a", emptyAcpState());
+    schedulePersist("sess-b", emptyAcpState());
+    clearAcpCache("sess-a");
+    flushPendingPersists();
+    expect(localStorage.getItem(key("sess-a"))).toBeNull();
+    expect(localStorage.getItem(key("sess-b"))).not.toBeNull();
+    schedulePersist("sess-c", emptyAcpState());
+    clearAcpCache();
+    flushPendingPersists();
+    expect(localStorage.getItem(key("sess-c"))).toBeNull();
   });
 });
 

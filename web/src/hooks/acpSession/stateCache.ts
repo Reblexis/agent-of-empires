@@ -51,10 +51,16 @@ export function evictOldestPersistedAcpState(currentKey: string): boolean {
       if (k === currentKey) continue;
       const raw = window.localStorage.getItem(k);
       if (raw === null) continue;
-      const parsed = parseEntry(raw);
-      if (!parsed) firstCorruptKey ??= k;
-      else if (parsed.savedAt < oldestTime) {
-        oldestTime = parsed.savedAt;
+      // `savedAt` is the first property `persistState` writes, so read it from the prefix instead of parsing a
+      // multi-MB blob per sibling on every quota failure. A non-matching entry counts as corrupt and goes first.
+      const m = /^\{"savedAt":(\d+),/.exec(raw);
+      if (!m) {
+        firstCorruptKey ??= k;
+        continue;
+      }
+      const savedAt = Number(m[1]);
+      if (savedAt < oldestTime) {
+        oldestTime = savedAt;
         oldestKey = k;
       }
     }
@@ -78,9 +84,19 @@ function toPersistedState(state: AcpState): AcpState {
   return { ...base, queuedPrompts: base.queuedPrompts.filter((q) => !q.attachments?.length) };
 }
 
+/** Entries above this are not persisted: they cannot fit the quota beside their siblings, so a write would only
+ *  fail, evict, and fail again, and a reload replays from the server anyway. The stale smaller entry is dropped so
+ *  a reload never hydrates an old prefix of a session that has moved far past it. */
+export const MAX_PERSIST_BYTES = 2 * 1024 * 1024;
+
 export function persistState(sessionId: string, state: AcpState): void {
   const key = storageKey(sessionId);
   const body = JSON.stringify({ savedAt: Date.now(), state: toPersistedState(state) } satisfies PersistedEntry);
+  if (body.length > MAX_PERSIST_BYTES) {
+    removePersisted(() => [key]);
+    setQueueCount(sessionId, state.queuedPrompts.length);
+    return;
+  }
   // On a quota failure evict one entry and retry once; the cache is best effort.
   if (safeSetItem(key, body) || (evictOldestPersistedAcpState(key) && safeSetItem(key, body))) {
     setQueueCount(sessionId, state.queuedPrompts.length);
@@ -158,9 +174,34 @@ export function cacheGet(sessionId: string): AcpState | undefined {
   return value;
 }
 
+// `reduced_state` arrives after every event and always yields a fresh state, so `cacheSet` runs at the full event
+// rate. Serializing a whole transcript at that rate made multi-GB tabs after a day, so the localStorage mirror is
+// debounced: the in-memory cache and listeners stay synchronous, only stringify+write coalesces. `pagehide` flushes
+// so the tab-eviction reload this mirror exists for still sees the last state.
+const PERSIST_DEBOUNCE_MS = 1_000;
+const pendingPersists = new Map<string, AcpState>();
+let persistTimer: ReturnType<typeof setTimeout> | null = null;
+
+export function flushPendingPersists(): void {
+  if (persistTimer !== null) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+  }
+  const entries = [...pendingPersists.entries()];
+  pendingPersists.clear();
+  for (const [id, state] of entries) persistState(id, state);
+}
+
+export function schedulePersist(sessionId: string, state: AcpState): void {
+  pendingPersists.set(sessionId, state);
+  persistTimer ??= setTimeout(flushPendingPersists, PERSIST_DEBOUNCE_MS);
+}
+
+if (typeof window !== "undefined") window.addEventListener("pagehide", flushPendingPersists);
+
 export function cacheSet(sessionId: string, value: AcpState): void {
   lruInsert(sessionId, value);
-  persistState(sessionId, value);
+  schedulePersist(sessionId, value);
   notifyStateListeners(sessionId);
 }
 
@@ -200,10 +241,13 @@ export function useBackgroundAgents(sessionId: string | null): BackgroundAgent[]
 
 /** Drop one session's cached state, or all of it, so a reused id never shows a prior transcript. */
 export function clearAcpCache(sessionId?: string): void {
+  // Discard any debounced write too, or the flush would resurrect the entry this call drops.
   if (sessionId === undefined) {
+    pendingPersists.clear();
     stateCache.clear();
     removePersisted(persistedKeys);
   } else {
+    pendingPersists.delete(sessionId);
     stateCache.delete(sessionId);
     removePersisted(() => [storageKey(sessionId)]);
   }

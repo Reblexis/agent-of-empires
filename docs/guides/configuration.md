@@ -426,6 +426,8 @@ update_check_mode = "notify"   # auto | notify | off
 
 Checks hit GitHub at most once a day; the dashboard re-polls the cached status hourly while open.
 
+Local build: the dashboard's update banner never installs. Its "Copy agent update prompt" action copies a prompt telling an AI agent to rebase the local patches onto the new release (`~/src/aoe-sessions/bin/aoe-update-local`), test, rebuild, and redeploy.
+
 ## Tools
 
 `[tools.*]` defines dev tools tied to each session's working directory. Each entry takes a `command`, an optional `hotkey` (`Alt+<char>`), and optional `background = true` for fire-and-forget commands.

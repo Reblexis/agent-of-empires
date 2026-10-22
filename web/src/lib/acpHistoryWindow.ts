@@ -5,6 +5,11 @@ export const DEFAULT_HISTORY_WINDOW = 150;
 
 export const HISTORY_WINDOW_STEP = 150;
 
+/** Ceiling on how far live appends can grow the window on their own, so a session parked on screen cannot keep
+ *  every row streamed since open in the DOM. "Load earlier" may exceed it; at worst a reader parked more than this
+ *  many rows up sees the top of the window fold as new turns land. */
+export const MAX_AUTO_HISTORY_WINDOW = 600;
+
 /** User turns anchor the window's top so it never opens mid-turn. */
 function isUserTurnBoundary(row: ActivityRow): boolean {
   return row.kind === "user_prompt" || row.kind === "user_diff_comments";
@@ -28,7 +33,7 @@ export function initialHistoryWindow(
 }
 
 /** Pull `start` back to the top-level `Task` so sub-agent children never render as orphan cards, even if that exceeds the cap. */
-function snapBackToSubagentParent(rows: readonly ActivityRow[], start: number): number {
+export function snapBackToSubagentParent(rows: readonly ActivityRow[], start: number): number {
   let s = start;
   while (s > 0) {
     const parentId = rows[s]?.tool?.parent_tool_call_id;

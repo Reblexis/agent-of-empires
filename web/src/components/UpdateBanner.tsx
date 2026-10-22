@@ -1,7 +1,21 @@
+import { useState } from "react";
 import type { UpdateStatus } from "../lib/api";
+import { writeClipboard } from "../lib/clipboard";
+import { agentUpdatePrompt } from "../lib/agentUpdatePrompt";
 
 /** Top-of-app banner offering the update `useUpdateBanner` found. */
 export function UpdateBanner({ status, onDismiss }: { status: UpdateStatus; onDismiss: () => void }) {
+  // Feedback for the copy-agent-prompt action (LOCAL PATCH).
+  const [copied, setCopied] = useState<"copied" | "failed" | null>(null);
+
+  const onCopyPrompt = () => {
+    if (!status.latest_version) return;
+    void writeClipboard(agentUpdatePrompt(status.latest_version)).then((ok) => {
+      setCopied(ok ? "copied" : "failed");
+      setTimeout(() => setCopied(null), 2500);
+    });
+  };
+
   return (
     <div
       role="status"
@@ -22,6 +36,18 @@ export function UpdateBanner({ status, onDismiss }: { status: UpdateStatus; onDi
           Release notes
         </a>
       )}
+      <button
+        type="button"
+        onClick={onCopyPrompt}
+        className="underline hover:text-brand-200 cursor-pointer"
+        title="Copy a prompt telling an AI agent to rebase the local patches onto this release and redeploy"
+      >
+        {copied === "copied"
+          ? "Prompt copied - paste it to your agent"
+          : copied === "failed"
+            ? "Copy failed"
+            : "Copy agent update prompt"}
+      </button>
       <button
         type="button"
         onClick={onDismiss}
