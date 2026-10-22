@@ -27,7 +27,10 @@ export function useLiveEdgeScroll({
   // No programmatic scroll while a finger is down: it cancels the native gesture on iOS.
   const touchActiveRef = useRef(false);
   // Largest container height at the current width; rows derive from it so the keyboard never resizes tmux.
-  const latchRef = useRef<{ width: number; maxHeight: number }>({ width: 0, maxHeight: 0 });
+  const latchRef = useRef<{ width: number; maxHeight: number }>({
+    width: 0,
+    maxHeight: 0,
+  });
   // Pixel top of the cursor row, sticky across mid-redraw frames that hide the cursor.
   const cursorAnchorRef = useRef<number | null>(null);
   useEffect(() => {
@@ -76,7 +79,11 @@ export function useLiveEdgeScroll({
       el.scrollTop = target;
       pendingHeightPinRef.current = false;
     }
-    geomRef.current = { target, clientHeight: el.clientHeight, scrollTop: el.scrollTop };
+    geomRef.current = {
+      target,
+      clientHeight: el.clientHeight,
+      scrollTop: el.scrollTop,
+    };
   }, [scrollerRef, liveScrollTarget]);
 
   const atBottom = useCallback(() => {
@@ -99,8 +106,11 @@ export function useLiveEdgeScroll({
     if (!atBottom()) enterReading(rowsRef.current);
     // Mid-gesture passes over the bottom settle on touchend instead.
     else if (!touchActiveRef.current) returnToLive(rowsRef.current * LIVE_WINDOW_SCREENS);
-    // Scrolling down to the literal bottom is where auto-follow resumes for mouse scrolling.
-    if (el.scrollHeight - el.clientHeight - el.scrollTop < 2 && !movingUp) liveDetachedRef.current = false;
+    // Scrolling down to the live edge is where auto-follow resumes for mouse scrolling. The live-edge band counts,
+    // not just the literal bottom: a scroll that stops a few px short returns to live above, which trims trailing
+    // blank rows, and the clamp that follows is an upward move that would never re-attach.
+    const atLiteralBottom = el.scrollHeight - el.clientHeight - el.scrollTop < 2;
+    if (!movingUp && (atLiteralBottom || (!touchActiveRef.current && atBottom()))) liveDetachedRef.current = false;
   }, [scrollerRef, rowsRef, atBottom, enterReading, forwardModeRef, reading, returnToLive, scheduleViewSync]);
 
   const jumpToLatest = useCallback(() => {

@@ -21,6 +21,7 @@ import { LIVE_WINDOW_SCREENS, useLiveEdgeScroll } from "./live-terminal/useLiveE
 import { useTerminalInput } from "./live-terminal/useTerminalInput";
 import { InputTraceOverlay } from "./live-terminal/InputTraceOverlay";
 import { StrokeIcon } from "./icons";
+import { reportError } from "../lib/logger";
 
 // Renders a tmux pane from streamed `capture-pane` frames (src/server/live_ws.rs) as DOM text in a natively
 // scrolling container.
@@ -31,6 +32,10 @@ const LINE_RATIO = 1.2;
 const RESIZE_DEBOUNCE_MS = 150;
 /** How long the trimmed row count must stay lower before shrinking; outlasts a stalled stream's spinner gaps. */
 const SHRINK_DELAY_MS = 1500;
+/** Jump report: an upward intent this recent explains a move up. */
+const JUMP_INTENT_MS = 500;
+/** Jump report: at most one per this interval. */
+const JUMP_REPORT_INTERVAL_MS = 10_000;
 /** Release velocities (px/ms): below the minimum a drag stops dead; the cap keeps a flick a small continuation. */
 const FLICK_MIN_VELOCITY = 0.3;
 const FLICK_MAX_VELOCITY = 1.5;
@@ -207,7 +212,11 @@ export function MobileLiveTerminal({
       let wrapped = wrapCache.get(line);
       if (!wrapped || wrapped.cols !== cols) {
         // Plain text, so the anchor matches a line whichever producer encoded its style.
-        wrapped = { cols, rows: wrapLine(line, cols), key: lineText(line).trimEnd() };
+        wrapped = {
+          cols,
+          rows: wrapLine(line, cols),
+          key: lineText(line).trimEnd(),
+        };
         wrapCache.set(line, wrapped);
       }
       lineStartRow[i] = rows.length;
@@ -407,7 +416,11 @@ export function MobileLiveTerminal({
     [sendDataRaw, stopMomentum, cancelTouchWheelQueue],
   );
 
-  const pinchRef = useRef<{ startDist: number; startSize: number; changed: boolean } | null>(null);
+  const pinchRef = useRef<{
+    startDist: number;
+    startSize: number;
+    changed: boolean;
+  } | null>(null);
   // Bumped when a font-changing pinch ends, so the resize commits once at gesture end.
   const [pinchGeneration, setPinchGeneration] = useState(0);
   const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -433,7 +446,11 @@ export function MobileLiveTerminal({
       suppressTouchClickRef.current = true;
     }
     touchForwardYRef.current = touch.clientY;
-    pushFlickSample(flickSamplesRef.current, { x: touch.clientX, y: touch.clientY, t: performance.now() });
+    pushFlickSample(flickSamplesRef.current, {
+      x: touch.clientX,
+      y: touch.clientY,
+      t: performance.now(),
+    });
     // Finger down reveals older content, a wheel up, hence the negation.
     enqueueTouchWheelDelta(-dy * FORWARD_TOUCH_GAIN, touch.clientX, touch.clientY);
   };
@@ -454,7 +471,11 @@ export function MobileLiveTerminal({
       return;
     }
     if (e.touches.length !== 1) return;
-    touchStartRef.current = { x: a.clientX, y: a.clientY, t: performance.now() };
+    touchStartRef.current = {
+      x: a.clientX,
+      y: a.clientY,
+      t: performance.now(),
+    };
     suppressTouchClickRef.current = false;
     if (forwardModeRef.current) {
       touchForwardYRef.current = a.clientY;
@@ -619,11 +640,87 @@ export function MobileLiveTerminal({
 
   // Loaded lines wrap to more rows than the spacer rows they replace, and trimming the oldest scrollback removes
   // rows, so either would move a detached reader's text; restore the line they were reading.
-  const anchorLayoutRef = useRef<{ spacer: number; layout: RowLayout; lineH: number; top: number } | null>(null);
+  const anchorLayoutRef = useRef<{
+    spacer: number;
+    layout: RowLayout;
+    lineH: number;
+    top: number;
+  } | null>(null);
+  // Jump report (docs/guides/web/terminal.md, `live-terminal.jump`): a move up of more than a row with no upward
+  // wheel, press, or touch on the scroller in the last JUMP_INTENT_MS is logged with the scroll geometry.
+  const upIntentAtRef = useRef(Number.NEGATIVE_INFINITY);
+  const lastJumpReportRef = useRef(Number.NEGATIVE_INFINITY);
+  const lastScrollGeomRef = useRef({ top: 0, height: 0 });
+  useEffect(() => {
+    const el = scrollerRef.current;
+    if (!el) return;
+    const mark = () => {
+      upIntentAtRef.current = performance.now();
+    };
+    const onWheelIntent = (e: WheelEvent) => {
+      if (e.deltaY < 0) mark();
+    };
+    el.addEventListener("wheel", onWheelIntent, {
+      capture: true,
+      passive: true,
+    });
+    el.addEventListener("pointerdown", mark, { capture: true, passive: true });
+    el.addEventListener("touchstart", mark, { capture: true, passive: true });
+    return () => {
+      el.removeEventListener("wheel", onWheelIntent, { capture: true });
+      el.removeEventListener("pointerdown", mark, { capture: true });
+      el.removeEventListener("touchstart", mark, { capture: true });
+    };
+  }, []);
+  const jumpStateRef = useRef({
+    spacer: 0,
+    lines: 0,
+    renderRows: 0,
+    frameRows: 0,
+    history: 0,
+    cols: 0,
+  });
+  useEffect(() => {
+    jumpStateRef.current = {
+      spacer: effectiveSpacerLines,
+      lines: lines.length,
+      renderRows: renderRowCount,
+      frameRows: screenRows,
+      history: frame?.history ?? 0,
+      cols: renderCols,
+    };
+  }, [effectiveSpacerLines, lines.length, renderRowCount, screenRows, frame, renderCols]);
+  const reportJumpIfUnasked = useCallback(
+    (el: HTMLDivElement) => {
+      const prev = lastScrollGeomRef.current;
+      lastScrollGeomRef.current = {
+        top: el.scrollTop,
+        height: el.scrollHeight,
+      };
+      if (el.scrollTop >= prev.top - lineH) return;
+      const now = performance.now();
+      if (touchActiveRef.current || selectionHeld || now - upIntentAtRef.current < JUMP_INTENT_MS) return;
+      if (now - lastJumpReportRef.current < JUMP_REPORT_INTERVAL_MS) return;
+      lastJumpReportRef.current = now;
+      const st = jumpStateRef.current;
+      const r = Math.round;
+      reportError(
+        `live terminal view moved up without an upward scroll: scrollTop ${r(prev.top)} -> ${r(el.scrollTop)}, ` +
+          `scrollHeight ${prev.height} -> ${el.scrollHeight}, clientHeight ${el.clientHeight}, ` +
+          `target ${r(liveScrollTarget(el))}, reading ${readingRef.current}, detached ${liveDetachedRef.current}, ` +
+          `coarse ${coarse}, latchHeight ${latchRef.current.maxHeight}, cursorAnchor ${cursorAnchorRef.current ?? "none"}, ` +
+          `lineH ${lineH}, spacer ${st.spacer}, lines ${st.lines}, renderRows ${st.renderRows}, ` +
+          `frameRows ${st.frameRows}, history ${st.history}, cols ${st.cols}`,
+        { level: "warn", target: "live-terminal.jump" },
+      );
+    },
+    [coarse, lineH, liveScrollTarget, selectionHeld, touchActiveRef, liveDetachedRef, latchRef, cursorAnchorRef],
+  );
   const onScrollerScroll = useCallback(() => {
     if (anchorLayoutRef.current && scrollerRef.current) anchorLayoutRef.current.top = scrollerRef.current.scrollTop;
+    if (scrollerRef.current && !forwardModeRef.current) reportJumpIfUnasked(scrollerRef.current);
     onScroll();
-  }, [onScroll]);
+  }, [onScroll, reportJumpIfUnasked, forwardModeRef]);
   useLayoutEffect(() => {
     if (live.top != null) cursorAnchorRef.current = live.top;
     pinIfWasAtBottom();
@@ -637,7 +734,12 @@ export function MobileLiveTerminal({
       const top = anchor && anchoredScrollTop(anchor, effectiveSpacerLines, visual, lineH);
       if (top != null && Math.abs(top - el.scrollTop) >= 1) el.scrollTop = top;
     }
-    anchorLayoutRef.current = { spacer: effectiveSpacerLines, layout: visual, lineH, top: el?.scrollTop ?? 0 };
+    anchorLayoutRef.current = {
+      spacer: effectiveSpacerLines,
+      layout: visual,
+      lineH,
+      top: el?.scrollTop ?? 0,
+    };
     // Match the virtualization window to the pinned position before paint.
     syncView();
     // `renderRowCount` changes the content height at the live edge, which must re-pin.
@@ -791,7 +893,11 @@ export function MobileLiveTerminal({
         aria-label="Live terminal input"
         className="absolute bottom-2 left-2 w-px h-px opacity-0"
         // iOS draws the caret ignoring opacity; caret-color hides it.
-        style={{ fontSize: "16px", caretColor: "transparent", color: "transparent" }}
+        style={{
+          fontSize: "16px",
+          caretColor: "transparent",
+          color: "transparent",
+        }}
         onFocus={() => {
           setFocused(true);
           onInputFocusChange(true);
