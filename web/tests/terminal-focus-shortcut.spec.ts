@@ -3,6 +3,7 @@ import { test, expect, observeFor } from "./helpers/mockedTest";
 import type { Page } from "@playwright/test";
 import { clickSidebarSession } from "./helpers/sidebar";
 import { mockTerminalApis } from "./helpers/terminal-mocks";
+import { activateDiffTab } from "./helpers/diffMocks";
 
 async function openSession(page: Page) {
   await clickSidebarSession(page, "pinch-test");
@@ -146,6 +147,7 @@ test.describe("Cmd/Ctrl+` desktop", () => {
 
     await page.goto("/");
     await openSession(page);
+    await activateDiffTab(page);
 
     await page.locator('button:has-text("foo.ts")').first().click();
     const agent = page.locator('[data-term="agent"]');

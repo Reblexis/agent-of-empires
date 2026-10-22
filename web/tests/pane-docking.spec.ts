@@ -11,6 +11,17 @@ async function openSession(page: Page) {
   await page.setViewportSize({ width: 1280, height: 720 });
 }
 
+/** The local build opens every session on a Context tab (docs/guides/web/dashboard.md). These tests pin upstream's
+ *  built-in tab layout, so close it first; a closed Context tab stays closed. */
+async function closeContextTab(page: Page) {
+  const close = page.getByLabel(/^Close context$/i).first();
+  await expect(close).toBeVisible({ timeout: 10000 });
+  await close.click();
+  await expect(page.getByTestId("pane-tab-context")).toHaveCount(0);
+  // Upstream's layout opens on Diff.
+  await page.getByTestId("pane-tab-diff").click();
+}
+
 async function dockTabOrder(page: Page, dock: "right" | "bottom"): Promise<string[]> {
   return page.$$eval(`[data-pane-dock="${dock}"] [data-testid^="pane-tab-"]`, (els) =>
     els.map((el) => (el.getAttribute("data-testid") ?? "").replace("pane-tab-", "")),
@@ -45,6 +56,7 @@ test.describe("Dockable pane system", () => {
   }) => {
     await openSession(page);
     await page.goto(`/session/${SESSION}`);
+    await closeContextTab(page);
 
     const diffToggle = page.locator('[data-testid="pane-toggle-diff"]');
     const termToggle = page.locator('[data-testid="pane-toggle-terminal"]');
@@ -72,6 +84,7 @@ test.describe("Dockable pane system", () => {
   test("a pane moves from the right dock to the bottom dock", async ({ page }) => {
     await openSession(page);
     await page.goto(`/session/${SESSION}`);
+    await closeContextTab(page);
 
     await expect(page.getByTestId("bottom-dock-resize")).toHaveCount(0);
 
@@ -117,6 +130,7 @@ test.describe("Dockable pane system", () => {
     });
 
     await page.goto(`/session/${SESSION}`);
+    await closeContextTab(page);
 
     // Plugin panes get a toggle but open only on demand (`autoOpenPluginPanes` defaults off).
     const paneId = "plugin:acme.demo:demo_pane";
@@ -142,6 +156,7 @@ test.describe("Dockable pane system", () => {
   test("dragging a tab reorders it within a dock and the order persists across reload", async ({ page }) => {
     await openSession(page);
     await page.goto(`/session/${SESSION}`);
+    await closeContextTab(page);
 
     await expect(page.getByTestId("pane-tab-diff")).toBeVisible();
     await expect(page.getByTestId("pane-tab-terminal:0")).toBeVisible();
@@ -160,6 +175,7 @@ test.describe("Dockable pane system", () => {
   test("dragging a tab onto the empty bottom dock opens it there", async ({ page }) => {
     await openSession(page);
     await page.goto(`/session/${SESSION}`);
+    await closeContextTab(page);
     await expect(page.getByTestId("bottom-dock-resize")).toHaveCount(0);
 
     await dragTab(page, "diff", { x: 640, y: 715 }, async () => {
@@ -177,6 +193,7 @@ test.describe("Dockable pane system", () => {
   test("a cross-dock drag shows an insertion marker and moves the pane", async ({ page }) => {
     await openSession(page);
     await page.goto(`/session/${SESSION}`);
+    await closeContextTab(page);
 
     await page.getByLabel("Move diff to bottom dock").click();
     await expect(page.getByTestId("bottom-dock-resize")).toBeVisible();
@@ -196,6 +213,7 @@ test.describe("Dockable pane system", () => {
   test("dragging a tab onto a pane body splits the right dock into two groups that persist", async ({ page }) => {
     await openSession(page);
     await page.goto(`/session/${SESSION}`);
+    await closeContextTab(page);
 
     await expect(page.getByTestId("pane-tab-diff")).toBeVisible();
     expect(await dockGroupCount(page, "right")).toBe(1);

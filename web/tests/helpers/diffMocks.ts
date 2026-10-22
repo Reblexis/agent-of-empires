@@ -78,6 +78,14 @@ export async function openDiffSession(page: Page, title = "pinch-test") {
   await page.goto("/");
   await expect(page.locator("header")).toBeVisible();
   await clickSidebarSession(page, title);
+  await activateDiffTab(page);
+}
+
+/** The local build opens a session on its Context tab (docs/guides/web/dashboard.md); bring the Diff tab forward. */
+export async function activateDiffTab(page: Page) {
+  const tab = page.getByTestId("pane-tab-diff").first();
+  await expect(tab).toBeVisible({ timeout: 10000 });
+  if ((await tab.getAttribute("aria-selected")) !== "true") await tab.click();
 }
 
 /** Click a row in the file list once it has rendered. */

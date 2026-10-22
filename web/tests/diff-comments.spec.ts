@@ -2,6 +2,7 @@ import { test, expect } from "./helpers/mockedTest";
 import { sessionResponse } from "./helpers/sessions";
 import { Page } from "@playwright/test";
 import { clickSidebarSession } from "./helpers/sidebar";
+import { activateDiffTab } from "./helpers/diffMocks";
 import { makePatch } from "./helpers/patch";
 
 // In-diff comments end-to-end against the @pierre/diffs renderer.
@@ -113,6 +114,7 @@ async function openSessionAndFile(page: Page) {
   await page.goto("/");
   await expect(page.locator("header")).toBeVisible();
   await clickSidebarSession(page, "diff-comments-test");
+  await activateDiffTab(page);
   await expect(page.getByText("example.ts").first()).toBeVisible({
     timeout: 10000,
   });
@@ -168,6 +170,7 @@ test.describe("Diff comments (#928)", () => {
     await page.reload();
     await expect(page.locator("header")).toBeVisible();
     await clickSidebarSession(page, "diff-comments-test");
+    await activateDiffTab(page);
     await expect(page.getByText(/^1 comment$/).first()).toBeVisible();
     await page.getByText("example.ts").first().click();
     await expect(page.getByText("nit").first()).toBeVisible();

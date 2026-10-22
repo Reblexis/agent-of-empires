@@ -3,6 +3,7 @@ import type { Page } from "@playwright/test";
 import { clickSidebarSession } from "./helpers/sidebar";
 import { makeAllDifferentPatch } from "./helpers/patch";
 import {
+  activateDiffTab,
   diffFileResponse,
   diffFilesResponse,
   mockDiffFiles,
@@ -152,6 +153,7 @@ test.describe("Large diff handling", () => {
     });
     await page.goto("/");
     await clickSidebarSession(page, "pinch-test");
+    await activateDiffTab(page);
   }
 
   test("a +10k/-13k lockfile churn renders without crashing", async ({ page }) => {
