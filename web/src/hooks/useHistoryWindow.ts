@@ -4,9 +4,11 @@ import type { ActivityRow } from "../lib/acpTypes";
 import {
   DEFAULT_HISTORY_WINDOW,
   HISTORY_WINDOW_STEP,
+  MAX_AUTO_HISTORY_WINDOW,
   canLoadEarlierFrom,
   historyWindow,
   initialHistoryWindow,
+  snapBackToSubagentParent,
 } from "../lib/acpHistoryWindow";
 
 export interface HistoryWindowState {
@@ -36,8 +38,10 @@ export function useHistoryWindow(
       setVisibleRows(initialHistoryWindow(activity));
     }
   } else if (activity.length !== anchorLen) {
+    // Appends grow the window so on-screen rows don't fold, up to MAX_AUTO_HISTORY_WINDOW; a window "Load earlier"
+    // grew past the cap holds its size rather than shrinking.
     if (activity.length > anchorLen) {
-      setVisibleRows((v) => v + (activity.length - anchorLen));
+      setVisibleRows((v) => Math.min(v + (activity.length - anchorLen), Math.max(v, MAX_AUTO_HISTORY_WINDOW)));
     }
     setAnchorLen(activity.length);
   }
@@ -45,8 +49,14 @@ export function useHistoryWindow(
     () => historyWindow(activity, visibleRows, showClearedTurns),
     [activity, visibleRows, showClearedTurns],
   );
-  // The start may only move earlier; moving it later shrinks a rendered message (#3707).
-  const start = pinnedWindowStart(activity, computed.start, anchorRowId);
+  // The start may only move earlier; moving it later shrinks a rendered message (#3707). Past the window's cap the
+  // pin rolls forward just enough to stay within it, or the auto-growth cap would never bound the DOM.
+  const start = pinnedWindowStart(
+    activity,
+    computed.start,
+    anchorRowId,
+    Math.max(visibleRows, MAX_AUTO_HISTORY_WINDOW),
+  );
   const startRowId = start < activity.length ? (activity[start]?.id ?? null) : null;
   if (startRowId !== anchorRowId && windowSessionId === sessionId) {
     setAnchorRowId(startRowId);
@@ -57,9 +67,17 @@ export function useHistoryWindow(
   return { windowedActivity, canLoadEarlier, loadEarlier };
 }
 
-export function pinnedWindowStart(rows: readonly ActivityRow[], computed: number, anchorRowId: string | null): number {
+export function pinnedWindowStart(
+  rows: readonly ActivityRow[],
+  computed: number,
+  anchorRowId: string | null,
+  maxRows: number = Infinity,
+): number {
   if (anchorRowId === null) return computed;
   const pinned = rows.findIndex((r) => r.id === anchorRowId);
   if (pinned < 0) return computed;
-  return Math.min(computed, pinned);
+  if (rows.length - pinned <= maxRows) return Math.min(computed, pinned);
+  // Roll row by row rather than snapping to `computed`, which on a turn longer than the cap would jump to the next
+  // prompt and fold the whole turn away.
+  return Math.max(pinned, Math.min(computed, snapBackToSubagentParent(rows, rows.length - maxRows)));
 }

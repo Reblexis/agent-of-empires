@@ -6,6 +6,7 @@ import { isElicitationAnswersPayload, type ActivityRow, type ToolCall, type Tool
 import { parseJsonObject } from "../../lib/acpArgs";
 import { pickMemoryRecall } from "../../lib/memoryRecall";
 import { openInNewTab } from "../../lib/openInNewTab";
+import { toolCallTimestamp } from "../../lib/toolCallTimes";
 import { ArtifactImage } from "./artifactMedia";
 import { DiffCommentsUserCard } from "../diff/comments/DiffCommentsUserCard";
 import { isDiffCommentsCardPayload, parseDiffCommentsSentinel } from "../diff/comments/buildPrompt";
@@ -150,18 +151,6 @@ interface ToolPart {
   argsText?: string;
   result?: unknown;
   isError?: boolean;
-}
-
-// Minted once per tool call so a missing timestamp stays referentially stable across renders.
-const TOOL_CALL_TIMES = new Map<string, string>();
-
-function toolCallTimestamp(id: string): string {
-  let t = TOOL_CALL_TIMES.get(id);
-  if (t === undefined) {
-    t = new Date().toISOString();
-    TOOL_CALL_TIMES.set(id, t);
-  }
-  return t;
 }
 
 function pickStartedAt(args: Record<string, unknown> | undefined, argsText: string | undefined): string | null {
