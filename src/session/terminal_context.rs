@@ -112,21 +112,10 @@ pub fn bound_transcript(s: &str) -> String {
     format!("{head}\n...\n{}", &s[start..])
 }
 
-/// Working directory for the recap one-shot. Claude keys its transcript store
-/// by cwd (`~/.claude/projects/<encoded-cwd>/`), and the session-id poller's
-/// disk-scan fallback adopts the newest transcript in the SESSION's project
-/// dir, so a recap run in the project path would drop a throwaway transcript
-/// exactly where the poller looks and could become the session's stored
-/// conversation. The prompt is self-contained (the scrollback is passed
-/// inline), so the project cwd is never needed. Same directory as the local
-/// build's shared `smart_rename::oneshot_cwd` (`<app dir>/oneshot`).
-pub(crate) fn oneshot_cwd() -> String {
-    let dir = crate::session::get_app_dir()
-        .map(|d| d.join("oneshot"))
-        .unwrap_or_else(|_| std::env::temp_dir().join("aoe-oneshot"));
-    let _ = std::fs::create_dir_all(&dir);
-    dir.to_string_lossy().into_owned()
-}
+/// Working directory for the recap one-shot: the shared isolated one-shot
+/// directory, never the session's project path, so a recap transcript can never
+/// land where a tab's conversation lives (docs/guides/session-resume.md).
+pub(crate) use crate::session::smart_rename::oneshot_cwd;
 
 #[cfg(feature = "serve")]
 pub use serve::try_terminal_context;

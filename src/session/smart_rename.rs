@@ -597,6 +597,7 @@ pub(crate) fn oneshot_prompt_prefixes() -> Vec<&'static str> {
     vec![
         INSTRUCTION,
         crate::session::conversation_summary::INSTRUCTION,
+        crate::session::terminal_context::INSTRUCTION,
     ]
 }
 
@@ -2202,6 +2203,13 @@ mod tests {
 
 I'll look at the auth redirect logic now.
 Patched the race in auth.rs and added a regression test.";
+
+    #[test]
+    fn a_context_recap_is_never_adopted_as_a_tabs_conversation() {
+        // docs/guides/session-resume.md, "Never a one-shot": the context recap is one of aoe's
+        // own one-shots, so its prompt must be on the guard's list.
+        assert!(oneshot_prompt_prefixes().contains(&crate::session::terminal_context::INSTRUCTION));
+    }
 
     #[test]
     #[serial_test::serial]
