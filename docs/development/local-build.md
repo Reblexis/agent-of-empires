@@ -23,12 +23,36 @@ wrong conversation. Both branches were merged into `local-defaults` on
 
 Check that every branch that was ever deployed is contained in what you build:
 
-    for b in session-hibernation; do
-      git merge-base --is-ancestor "$b" HEAD || echo "MISSING: $b"
+    git fetch origin
+    for b in port-context port-session port-handoff port-forecast-priority port-misc port-terminal port-terminal-input; do
+      git merge-base --is-ancestor "origin/$b" HEAD || echo "MISSING: $b"
     done
 
-Add a branch to that list when you deploy it. Any `MISSING` line stops the
-deploy.
+Add a branch to that list when you deploy it, and push it first: the check reads
+`origin/`, because a merged branch's local copy may already be deleted. Any
+`MISSING` line stops the deploy.
+
+## Upstream base and how to move it
+
+`local-defaults` is upstream `v1.21.0` plus the local features, re-applied on
+2026-10-22 (the v1.15.0 build stays on branch `local-defaults-v1.15`). Branches
+merged before that move (`session-hibernation`, `session-priority`,
+`fix-terminal-jump-up`, `fix-terminal-jump-up-2`, `fix-terminal-jump-up-3`) were
+ported as new commits, so they are not ancestors and left the list above; their
+`port-*` successors replace them.
+
+To move to a newer upstream release: port each local feature onto the release in
+its own `port-*` branch (cherry-pick, or re-implement where upstream rewrote the
+code, keeping the feature's docs and tests), merge them into one branch, run the
+full test suites against a clean build of the release so failures that are not
+ours are known, then make that branch `local-defaults`. Prefer upstream wherever
+it now does what a local commit did, and record which commit was dropped for
+which upstream one.
+
+Config that the v1.21.0 build needs on this machine:
+`acp.default_new_session_view = "terminal"` (replaces the local commit that
+defaulted new web sessions to the terminal view) and
+`session.claude_inline_tui = true`.
 
 ## Tab tracking is a hard requirement
 
