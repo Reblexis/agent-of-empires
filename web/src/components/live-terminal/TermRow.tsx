@@ -2,11 +2,11 @@ import { Fragment, memo, type CSSProperties, type ReactNode } from "react";
 import type { AnsiSegment, AnsiStyle } from "../../lib/ansi";
 import {
   clusterSpanAt,
+  computeRowLinks,
   findCursorCharIndex,
-  isHttpUrl,
   splitCellRuns,
-  splitUrls,
   textWidth,
+  type LinkSpan,
 } from "../../lib/liveTermLines";
 
 function segStyle(style: AnsiStyle): CSSProperties | undefined {
@@ -58,21 +58,41 @@ function cursorSpan(key: string | number, text: string, base: CSSProperties | un
   );
 }
 
-function LinkedRow({ segs }: { segs: AnsiSegment[] }) {
+/** Text pieces of one segment, split at the row's link spans. */
+function linkPieces(text: string, segStart: number, links: LinkSpan[]): { text: string; href: string | null }[] {
+  const segEnd = segStart + text.length;
+  const pieces: { text: string; href: string | null }[] = [];
+  let pos = segStart;
+  for (const l of links) {
+    if (l.end <= segStart || l.start >= segEnd) continue;
+    const from = Math.max(l.start, segStart);
+    const to = Math.min(l.end, segEnd);
+    if (from > pos) pieces.push({ text: text.slice(pos - segStart, from - segStart), href: null });
+    pieces.push({ text: text.slice(from - segStart, to - segStart), href: l.href });
+    pos = to;
+  }
+  if (pos < segEnd) pieces.push({ text: text.slice(pos - segStart), href: null });
+  return pieces;
+}
+
+// Link spans cover the row's joined text, so a URL styled as several segments (or wrapped from the previous row)
+// anchors every piece with the full href.
+function LinkedRow({ segs, links }: { segs: AnsiSegment[]; links: LinkSpan[] }) {
   if (segs.length === 0) return <div> </div>; // keep empty rows at full height
+  const starts: number[] = [];
+  for (let i = 0, off = 0; i < segs.length; off += segs[i]!.text.length, i++) starts.push(off);
   return (
     <div>
       {segs.map((seg, i) =>
-        // An OSC 8 link's text need not be its URL, so it anchors whole instead of being re-scanned.
-        (seg.url && isHttpUrl(seg.url) ? [{ text: seg.text, url: seg.url }] : splitUrls(seg.text)).map((part, j) => {
+        linkPieces(seg.text, starts[i]!, links).map((part, j) => {
           const runs = splitCellRuns(part.text).map((run, k) =>
             runSpan(`${i}-${j}-${k}`, run.text, run.fixed, run.cells, segStyle(seg.style)),
           );
-          if (!part.url) return <Fragment key={`${i}-${j}`}>{runs}</Fragment>;
+          if (!part.href) return <Fragment key={`${i}-${j}`}>{runs}</Fragment>;
           return (
             <a
               key={`${i}-${j}`}
-              href={part.url}
+              href={part.href}
               target="_blank"
               rel="noopener noreferrer"
               className="underline cursor-pointer"
@@ -91,12 +111,15 @@ export const Row = memo(function Row({
   segs,
   cursorCol,
   focused = false,
+  links,
 }: {
   segs: AnsiSegment[];
   cursorCol: number | null;
   focused?: boolean;
+  /** Link spans from computeRowLinks over the rendered rows; without them the row is matched on its own. */
+  links?: LinkSpan[];
 }) {
-  if (cursorCol == null) return <LinkedRow segs={segs} />;
+  if (cursorCol == null) return <LinkedRow segs={segs} links={links ?? computeRowLinks([segs], Infinity)[0]!} />;
   const out: ReactNode[] = [];
   let col = 0;
   let placed = false;

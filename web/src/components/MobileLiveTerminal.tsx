@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, RefObject } from "react";
 import type { AnsiSegment } from "../lib/ansi";
-import { LineParseCache, lineText, textWidth, wrapLine } from "../lib/liveTermLines";
+import { computeRowLinks, LineParseCache, lineText, textWidth, wrapLine, type LinkSpan } from "../lib/liveTermLines";
 import { cursorLineIndex, pointerPaneCell, unwrapPointer } from "../lib/liveMouse";
 import type { LiveFrame, LiveStats } from "../hooks/useLiveTerminal";
 import { useWebSettings } from "../hooks/useWebSettings";
@@ -20,6 +20,7 @@ import { Row } from "./live-terminal/TermRow";
 import { LIVE_WINDOW_SCREENS, useLiveEdgeScroll } from "./live-terminal/useLiveEdgeScroll";
 import { useTerminalInput } from "./live-terminal/useTerminalInput";
 import { useLocalEcho } from "./live-terminal/useLocalEcho";
+import { useMouseSelection } from "./live-terminal/useMouseSelection";
 import { InputTraceOverlay } from "./live-terminal/InputTraceOverlay";
 import { StrokeIcon } from "./icons";
 
@@ -226,6 +227,23 @@ export function MobileLiveTerminal({
     const screenStart = Math.max(0, lines.length - (frame?.rows ?? 0));
     return { keys, rows, lineStartRow, source, screenStart };
   }, [lines, frame?.rows, renderCols, wrapCache]);
+  // Links over whole rows, joined across full-width wraps; the caches keep unchanged rows' spans identical.
+  const [linkCaches] = useState(() => ({
+    match: new WeakMap<AnsiSegment[], { index: number; raw: string }[]>(),
+    span: new WeakMap<AnsiSegment[], LinkSpan[]>(),
+    text: new WeakMap<AnsiSegment[], string>(),
+  }));
+  const rowLinks = useMemo(
+    () =>
+      computeRowLinks(
+        visual.rows,
+        renderCols > 0 ? renderCols : Number.POSITIVE_INFINITY,
+        linkCaches.match,
+        linkCaches.span,
+        linkCaches.text,
+      ),
+    [visual, renderCols, linkCaches],
+  );
   const screenRows = frame?.rows ?? 0;
   const spacerLines = Math.max(0, (frame?.history ?? 0) - Math.max(0, lines.length - screenRows));
   // A full-screen mouse app's scrollback is not capturable: no spacer, no native scroll, wheels go to the app.
@@ -686,6 +704,7 @@ export function MobileLiveTerminal({
     uploadPastedImage,
     isAgentPane: bottomAlign,
   });
+  const mouseSelection = useMouseSelection({ scrollerRef, forwardModeRef, touchActiveRef });
 
   const cursorRow = connected && !reading ? live.row : -1;
   // Trailing blanks are trimmed only at the normal-screen live edge: reading must keep scrollHeight stable, and
@@ -701,7 +720,10 @@ export function MobileLiveTerminal({
         onWheel={forward.onWheel}
         onClick={focusInputOnTap}
         // Capture, so a press consumed below (forward drags, selections) still makes this the stray paste's target.
-        onPointerDownCapture={input.markInteracted}
+        onPointerDownCapture={(e) => {
+          input.markInteracted();
+          mouseSelection.onPointerDown(e);
+        }}
         onPointerDown={forward.onPointerDown}
         onPointerMove={forward.onPointerMove}
         onPointerUp={forward.endPointerForward}
@@ -764,6 +786,7 @@ export function MobileLiveTerminal({
                   segs={segs}
                   cursorCol={i === cursorRow ? live.col : null}
                   focused={i === cursorRow && focused}
+                  links={rowLinks[i]}
                 />
               );
             }),
