@@ -12,11 +12,33 @@ Where it can, the server renders from the [VT live transport](../live-mode.md#th
 
 Scrolling up into history widens the window the server sends and surfaces a **Back to live** button; scrolling back to the bottom returns to the live tail. At the live tail the view follows new output until you scroll up again; a scroll down that stops within about a line of the bottom counts as reaching it. The pane's rows come from the tallest the terminal has been at its current width, so a shorter window, a banner, or the soft keyboard never shrinks the agent's pane; a width change starts over from the current height. The agent keeps running while you read.
 
+### Typing echoes locally
+
+What you type shows up at once, without waiting for the server to echo it, the way mosh does it:
+
+- A printable character appears at the cursor the moment you press it, and Backspace removes the character before the cursor at once. Dim text to the right of the cursor (an input placeholder, such as Claude's `Try "..."`) is cleared as you type; other text to the right moves along. When the server's next frame arrives, the prediction gives way to the real screen; when they agree, nothing visibly changes.
+- Only plain single-cell characters and Backspace are predicted, on the normal screen (not a full-screen app), at the live edge, while this browser owns the terminal, and only up to the end of the cursor's row. Any other key (Enter, Tab, Esc, arrows, Ctrl or Alt chords, a paste carrying control characters, a wide character) drops every pending prediction and waits for the server, like before.
+- A prediction is shown at once only on a row whose prompt has already echoed this browser's typing (the row's text up to the first space after its first word: Claude's `❯`, your shell prompt). On any other row the first character waits for the server's echo, and once it arrives the rest of that row is predicted again. A row that never echoes, such as a password prompt, never shows your input.
+- A prediction the server contradicts (the cursor or the text left of it ends up somewhere else) is dropped as soon as that frame arrives, and one the server has not confirmed within 1.5 s is dropped and its row has to earn trust again. The cost of a wrong guess is that for up to one round trip you see a character the app then draws differently or not at all.
+- Prediction can only ever add a preview; it never stands between a key and the session. Every key is sent exactly as if prediction were off, and a key the pane did not receive drops every prediction. A row prediction cannot reason about is simply not predicted, never an error: the cursor past the row's last visible character (the screen does not keep trailing spaces, so this is the normal state right after typing a space), an empty row, a window split into panes (whose cursor row carries the other pane's text). If predicting fails anyway, the predictions are dropped and the view shows the server's screen as it is.
+
+### Switching sessions
+
+Opening a session shows a screen at once instead of a "Starting session..." placeholder:
+
+- The browser remembers the last screen of the 32 sessions it showed most recently, per terminal (agent pane, each paired shell), for as long as the page stays open. Opening one of them draws that screen immediately while the session is started (if it was stopped) and its live stream connects, which takes a few round trips to the server; the live stream then replaces it. Only the screen is remembered: scrolling up waits for the live stream.
+- Resting the pointer on a session in the sidebar fetches its current agent screen in the background (at most once every 10 seconds per session), so a session not yet opened in this page also appears at once when clicked.
+- Without a remembered or prefetched screen (the first open on a touch device, say), the placeholder shows until the stream connects.
+
 ## Copy and scroll
 
-The terminal uses tmux for scrollback and selection, so no modifier keys are involved. Scroll with the wheel or a one-finger swipe. Select by click-dragging; dragging past the top edge scrolls into scrollback and extends the selection, and releasing copies to your system clipboard automatically.
+The terminal uses tmux for scrollback and selection, so no modifier keys are involved. Scroll with the wheel or a one-finger swipe. Select by click-dragging; dragging past the top edge scrolls into scrollback and extends the selection, and releasing copies to your system clipboard automatically. While the mouse button is held over the text the view does not follow new output, so the text stays under the pointer.
+
+URLs in the output open in a new tab. A URL styled in several colors, or wrapped by tmux across full-width rows, links every visible part to the whole address; an OSC 8 hyperlink opens the target the program gave it, whatever its visible text.
 
 While a selection touches the terminal the pane stops repainting, so the agent cannot rewrite the text under it mid-gesture, and newly captured history loads in above the held rows. A full-screen mouse agent also gives up its grip on touch gestures while a selection is live, so the handles stay draggable. Such an agent copies through OSC 52 instead, which AoE forwards to the same browser clipboard path.
+
+A paste made while nothing editable has focus (after ending a selection or clicking a link) goes to the terminal you last clicked or typed in, or to the agent terminal before you have touched either, and focus returns to it.
 
 Copy relies on the browser Clipboard API, which needs a secure context: HTTPS or `http://localhost`. On a plain-HTTP LAN origin the selection stays visible but is not copied. Firefox is best-effort; Chromium and Safari copy reliably.
 

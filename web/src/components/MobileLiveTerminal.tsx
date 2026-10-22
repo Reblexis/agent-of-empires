@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, RefObject } from "react";
 import type { AnsiSegment } from "../lib/ansi";
-import { LineParseCache, lineText, textWidth, wrapLine } from "../lib/liveTermLines";
+import { computeRowLinks, LineParseCache, lineText, textWidth, wrapLine, type LinkSpan } from "../lib/liveTermLines";
 import { cursorLineIndex, pointerPaneCell, unwrapPointer } from "../lib/liveMouse";
 import type { LiveFrame, LiveStats } from "../hooks/useLiveTerminal";
 import { useWebSettings } from "../hooks/useWebSettings";
@@ -19,6 +19,8 @@ import { FORWARD_TOUCH_GAIN, useForwardInput } from "./live-terminal/useForwardI
 import { Row } from "./live-terminal/TermRow";
 import { LIVE_WINDOW_SCREENS, useLiveEdgeScroll } from "./live-terminal/useLiveEdgeScroll";
 import { useTerminalInput } from "./live-terminal/useTerminalInput";
+import { useLocalEcho } from "./live-terminal/useLocalEcho";
+import { useMouseSelection } from "./live-terminal/useMouseSelection";
 import { InputTraceOverlay } from "./live-terminal/InputTraceOverlay";
 import { StrokeIcon } from "./icons";
 import { reportError } from "../lib/logger";
@@ -89,6 +91,8 @@ export interface MobileLiveTerminalProps {
   bottomAlign: boolean;
   /** The soft keyboard occludes the viewport; defers the row latch so keyboard-shrunk rows never reach tmux. */
   keyboardOpen: boolean;
+  /** Draw plain typing at the cursor before the server echoes it; only while this browser's keys reach the pane. */
+  predictEcho?: boolean;
 }
 
 /** Heights behind the iOS standalone bottom band: the app root should reach `screen` in portrait. */
@@ -138,6 +142,7 @@ export function MobileLiveTerminal({
   onInputFocusChange,
   bottomAlign,
   keyboardOpen,
+  predictEcho = false,
 }: MobileLiveTerminalProps) {
   const { settings, update } = useWebSettings();
   const coarse = useIsCoarsePointer();
@@ -195,9 +200,11 @@ export function MobileLiveTerminal({
   }, [reading]);
   // Unchanged lines keep their parse and wrap identity across frames, so memoized rows skip them.
   const [parseCache] = useState(() => new LineParseCache());
-  const lines = useMemo(() => (frame ? parseCache.lines(frame.lines ?? frame.content) : []), [frame, parseCache]);
+  const parsedLines = useMemo(() => (frame ? parseCache.lines(frame.lines ?? frame.content) : []), [frame, parseCache]);
   // Columns rendered at; wrapping keeps a frame readable when another client widened the window.
   const [renderCols, setRenderCols] = useState(0);
+  const echo = useLocalEcho({ enabled: predictEcho, reading, frame, lines: parsedLines, renderCols });
+  const lines = echo.lines;
   const [wrapCache] = useState(
     () => new WeakMap<AnsiSegment[], { cols: number; rows: AnsiSegment[][]; key: string }>(),
   );
@@ -229,6 +236,23 @@ export function MobileLiveTerminal({
     const screenStart = Math.max(0, lines.length - (frame?.rows ?? 0));
     return { keys, rows, lineStartRow, source, screenStart };
   }, [lines, frame?.rows, renderCols, wrapCache]);
+  // Links over whole rows, joined across full-width wraps; the caches keep unchanged rows' spans identical.
+  const [linkCaches] = useState(() => ({
+    match: new WeakMap<AnsiSegment[], { index: number; raw: string }[]>(),
+    span: new WeakMap<AnsiSegment[], LinkSpan[]>(),
+    text: new WeakMap<AnsiSegment[], string>(),
+  }));
+  const rowLinks = useMemo(
+    () =>
+      computeRowLinks(
+        visual.rows,
+        renderCols > 0 ? renderCols : Number.POSITIVE_INFINITY,
+        linkCaches.match,
+        linkCaches.span,
+        linkCaches.text,
+      ),
+    [visual, renderCols, linkCaches],
+  );
   const screenRows = frame?.rows ?? 0;
   const spacerLines = Math.max(0, (frame?.history ?? 0) - Math.max(0, lines.length - screenRows));
   // A full-screen mouse app's scrollback is not capturable: no spacer, no native scroll, wheels go to the app.
@@ -299,8 +323,9 @@ export function MobileLiveTerminal({
   // The cursor's visual row and column at the live edge, and its pixel top for the keyboard anchor.
   const live = useMemo(() => {
     const none = { row: -1, col: -1, top: null as number | null };
-    const cursor = !reading ? (frame?.cursor ?? null) : null;
-    if (!cursor) return none;
+    const frameCursor = !reading ? (frame?.cursor ?? null) : null;
+    if (!frameCursor) return none;
+    const cursor = echo.cursorX != null ? { ...frameCursor, x: echo.cursorX } : frameCursor;
     const lineIdx = cursorLineIndex(lines.length, screenRows, cursor.y);
     const baseRow = lineIdx < 0 || lineIdx >= lines.length ? -1 : (visual.lineStartRow[lineIdx] ?? -1);
     if (baseRow < 0) return none;
@@ -310,7 +335,18 @@ export function MobileLiveTerminal({
     if (row > lastNonBlankRow) return none;
     const col = Number.isFinite(cols) ? cursor.x % cols : cursor.x;
     return { row, col, top: (effectiveSpacerLines + row) * lineH };
-  }, [reading, frame, lines.length, screenRows, visual, renderCols, effectiveSpacerLines, lineH, lastNonBlankRow]);
+  }, [
+    reading,
+    frame,
+    echo.cursorX,
+    lines.length,
+    screenRows,
+    visual,
+    renderCols,
+    effectiveSpacerLines,
+    lineH,
+    lastNonBlankRow,
+  ]);
 
   // One view sync per painted frame; scroll events fire per pixel.
   const viewSyncRafRef = useRef(0);
@@ -407,13 +443,17 @@ export function MobileLiveTerminal({
   // Recent drag samples for the release velocity.
   const flickSamplesRef = useRef<FlickSample[]>([]);
   // Every input path funnels through here, so typing interrupts a coast instead of queueing behind it.
+  const echoSent = echo.sent;
   const sendData = useCallback(
     (data: string) => {
       stopMomentum();
       cancelTouchWheelQueue();
-      return sendDataRaw(data);
+      // The key goes out first: a prediction never stands between a key and the session.
+      const delivered = sendDataRaw(data);
+      echoSent(data, delivered);
+      return delivered;
     },
-    [sendDataRaw, stopMomentum, cancelTouchWheelQueue],
+    [sendDataRaw, stopMomentum, cancelTouchWheelQueue, echoSent],
   );
 
   const pinchRef = useRef<{
@@ -764,7 +804,9 @@ export function MobileLiveTerminal({
     sendData,
     sendPaste,
     uploadPastedImage,
+    isAgentPane: bottomAlign,
   });
+  const mouseSelection = useMouseSelection({ scrollerRef, forwardModeRef, touchActiveRef });
 
   const cursorRow = connected && !reading ? live.row : -1;
   // Trailing blanks are trimmed only at the normal-screen live edge: reading must keep scrollHeight stable, and
@@ -779,6 +821,11 @@ export function MobileLiveTerminal({
         onScroll={onScrollerScroll}
         onWheel={forward.onWheel}
         onClick={focusInputOnTap}
+        // Capture, so a press consumed below (forward drags, selections) still makes this the stray paste's target.
+        onPointerDownCapture={(e) => {
+          input.markInteracted();
+          mouseSelection.onPointerDown(e);
+        }}
         onPointerDown={forward.onPointerDown}
         onPointerMove={forward.onPointerMove}
         onPointerUp={forward.endPointerForward}
@@ -841,6 +888,7 @@ export function MobileLiveTerminal({
                   segs={segs}
                   cursorCol={i === cursorRow ? live.col : null}
                   focused={i === cursorRow && focused}
+                  links={rowLinks[i]}
                 />
               );
             }),
@@ -899,6 +947,7 @@ export function MobileLiveTerminal({
           color: "transparent",
         }}
         onFocus={() => {
+          input.markInteracted();
           setFocused(true);
           onInputFocusChange(true);
         }}

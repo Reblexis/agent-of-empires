@@ -218,9 +218,10 @@
       "specs": [
         "src/lib/liveTermLines.test.ts",
         "src/components/__tests__/MobileLiveTerminal.linkify.test.tsx",
-        "src/components/__tests__/MobileLiveTerminal.forward.test.tsx"
+        "src/components/__tests__/MobileLiveTerminal.forward.test.tsx",
+        "src/components/__tests__/MobileLiveTerminal.links.test.tsx"
       ],
-      "components": ["web/src/components/MobileLiveTerminal.tsx"]
+      "components": ["web/src/components/MobileLiveTerminal.tsx", "web/src/components/live-terminal/TermRow.tsx"]
     },
     {
       "id": "terminal.live-clickable-urls-e2e",
@@ -228,6 +229,66 @@
       "risk": "high",
       "specs": ["tests/live-terminal-input.spec.ts"],
       "components": ["web/src/components/MobileLiveTerminal.tsx", "web/src/lib/liveTermLines.ts"]
+    },
+    {
+      "id": "terminal.local-echo",
+      "kind": "mocked-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live-terminal-local-input.spec.ts",
+        "src/components/__tests__/MobileLiveTerminal.echo.test.tsx",
+        "src/lib/liveEcho.test.ts"
+      ],
+      "components": [
+        "web/src/components/MobileLiveTerminal.tsx",
+        "web/src/components/LiveTerminalView.tsx",
+        "web/src/components/live-terminal/useLocalEcho.ts"
+      ]
+    },
+    {
+      "id": "terminal.remembered-screens",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": [
+        "src/lib/screenCache.test.ts",
+        "src/components/__tests__/LiveTerminalView.recall.test.tsx",
+        "src/hooks/useLiveTerminal.test.ts",
+        "src/components/__tests__/SessionRowTriage.test.tsx"
+      ],
+      "components": ["web/src/components/LiveTerminalView.tsx", "web/src/components/sidebar/SessionRow.tsx"]
+    },
+    {
+      "id": "terminal.stray-paste",
+      "kind": "mocked-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live-terminal-local-input.spec.ts",
+        "src/components/__tests__/MobileLiveTerminal.paste.test.tsx"
+      ],
+      "components": [
+        "web/src/components/MobileLiveTerminal.tsx",
+        "web/src/components/live-terminal/useTerminalInput.ts"
+      ]
+    },
+    {
+      "id": "terminal.drag-select-copy",
+      "kind": "mocked-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live-terminal-local-input.spec.ts",
+        "src/components/__tests__/MobileLiveTerminal.dragSelect.test.tsx"
+      ],
+      "components": [
+        "web/src/components/MobileLiveTerminal.tsx",
+        "web/src/components/live-terminal/useMouseSelection.ts"
+      ]
+    },
+    {
+      "id": "terminal.wrapped-url-links-e2e",
+      "kind": "mocked-playwright",
+      "risk": "medium",
+      "specs": ["tests/live-terminal-local-input.spec.ts"],
+      "components": ["web/src/components/live-terminal/TermRow.tsx", "web/src/lib/liveTermLines.ts"]
     },
     {
       "id": "terminal.live-cursor-wide-chars",

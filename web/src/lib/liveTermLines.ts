@@ -67,7 +67,7 @@ export function lineText(line: AnsiSegment[]): string {
   return line.map((s) => s.text).join("");
 }
 
-// Per-line matching only: a URL wrapped across rows links just its first part.
+// splitUrls matches one string; computeRowLinks matches whole rows and joins URLs wrapped across full-width rows.
 const URL_RE = /https?:\/\/\S+/g;
 
 /** Pane output is agent-controlled, so only http(s) targets become hrefs. */
@@ -107,6 +107,148 @@ export function splitUrls(text: string): UrlPart[] {
   if (parts.length === 0) return [{ text, url: null }];
   if (last < text.length) parts.push({ text: text.slice(last), url: null });
   return parts;
+}
+
+/** One clickable range in a rendered row, in UTF-16 offsets of the row's joined text. `href` is the full URL, which
+ *  for a wrapped URL is longer than the row's visible fragment. */
+export interface LinkSpan {
+  start: number;
+  end: number;
+  href: string;
+}
+
+/** Shared by every row without links, so memoized rows keep identity. */
+export const NO_LINKS: LinkSpan[] = [];
+
+/** How many extra rows a wrapped URL may continue across; bounds the join walk. */
+const MAX_URL_CONTINUATION_ROWS = 8;
+
+interface RowMatch {
+  index: number;
+  raw: string;
+}
+
+/** OSC 8 runs on a row: consecutive segments with the same http(s) target are one span whose href is the escape's
+ *  own URI. They outrank the URL matcher, since the visible text may be a label or a fragment. */
+function explicitSpans(row: AnsiSegment[]): LinkSpan[] {
+  let spans: LinkSpan[] | null = null;
+  let open: LinkSpan | null = null;
+  let off = 0;
+  for (const seg of row) {
+    const link = seg.url && isHttpUrl(seg.url) ? seg.url : undefined;
+    if (open && open.href !== link) {
+      open.end = off;
+      (spans ??= []).push(open);
+      open = null;
+    }
+    if (link && !open) open = { start: off, end: off, href: link };
+    off += seg.text.length;
+  }
+  if (open) {
+    open.end = off;
+    (spans ??= []).push(open);
+  }
+  return spans ?? NO_LINKS;
+}
+
+/**
+ * Link spans per rendered row, matched on each row's joined text (a URL styled as several segments is one link) and
+ * joined across full-width rows (tmux wraps a long URL by cells with no marker), so every fragment carries the full
+ * href. The caches, keyed by row identity (stable via LineParseCache and the wrap cache), keep a streamed frame's
+ * regex work to changed rows and keep unchanged rows' span arrays identical.
+ */
+export function computeRowLinks(
+  rows: AnsiSegment[][],
+  cols: number,
+  matchCache?: WeakMap<AnsiSegment[], RowMatch[]>,
+  spanCache?: WeakMap<AnsiSegment[], LinkSpan[]>,
+  textCache?: WeakMap<AnsiSegment[], string>,
+): LinkSpan[][] {
+  const texts = rows.map((key) => {
+    const hit = textCache?.get(key);
+    if (hit !== undefined) return hit;
+    const text = lineText(key);
+    textCache?.set(key, text);
+    return text;
+  });
+  const matchesFor = (i: number): RowMatch[] => {
+    const key = rows[i]!;
+    const hit = matchCache?.get(key);
+    if (hit) return hit;
+    const out: RowMatch[] = [];
+    for (const m of texts[i]!.matchAll(URL_RE)) out.push({ index: m.index, raw: m[0] });
+    matchCache?.set(key, out);
+    return out;
+  };
+  const result: LinkSpan[][] = new Array<LinkSpan[]>(rows.length).fill(NO_LINKS);
+  // A row consumed as a continuation resumes its own scan after the fragment.
+  const resumeAt: number[] = new Array<number>(rows.length).fill(0);
+  for (let i = 0; i < rows.length; i++) {
+    const text = texts[i]!;
+    const explicit = explicitSpans(rows[i]!);
+    const spans: LinkSpan[] = result[i] === NO_LINKS ? [...explicit] : [...result[i]!, ...explicit];
+    for (const m of matchesFor(i)) {
+      if (m.index < resumeAt[i]!) continue;
+      if (explicit.some((s) => s.start < m.index + m.raw.length && s.end > m.index)) continue;
+      let raw = m.raw;
+      let end = m.index + raw.length;
+      // A match running to the end of a full-width row continues with the next row's leading non-space run, for as
+      // long as the wrap keeps filling the width.
+      const contSpans: { row: number; end: number }[] = [];
+      if (end === text.length && textWidth(text) === cols) {
+        let j = i + 1;
+        while (j < rows.length && j - i <= MAX_URL_CONTINUATION_ROWS) {
+          const next = texts[j]!;
+          const frag = /^\S+/.exec(next);
+          if (!frag) break;
+          raw += frag[0];
+          contSpans.push({ row: j, end: frag[0].length });
+          if (frag[0].length === next.length && textWidth(next) === cols) {
+            j++;
+            continue;
+          }
+          break;
+        }
+      }
+      const trimmed = raw.replace(URL_TRAILING, "");
+      const href = /^https?:\/\/\S/.test(trimmed) ? trimmed : raw;
+      // Punctuation trimmed off the href leaves the visible span too, from its last fragment.
+      const cut = raw.length - href.length;
+      if (contSpans.length > 0) {
+        const last = contSpans[contSpans.length - 1]!;
+        last.end -= cut;
+        if (last.end <= 0) contSpans.pop();
+      } else {
+        end -= cut;
+      }
+      if (end > m.index) spans.push({ start: m.index, end, href });
+      for (const c of contSpans) {
+        const rowSpans = result[c.row] === NO_LINKS ? [] : [...result[c.row]!];
+        rowSpans.push({ start: 0, end: c.end, href });
+        result[c.row] = rowSpans;
+        resumeAt[c.row] = Math.max(resumeAt[c.row]!, c.end);
+      }
+    }
+    if (spans.length > 0) {
+      spans.sort((a, b) => a.start - b.start);
+      result[i] = spans;
+    }
+  }
+  // A continuation makes a row's spans depend on its neighbours, so the identity cache is validated by value.
+  if (spanCache) {
+    for (let i = 0; i < rows.length; i++) {
+      const spans = result[i]!;
+      if (spans === NO_LINKS) continue;
+      const key = rows[i]!;
+      const cached = spanCache.get(key);
+      const same =
+        cached?.length === spans.length &&
+        cached.every((s, k) => s.start === spans[k]!.start && s.end === spans[k]!.end && s.href === spans[k]!.href);
+      if (same) result[i] = cached;
+      else spanCache.set(key, spans);
+    }
+  }
+  return result;
 }
 
 // Cell widths per grapheme cluster, aligned with tmux 3.6a: marks, ZWJ and variation selectors take no column; VS16 emoji, flags and ZWJ chains take two.

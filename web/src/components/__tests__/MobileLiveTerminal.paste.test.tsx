@@ -82,6 +82,83 @@ describe("MobileLiveTerminal paste", () => {
     await vi.waitFor(() => expect(sendPaste).toHaveBeenCalledWith(pasted, false));
   });
 
+  it("rescues a paste that fires with no editable focused (focus fell to body)", () => {
+    // Clicking around the pane (ending a selection, clicking a link) drops
+    // focus from the hidden input; the next Ctrl+V then fires on <body> and
+    // used to vanish silently. The document-level rescue routes it to the
+    // terminal and refocuses the input.
+    const { input, sendPaste } = renderTerm();
+    input.blur();
+    fireEvent.paste(document.body, clipboard("stray paste"));
+    expect(sendPaste).toHaveBeenCalledWith("stray paste", false);
+    expect(document.activeElement).toBe(input);
+  });
+
+  it("does not steal a paste aimed at another editable element", () => {
+    const { sendPaste } = renderTerm();
+    const other = document.createElement("input");
+    document.body.appendChild(other);
+    other.focus();
+    fireEvent.paste(other, clipboard("for the input"));
+    expect(sendPaste).not.toHaveBeenCalled();
+    other.remove();
+  });
+
+  it("a background terminal never claims a stray paste", () => {
+    const sendPaste = vi.fn(() => true);
+    renderLiveTerminal({ sendPaste, active: false });
+    fireEvent.paste(document.body, clipboard("stray paste"));
+    expect(sendPaste).not.toHaveBeenCalled();
+  });
+
+  it("routes a stray paste to the terminal the user last touched, not always the agent", () => {
+    // Two terminals are mounted at once (agent pane + right-dock paired
+    // shell). A paste with focus on <body> used to always land in the agent,
+    // so pasting while working in the paired shell typed into the wrong one.
+    const agent = renderLiveTerminal({
+      bottomAlign: true,
+      sendPaste: vi.fn(() => true),
+    });
+    const paired = renderLiveTerminal({
+      bottomAlign: false,
+      sendPaste: vi.fn(() => true),
+    });
+
+    // Before any interaction the agent pane claims it.
+    fireEvent.paste(document.body, clipboard("first"));
+    expect(agent.props.sendPaste).toHaveBeenCalledWith("first", false);
+    expect(paired.props.sendPaste).not.toHaveBeenCalled();
+    agent.input().blur();
+
+    // Touch the paired terminal, then paste with nothing focused.
+    fireEvent.pointerDown(paired.scroller, { pointerType: "mouse", button: 0 });
+    paired.input().blur();
+    fireEvent.paste(document.body, clipboard("to paired"));
+    expect(paired.props.sendPaste).toHaveBeenCalledWith("to paired", false);
+    expect(agent.props.sendPaste).not.toHaveBeenCalledWith("to paired", false);
+
+    // Touching the agent pane hands the claim back.
+    fireEvent.pointerDown(agent.scroller, { pointerType: "mouse", button: 0 });
+    agent.input().blur();
+    fireEvent.paste(document.body, clipboard("to agent"));
+    expect(agent.props.sendPaste).toHaveBeenCalledWith("to agent", false);
+    expect(paired.props.sendPaste).not.toHaveBeenCalledWith("to agent", false);
+
+    // A terminal that goes away releases its claim to the agent pane.
+    fireEvent.pointerDown(paired.scroller, { pointerType: "mouse", button: 0 });
+    paired.unmount();
+    fireEvent.paste(document.body, clipboard("after close"));
+    expect(agent.props.sendPaste).toHaveBeenCalledWith("after close", false);
+  });
+
+  it("focuses the terminal input on a stray Ctrl+V so the browser delivers the paste there", () => {
+    const { input } = renderTerm();
+    input.blur();
+    expect(document.activeElement).not.toBe(input);
+    fireEvent.keyDown(document.body, { key: "v", ctrlKey: true });
+    expect(document.activeElement).toBe(input);
+  });
+
   it("sends nothing when the image upload fails", async () => {
     const upload = vi.fn(async () => null);
     const { input, sendData, sendPaste } = renderTerm(upload);

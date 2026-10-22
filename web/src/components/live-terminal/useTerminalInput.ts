@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, type RefObject } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import {
   bindHiddenInput,
   invalidateRetainedImeContext,
@@ -17,6 +17,13 @@ import {
 } from "./keySequences";
 
 const textareaOf = (e: Event) => (e.target instanceof HTMLTextAreaElement ? e.target : null);
+const isEditable = (t: EventTarget | null) =>
+  t instanceof HTMLElement && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable);
+
+// The mounted live terminal the user last pressed a pointer in or focused. A session can show two at once (the agent
+// pane and the paired shell), and a paste with no editable focused belongs to the one the user is working in. Module
+// scope because the two instances are siblings under different docks and it is read inside DOM event handlers.
+const lastInteractedTerminal: { id: symbol | null } = { id: null };
 
 /** Keyboard, IME, and paste handling for the hidden terminal input and App's persistent keyboard proxy. */
 export function useTerminalInput({
@@ -27,6 +34,7 @@ export function useTerminalInput({
   sendData,
   sendPaste,
   uploadPastedImage,
+  isAgentPane,
 }: {
   active: boolean;
   inputRef: RefObject<HTMLTextAreaElement | null>;
@@ -36,6 +44,8 @@ export function useTerminalInput({
   /** Pastes through tmux, which adds bracketed-paste markers only when the pane enabled them. */
   sendPaste: (text: string, submit: boolean) => boolean;
   uploadPastedImage: (file: File) => Promise<string | null>;
+  /** Claims stray pastes before the user has interacted with any terminal. */
+  isAgentPane: boolean;
 }) {
   const composingRef = useRef(false);
   const activeRef = useRef(active);
@@ -201,5 +211,42 @@ export function useTerminalInput({
     };
   }, [active, onKeyDownCapture, onKeyDown, handleProxyInput, onPaste, onCompositionStart, onCompositionEnd]);
 
-  return { onKeyDown, onKeyDownCapture, onPaste, onCompositionStart, onCompositionEnd };
+  // Paste rescue: clicking around the pane (ending a selection, clicking a link) drops focus to <body>, where the next
+  // paste would vanish or reach the wrong terminal. Exactly one active terminal claims it: the one last interacted
+  // with, else the agent pane. A focused editable (composer, dialogs, the hidden inputs) keeps its own paste.
+  const [instanceId] = useState(() => Symbol("live-terminal"));
+  const markInteracted = useCallback(() => {
+    lastInteractedTerminal.id = instanceId;
+  }, [instanceId]);
+  // An unmounted terminal releases its claim, so it falls back to the agent pane.
+  const releaseClaim = useCallback(() => {
+    if (lastInteractedTerminal.id === instanceId) lastInteractedTerminal.id = null;
+  }, [instanceId]);
+  useEffect(() => releaseClaim, [releaseClaim]);
+  useEffect(() => {
+    if (!active) return;
+    const claims = (t: EventTarget | null) =>
+      t !== inputRef.current &&
+      !isEditable(t) &&
+      (lastInteractedTerminal.id ? lastInteractedTerminal.id === instanceId : isAgentPane);
+    const onDocPaste = (e: ClipboardEvent) => {
+      if (!claims(e.target)) return;
+      onPaste(e);
+      inputRef.current?.focus();
+    };
+    // Focusing the hidden input during the Ctrl+V keydown makes the browser deliver the paste straight to it, which
+    // also works where a stray paste event would not fire at all.
+    const onDocKeyDown = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.key?.toLowerCase() !== "v") return;
+      if (claims(e.target)) inputRef.current?.focus();
+    };
+    document.addEventListener("paste", onDocPaste);
+    document.addEventListener("keydown", onDocKeyDown, true);
+    return () => {
+      document.removeEventListener("paste", onDocPaste);
+      document.removeEventListener("keydown", onDocKeyDown, true);
+    };
+  }, [active, inputRef, instanceId, isAgentPane, onPaste]);
+
+  return { onKeyDown, onKeyDownCapture, onPaste, onCompositionStart, onCompositionEnd, markInteracted };
 }

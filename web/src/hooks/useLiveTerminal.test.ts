@@ -3,6 +3,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { applyPatch, frameLines, useLiveTerminal } from "./useLiveTerminal";
+import { forgetAllScreens } from "../lib/screenCache";
 
 vi.mock("../lib/token", () => ({ getToken: () => null }));
 vi.mock("../lib/deviceBinding", () => ({ getOrCreateDeviceBindingSecret: () => "test-secret" }));
@@ -47,6 +48,7 @@ class FakeWS {
 }
 
 beforeEach(() => {
+  forgetAllScreens();
   FakeWS.sockets.length = 0;
   vi.stubGlobal("WebSocket", FakeWS);
 });
@@ -336,5 +338,47 @@ describe("size owner", () => {
       vi.clearAllTimers();
       vi.useRealTimers();
     }
+  });
+});
+
+// docs/guides/web/terminal.md, "Switching sessions".
+describe("remembered screens", () => {
+  it("switching back to a session shows its last screen before the socket opens", () => {
+    const hook = renderHook(({ id }) => useLiveTerminal(id, "live-ws"), {
+      initialProps: { id: "a" },
+    });
+    FakeWS.sockets.at(-1)!.open();
+    FakeWS.sockets.at(-1)!.deliver(frame(1, "session a\n$ \n"));
+    const shownA = hook.result.current.state.frame!.content;
+    hook.rerender({ id: "b" });
+    expect(hook.result.current.state.frame).toBeNull();
+    hook.rerender({ id: "a" });
+    expect(hook.result.current.state.connected).toBe(false);
+    expect(hook.result.current.state.frame?.content).toBe(shownA);
+  });
+
+  it("a patch never lands on a remembered screen; the new socket resyncs first", () => {
+    const hook = renderHook(({ id }) => useLiveTerminal(id, "live-ws"), {
+      initialProps: { id: "a" },
+    });
+    FakeWS.sockets.at(-1)!.open();
+    FakeWS.sockets.at(-1)!.deliver(frame(1, "a\nb\nc\n"));
+    hook.rerender({ id: "b" });
+    hook.rerender({ id: "a" });
+    const ws = FakeWS.sockets.at(-1)!;
+    ws.open();
+    ws.deliver(patch(2, 1, [[0, "z"]]));
+    expect(hook.result.current.state.frame?.lines).toEqual(["a", "b", "c"]);
+    expect(ws.json().filter((m) => m.type === "resync")).toHaveLength(1);
+  });
+
+  it("a paired shell remembers its own screen, not the agent's", () => {
+    const hook = renderHook(({ id, path }) => useLiveTerminal(id, path), {
+      initialProps: { id: "a", path: "live-ws" },
+    });
+    FakeWS.sockets.at(-1)!.open();
+    FakeWS.sockets.at(-1)!.deliver(frame(1, "agent\n"));
+    hook.rerender({ id: "a", path: "terminal/live-ws?index=0" });
+    expect(hook.result.current.state.frame).toBeNull();
   });
 });

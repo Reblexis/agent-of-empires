@@ -23,6 +23,7 @@ import {
   type FocusTerminalDetail,
 } from "../lib/terminalFocus";
 import { isSessionActive } from "../lib/session";
+import { recallScreen, screenKey } from "../lib/screenCache";
 import { StrokeIcon } from "./icons";
 
 interface Props {
@@ -268,7 +269,10 @@ export function LiveTerminalView({ session, active = true, surface = "agent", te
     else ta.focus();
   }, [inputFocused]);
 
-  if (ensureState === "pending") {
+  // While the session is ensured, a screen this page remembers (or the sidebar prefetched) stands in for the
+  // placeholder; the live stream replaces it once it connects.
+  const remembered = ensureState === "pending" ? recallScreen(screenKey(session.id, wsPath)) : undefined;
+  if (ensureState === "pending" && !remembered) {
     return (
       <div className="flex-1 flex items-center justify-center bg-surface-950 text-text-dim">
         <span className="text-xs">Starting session...</span>
@@ -361,7 +365,7 @@ export function LiveTerminalView({ session, active = true, surface = "agent", te
         }}
       >
         <MobileLiveTerminal
-          frame={live.state.frame}
+          frame={live.state.frame ?? remembered ?? null}
           liveStats={live.state.stats}
           transport={live.state.transport}
           armAgentClipboard={armAgentClipboard}
@@ -384,6 +388,7 @@ export function LiveTerminalView({ session, active = true, surface = "agent", te
           onInputFocusChange={setInputFocused}
           bottomAlign={surface === "agent"}
           keyboardOpen={keyboardOpen}
+          predictEcho={live.state.connected && live.state.isOwner}
         />
         {coarse && live.state.connected && <KeyboardFab keyboardOpen={inputFocused} onToggle={toggleKeyboard} />}
         {coarse && live.state.connected && webSettings.showArrowJoystick && <ArrowJoystick onArrow={sendArrow} />}

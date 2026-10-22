@@ -154,3 +154,29 @@ describe("OSC 8 hyperlinks and other OSC sequences", () => {
     expect(parseAnsi(text)).toEqual(expected);
   });
 });
+
+describe("OSC 8 hyperlinks from the field", () => {
+  it("parses the id-param form Claude Code emits", () => {
+    // Field capture: `ESC ]8;id=1ts8dx4;https://... ST`: the uri starts
+    // after the LAST semicolon of the params block, not after `8;;`.
+    const segs = parseAnsi(`${ESC}]8;id=1ts8dx4;https://claude.ai/code/artifact/9eaf${ESC}\\label${ESC}]8;;${ESC}\\`);
+    expect(segs.map((s) => s.text)).toEqual(["label"]);
+    expect(segs[0]!.url).toBe("https://claude.ai/code/artifact/9eaf");
+  });
+
+  it("keeps a hyperlink open across an SGR reset", () => {
+    // OSC 8 state is orthogonal to SGR; only an empty OSC 8 closes it.
+    const segs = parseAnsi(`${ESC}]8;;https://a.io${ESC}\\${ESC}[1mbold${ESC}[0mplain${ESC}]8;;${ESC}\\ after`);
+    expect(segs.map((s) => [s.text, s.url])).toEqual([
+      ["bold", "https://a.io"],
+      ["plain", "https://a.io"],
+      [" after", undefined],
+    ]);
+    expect(segs[1]!.style.bold).toBeUndefined();
+  });
+
+  it("stripAnsi removes OSC sequences too", () => {
+    expect(stripAnsi(link("https://a.io", "text"))).toBe("text");
+    expect(stripAnsi(`${ESC}]0;my title\x07visible`)).toBe("visible");
+  });
+});

@@ -16,6 +16,7 @@ import { SessionActionsMenu, type SessionActionHandlers, type SessionMenuState }
 import { useSessionRowModel } from "./useSessionRowModel";
 import type { RowActivate, RowBulkApi } from "./types";
 import { useLongPress } from "./useLongPress";
+import { prefetchScreen } from "../../lib/screenCache";
 
 export interface SessionRowProps extends SessionActionHandlers {
   workspace: Workspace;
@@ -143,6 +144,15 @@ export const SessionRow = memo(function SessionRow(props: SessionRowProps) {
           e.preventDefault();
           if (isDeleting || longPress.fired.current) return;
           onActivate(workspace.id, e, navigationSessionId);
+        }}
+        // Fetch the screens this row would open, so a click draws them at once (docs/guides/web/terminal.md,
+        // "Switching sessions").
+        onMouseEnter={() => {
+          if (isActive) return;
+          for (const s of workspace.sessions) {
+            if (s.view === "structured" || ["Stopped", "Deleting", "Creating"].includes(s.status)) continue;
+            void prefetchScreen(s.id);
+          }
         }}
         onContextMenu={(e) => {
           if (isDeleting) return;

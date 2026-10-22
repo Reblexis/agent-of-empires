@@ -1,9 +1,12 @@
 // @vitest-environment jsdom
 import { describe, expect, it } from "vitest";
+import type { AnsiSegment } from "./ansi";
 import {
   LineParseCache,
+  NO_LINKS,
   ansiToLines,
   clusterSpanAt,
+  computeRowLinks,
   findCursorCharIndex,
   isHttpUrl,
   lineText,
@@ -11,6 +14,7 @@ import {
   splitUrls,
   textWidth,
   wrapLine,
+  type LinkSpan,
 } from "./liveTermLines";
 
 const ZWJ = "\u200D";
@@ -300,4 +304,99 @@ it.each<[string, number, [number, number]]>([
   [`${FLAG_US}\u{1F1E9}\u{1F1EA}`, 2, [2, 4]],
 ])("clusterSpanAt(%j, %s) is %o", (text, index, expected) => {
   expect(clusterSpanAt(text, index)).toEqual(expected);
+});
+
+describe("computeRowLinks", () => {
+  const row = (...parts: string[]): AnsiSegment[] => parts.map((text) => ({ text, style: {} }));
+
+  it("matches a URL split across styled segments as one span", () => {
+    // Claude Code styles URLs, so a segment boundary can fall mid-URL; a
+    // per-segment matcher linkifies only the first fragment.
+    const rows = [row("see ", "https://exam", "ple.com/pull/1", " ok")];
+    expect(computeRowLinks(rows, 80)).toEqual([[{ start: 4, end: 30, href: "https://example.com/pull/1" }]]);
+  });
+
+  it("shares the NO_LINKS identity for rows without URLs", () => {
+    const links = computeRowLinks([row("plain"), row("also plain")], 80);
+    expect(links[0]).toBe(NO_LINKS);
+    expect(links[1]).toBe(NO_LINKS);
+  });
+
+  it("joins a URL wrapped across full-width rows into one href", () => {
+    // 20-col pane: the URL fills the row exactly and continues on the next.
+    const links = computeRowLinks([row("see https://a.io/abc"), row("defgh done")], 20);
+    expect(links[0]).toEqual([{ start: 4, end: 20, href: "https://a.io/abcdefgh" }]);
+    expect(links[1]).toEqual([{ start: 0, end: 5, href: "https://a.io/abcdefgh" }]);
+  });
+
+  it("joins across several full-width rows", () => {
+    const links = computeRowLinks([row("https://a.io/0123456"), row("789abcdefghijklmnopq"), row("rs end")], 20);
+    const href = "https://a.io/0123456789abcdefghijklmnopqrs";
+    expect(links[0]).toEqual([{ start: 0, end: 20, href }]);
+    expect(links[1]).toEqual([{ start: 0, end: 20, href }]);
+    expect(links[2]).toEqual([{ start: 0, end: 2, href }]);
+  });
+
+  it("does not join when the next row starts with whitespace", () => {
+    const links = computeRowLinks([row("see https://a.io/abc"), row(" unrelated")], 20);
+    expect(links[0]).toEqual([{ start: 4, end: 20, href: "https://a.io/abc" }]);
+    expect(links[1]).toBe(NO_LINKS);
+  });
+
+  it("does not join when the row is not full width", () => {
+    // 40-col pane: the URL ends mid-row, so the newline is a real break.
+    const links = computeRowLinks([row("see https://a.io/abc"), row("next line")], 40);
+    expect(links[0]).toEqual([{ start: 4, end: 20, href: "https://a.io/abc" }]);
+    expect(links[1]).toBe(NO_LINKS);
+  });
+
+  it("does not join without a known width", () => {
+    const links = computeRowLinks([row("see https://a.io/abc"), row("defgh")], Number.POSITIVE_INFINITY);
+    expect(links[0]).toEqual([{ start: 4, end: 20, href: "https://a.io/abc" }]);
+    expect(links[1]).toBe(NO_LINKS);
+  });
+
+  it("trims trailing punctuation off the joined continuation", () => {
+    const links = computeRowLinks([row("see https://a.io/abc"), row("def). more text")], 20);
+    expect(links[0]).toEqual([{ start: 4, end: 20, href: "https://a.io/abcdef" }]);
+    expect(links[1]).toEqual([{ start: 0, end: 3, href: "https://a.io/abcdef" }]);
+  });
+
+  it("still finds URLs after a continuation fragment on the same row", () => {
+    const links = computeRowLinks([row("see https://a.io/abc"), row("def and https://b.io")], 20);
+    expect(links[1]).toEqual([
+      { start: 0, end: 3, href: "https://a.io/abcdef" },
+      { start: 8, end: 20, href: "https://b.io" },
+    ]);
+  });
+
+  it("uses the OSC 8 escape's own URI as the href, not the visible text", () => {
+    // Claude Code emits its URLs as OSC 8 hyperlinks; the visible text can
+    // be a fragment (wrapped) or a label.
+    const osc8 =
+      "\x1b]8;;https://claude.ai/code/s_01AB?from=cli\x1b\\https://claude.ai/code/s_01AB?fro\x1b]8;;\x1b\\ done";
+    const links = computeRowLinks(ansiToLines(osc8 + "\n"), 200);
+    expect(links[0]).toEqual([{ start: 0, end: 33, href: "https://claude.ai/code/s_01AB?from=cli" }]);
+  });
+
+  it("carries an OSC 8 link across wrapped lines", () => {
+    const lines = new LineParseCache().lines("\x1b]8;;https://a.io/full\x1b\\https://a.io/fu\nll\x1b]8;;\x1b\\ rest\n");
+    const links = computeRowLinks(lines, 200);
+    expect(links[0]).toEqual([{ start: 0, end: 15, href: "https://a.io/full" }]);
+    expect(links[1]).toEqual([{ start: 0, end: 2, href: "https://a.io/full" }]);
+  });
+
+  it("leaves a non-http OSC 8 target to the URL matcher", () => {
+    const links = computeRowLinks(ansiToLines("\x1b]8;;file:///etc/passwd\x1b\\see https://b.io\x1b]8;;\x1b\\\n"), 200);
+    expect(links[0]).toEqual([{ start: 4, end: 16, href: "https://b.io" }]);
+  });
+
+  it("keeps span-array identity for unchanged rows across calls", () => {
+    const stable = row("see https://a.io/x done");
+    const matchCache = new WeakMap<AnsiSegment[], { index: number; raw: string }[]>();
+    const spanCache = new WeakMap<AnsiSegment[], LinkSpan[]>();
+    const a = computeRowLinks([stable, row("plain")], 80, matchCache, spanCache);
+    const b = computeRowLinks([stable, row("other")], 80, matchCache, spanCache);
+    expect(b[0]).toBe(a[0]);
+  });
 });
