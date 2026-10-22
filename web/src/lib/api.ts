@@ -1799,6 +1799,28 @@ export function summarizeSession(id: string): Promise<{ ok: boolean; message?: s
   return okWithMessage(`/api/sessions/${encodeURIComponent(id)}/summarize`, { method: "POST" });
 }
 
+/** Daemon-cached terminal-context recap for a session. `text`/`generated_at`
+ *  are null until the first successful generation; `inflight` is true while a
+ *  recap one-shot is running (the Context pane polls until it clears). */
+export interface TerminalContextResult {
+  text: string | null;
+  generated_at: string | null;
+  inflight: boolean;
+}
+
+/** Read the cached terminal-context recap. Null on any fetch failure so the
+ *  pane can distinguish "no recap yet" from "could not reach the daemon". */
+export function getTerminalContext(id: string): Promise<TerminalContextResult | null> {
+  return fetchJson<TerminalContextResult>(`/api/sessions/${encodeURIComponent(id)}/terminal-context`);
+}
+
+/** Start a terminal-context recap one-shot; a 202 means it started, and the
+ *  result lands in the cache read by {@link getTerminalContext}. Returns the
+ *  server's message on a gate failure so the pane can surface it. */
+export function refreshTerminalContext(id: string): Promise<{ ok: boolean; message?: string }> {
+  return okWithMessage(`/api/sessions/${encodeURIComponent(id)}/terminal-context`, { method: "POST" });
+}
+
 /** Move a stopped managed worktree and optionally rename its branch. */
 export function setWorktreeName(
   id: string,

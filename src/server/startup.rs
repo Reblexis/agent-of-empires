@@ -692,6 +692,11 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         summary_semaphore: tokio::sync::Semaphore::new(
             crate::session::conversation_summary::MAX_CONCURRENT,
         ),
+        terminal_context: std::sync::Mutex::new(std::collections::HashMap::new()),
+        terminal_context_inflight: std::sync::Mutex::new(std::collections::HashSet::new()),
+        terminal_context_semaphore: tokio::sync::Semaphore::new(
+            crate::session::terminal_context::MAX_CONCURRENT,
+        ),
         runtime_read_semaphore: Arc::new(tokio::sync::Semaphore::new(
             crate::server::runtime_ws::RUNTIME_READ_CONCURRENCY,
         )),

@@ -127,11 +127,26 @@ export function removeTab(layout: DockLayout, tabId: TabId): DockLayout {
   if (group.active === tabId) {
     group.active = group.tabs[at.index] ?? group.tabs[group.tabs.length - 1] ?? null;
   }
-  if (tabId.startsWith("plugin:") && !next.closedPlugins.includes(tabId)) {
+  // Context rides the same "user closed it, do not re-add" ledger as plugin
+  // tabs: the auto-add passes (syncPluginTabs, ensureContextTab) must not
+  // resurrect an explicitly closed tab on the next render.
+  if ((tabId.startsWith("plugin:") || tabId === "context") && !next.closedPlugins.includes(tabId)) {
     next.closedPlugins.push(tabId);
   }
   pruneEmpty(next, at.dock);
   return next;
+}
+
+/** LOCAL PATCH: the Context pane opens by default as the ACTIVE right-dock
+ *  tab of every session, including stored layouts that predate the pane, so
+ *  re-orienting never needs a per-session click. Applied at both layout
+ *  resolution sites (render and mutate) so the displayed and persisted
+ *  layouts agree. An explicit close is remembered in `closedPlugins` until
+ *  the tab is reopened (addTab clears the ledger entry). */
+export function ensureContextTab(layout: DockLayout): DockLayout {
+  if (layout.closedPlugins.includes("context")) return layout;
+  if (findTab(layout, "context")) return layout;
+  return addTab(layout, "right", "context", true);
 }
 
 export function setActive(layout: DockLayout, dock: DockLocation, tabId: TabId): DockLayout {
@@ -228,6 +243,11 @@ export function syncPluginTabs(layout: DockLayout, available: { id: TabId; defau
 // Sub agents and Files are opt-in, so they never auto-open as empty tabs.
 const AUTO_OPEN_PANES = BUILTIN_PANES.filter((p) => p.id !== "agents" && p.id !== "files");
 
+// Panes that existed in the v1 layout schema. Migration must only carry these:
+// a pane that postdates v1 (context) can never have been "open" in a v1
+// layout, so the absent-key-means-open default must not apply to it.
+const V1_PANES = AUTO_OPEN_PANES.filter((p) => p.id === "diff" || p.id === "terminal");
+
 function defaultTemplate(): DockLayout {
   // Narrow viewports start empty and use the mobile picker.
   const open = typeof window !== "undefined" && window.innerWidth >= 768;
@@ -238,7 +258,9 @@ function defaultTemplate(): DockLayout {
     const tabId = p.id === "terminal" ? terminalTabId(0) : p.id;
     l = addTab(l, p.defaultDock, tabId, false);
   }
-  return l;
+  // LOCAL PATCH: context is the tab a session opens on (see ensureContextTab);
+  // the recap is what re-orients, diff/terminal are a click away.
+  return setActive(l, "right", "context");
 }
 
 function migrateTemplate(): DockLayout {
@@ -247,7 +269,7 @@ function migrateTemplate(): DockLayout {
     try {
       const parsed = JSON.parse(v1) as Record<string, unknown>;
       let l = emptyDockLayout();
-      for (const p of AUTO_OPEN_PANES) {
+      for (const p of V1_PANES) {
         const v = parsed[p.id];
         let open = true;
         let dock: DockLocation = p.defaultDock;
@@ -272,7 +294,7 @@ function migrateTemplate(): DockLayout {
   if (collapsed === "1") return emptyDockLayout();
   if (collapsed === "0") {
     let l = emptyDockLayout();
-    for (const p of AUTO_OPEN_PANES) {
+    for (const p of V1_PANES) {
       const tabId = p.id === "terminal" ? terminalTabId(0) : p.id;
       l = addTab(l, p.defaultDock, tabId, false);
     }
@@ -358,7 +380,7 @@ export interface PaneLayoutApi {
   activateTab: (dock: DockLocation, tabId: TabId) => void;
   moveTab: (tabId: TabId, toDock: DockLocation) => void;
   placeTab: (tabId: TabId, target: PlaceTarget) => void;
-  toggleKind: (kind: "diff" | "terminal" | "agents" | "files", defaultDock: DockLocation) => void;
+  toggleKind: (kind: "diff" | "terminal" | "agents" | "files" | "context", defaultDock: DockLocation) => void;
   togglePlugin: (id: TabId, defaultDock: DockLocation) => void;
   syncPlugins: (available: { id: TabId; defaultDock: DockLocation }[]) => void;
   setDockCollapsed: (dock: DockLocation, collapsed: boolean) => void;
@@ -413,11 +435,13 @@ export function usePaneLayout(sessionId: string | null, outsideRepository: boole
   const layout = useMemo(
     () =>
       sessionId
-        ? (store.sessions[sessionId] ??
-          seedLayout(store.template, {
-            diff: autoOpenDiffPane && outsideRepository === false,
-            terminal: autoOpenTerminalPane,
-          }))
+        ? ensureContextTab(
+            store.sessions[sessionId] ??
+              seedLayout(store.template, {
+                diff: autoOpenDiffPane && outsideRepository === false,
+                terminal: autoOpenTerminalPane,
+              }),
+          )
         : emptyDockLayout(),
     [store, sessionId, autoOpenDiffPane, autoOpenTerminalPane, outsideRepository],
   );
@@ -428,12 +452,13 @@ export function usePaneLayout(sessionId: string | null, outsideRepository: boole
       setStore((s) => {
         // Read prefs synchronously: depending on `settings` would rebuild the pane API on any setting change.
         const prefs = getWebSettingsSnapshot();
-        const current =
+        const current = ensureContextTab(
           s.sessions[sessionId] ??
-          seedLayout(s.template, {
-            diff: prefs.autoOpenDiffPane && outsideRepositoryRef.current === false,
-            terminal: prefs.autoOpenTerminalPane,
-          });
+            seedLayout(s.template, {
+              diff: prefs.autoOpenDiffPane && outsideRepositoryRef.current === false,
+              terminal: prefs.autoOpenTerminalPane,
+            }),
+        );
         const updated = fn(current);
         if (updated === current && sessionId in s.sessions) return s;
         return { ...s, sessions: { ...s.sessions, [sessionId]: updated } };
@@ -472,10 +497,10 @@ export function usePaneLayout(sessionId: string | null, outsideRepository: boole
     [mutate],
   );
   const toggleKind = useCallback(
-    (kind: "diff" | "terminal" | "agents" | "files", defaultDock: DockLocation) =>
+    (kind: "diff" | "terminal" | "agents" | "files" | "context", defaultDock: DockLocation) =>
       mutate((l) => {
         // Single-instance panes toggle their tab; terminals toggle the whole group.
-        if (kind === "diff" || kind === "agents" || kind === "files") {
+        if (kind === "diff" || kind === "agents" || kind === "files" || kind === "context") {
           const at = findTab(l, kind);
           if (at) return isDockCollapsed(l, at.dock) ? openOrRevealTab(l, kind, defaultDock) : removeTab(l, kind);
           return openOrRevealTab(l, kind, defaultDock);

@@ -121,6 +121,22 @@ pub struct AppState {
     pub summary_inflight: std::sync::Mutex<std::collections::HashSet<String>>,
     /// Global cap on concurrent conversation-summary one-shots.
     pub summary_semaphore: tokio::sync::Semaphore,
+    /// Latest terminal-context recap per session, for the web "Context" pane.
+    /// Daemon-memory only: a recap is cheap to regenerate from the pane, so it
+    /// is not worth persisting across restarts. Synchronous mutex; tiny
+    /// critical sections. See `session::terminal_context`.
+    pub terminal_context: std::sync::Mutex<
+        std::collections::HashMap<String, crate::session::terminal_context::ContextSnapshot>,
+    >,
+    /// Session ids with an in-flight terminal-context one-shot, so the pane's
+    /// stale-on-open trigger and its refresh button cannot spawn concurrent
+    /// recap generators for one session. Also read by the GET endpoint so the
+    /// pane knows to keep polling. See `session::terminal_context`.
+    pub terminal_context_inflight: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// Global cap (1) on concurrent terminal-context one-shots, sized like
+    /// `summary_semaphore` and for the same reason: a recap reads a large
+    /// transcript, so it must not starve the snappy smart-rename pool.
+    pub terminal_context_semaphore: tokio::sync::Semaphore,
     /// Global cap on concurrent runtime-read connections, so a burst of clients
     /// cannot each hold a connection slot and a cloned row set while they wait
     /// for the one sample in flight. Shared rather than owned because the permit
