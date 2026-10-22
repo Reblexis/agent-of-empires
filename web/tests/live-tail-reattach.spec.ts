@@ -41,21 +41,30 @@ test.describe("Desktop live tail", () => {
   function scroller(page: Page) {
     return page.locator("[data-live-terminal] > div").first();
   }
-  const gap = (page: Page) => scroller(page).evaluate((el) => el.scrollHeight - el.clientHeight - el.scrollTop);
+  const gap = (page: Page) =>
+    scroller(page).evaluate(
+      (el) => el.scrollHeight - el.clientHeight - el.scrollTop,
+    );
 
   async function open(page: Page): Promise<MockHandle> {
     return openLiveSession(page, await mockTerminalApis(page));
   }
 
-
-  async function stream(page: Page, handle: MockHandle, from: number, count: number) {
+  async function stream(
+    page: Page,
+    handle: MockHandle,
+    from: number,
+    count: number,
+  ) {
     for (let h = from; h < from + count; h++) {
       handle.pushLiveFrame(frame(h));
       await page.waitForTimeout(40);
     }
   }
 
-  test("scrolling back down to the bottom with the wheel follows new output again", async ({ page }) => {
+  test("scrolling back down to the bottom with the wheel follows new output again", async ({
+    page,
+  }) => {
     const handle = await open(page);
     await stream(page, handle, 200, 10);
     await expect.poll(() => gap(page)).toBeLessThan(2);
@@ -76,10 +85,15 @@ test.describe("Desktop live tail", () => {
     await expect.poll(() => gap(page)).toBeLessThan(2);
 
     await stream(page, handle, 215, 20);
-    expect(await gap(page), "the view follows output after returning to the bottom").toBeLessThan(2);
+    expect(
+      await gap(page),
+      "the view follows output after returning to the bottom",
+    ).toBeLessThan(2);
   });
 
-  test("a scroll down that stops a few pixels short of the bottom follows new output again", async ({ page }) => {
+  test("a scroll down that stops a few pixels short of the bottom follows new output again", async ({
+    page,
+  }) => {
     // A trackpad or an uneven wheel rarely lands on the exact last pixel.
     // Ending inside the live-edge band returns the view to live, which trims
     // the screen's trailing blank rows; the page shrinks under the user and
@@ -108,7 +122,10 @@ test.describe("Desktop live tail", () => {
     await expect.poll(() => gap(page)).toBeLessThan(2);
 
     await stream(page, handle, 210, 20);
-    expect(await gap(page), "the view follows output after returning to the live edge").toBeLessThan(2);
+    expect(
+      await gap(page),
+      "the view follows output after returning to the live edge",
+    ).toBeLessThan(2);
   });
 
   test("a scroll down that stops a few pixels short of the bottom of a full screen follows new output", async ({
@@ -134,10 +151,15 @@ test.describe("Desktop live tail", () => {
     await page.waitForTimeout(400);
 
     await stream(page, handle, 210, 20);
-    expect(await gap(page), "the view follows output after returning to the live edge").toBeLessThan(2);
+    expect(
+      await gap(page),
+      "the view follows output after returning to the live edge",
+    ).toBeLessThan(2);
   });
 
-  test("the bottom rows stay in view after the window was once taller", async ({ page }) => {
+  test("the bottom rows stay in view after the window was once taller", async ({
+    page,
+  }) => {
     // Reported as "when I scroll down it just goes up again", a few lines: the
     // terminal pinned the live edge to the cursor row as if a soft keyboard
     // covered the bottom, because the window had been taller at this width
@@ -153,7 +175,10 @@ test.describe("Desktop live tail", () => {
     await page.setViewportSize({ width: 1280, height: 800 });
     await page.waitForTimeout(600);
     await stream(page, handle, 210, 5);
-    expect(await gap(page), "the live edge after the window shrank back").toBeLessThan(2);
+    expect(
+      await gap(page),
+      "the live edge after the window shrank back",
+    ).toBeLessThan(2);
 
     const box = (await scroller(page).boundingBox())!;
     await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
@@ -163,10 +188,14 @@ test.describe("Desktop live tail", () => {
     }
     await page.waitForTimeout(300);
     await stream(page, handle, 215, 10);
-    expect(await gap(page), "scrolling down stays at the bottom").toBeLessThan(2);
+    expect(await gap(page), "scrolling down stays at the bottom").toBeLessThan(
+      2,
+    );
   });
 
-  test("output streaming while the user sits at the bottom never moves the view up", async ({ page }) => {
+  test("output streaming while the user sits at the bottom never moves the view up", async ({
+    page,
+  }) => {
     // 60 frames with a geometry read after each; Firefox needs more than the default 30s.
     test.setTimeout(90_000);
     const handle = await open(page);
@@ -182,7 +211,9 @@ test.describe("Desktop live tail", () => {
   // so a shorter terminal never shrinks the agent's pane. Reported as "I just can't scroll down, it goes up when I
   // try": the terminal's height wobbled by a row (594 vs 572 px), every wobble resized tmux, the agent redrew, and
   // the view moved under the reader.
-  test("a terminal one row shorter, then back, never resizes the agent's pane", async ({ page }) => {
+  test("a terminal one row shorter, then back, never resizes the agent's pane", async ({
+    page,
+  }) => {
     const handle = await open(page);
     await stream(page, handle, 200, 5);
     const resizes = () =>
@@ -198,6 +229,9 @@ test.describe("Desktop live tail", () => {
       await page.setViewportSize({ width: 1280, height: 800 });
       await page.waitForTimeout(400);
     }
-    expect(resizes().slice(settled), "no resize after the height wobbles").toEqual([]);
+    expect(
+      resizes().slice(settled),
+      "no resize after the height wobbles",
+    ).toEqual([]);
   });
 });

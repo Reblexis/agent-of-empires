@@ -27,7 +27,10 @@ export function useLiveEdgeScroll({
   // No programmatic scroll while a finger is down: it cancels the native gesture on iOS.
   const touchActiveRef = useRef(false);
   // Largest container height at the current width; rows derive from it so the keyboard never resizes tmux.
-  const latchRef = useRef<{ width: number; maxHeight: number }>({ width: 0, maxHeight: 0 });
+  const latchRef = useRef<{ width: number; maxHeight: number }>({
+    width: 0,
+    maxHeight: 0,
+  });
   // Pixel top of the cursor row, sticky across mid-redraw frames that hide the cursor.
   const cursorAnchorRef = useRef<number | null>(null);
   useEffect(() => {
@@ -39,11 +42,15 @@ export function useLiveEdgeScroll({
   const liveScrollTarget = useCallback(
     (el: HTMLDivElement) => {
       const bottom = Math.max(0, el.scrollHeight - el.clientHeight);
-      const shrunken = latchRef.current.maxHeight - el.clientHeight > lineH * 1.5;
+      const shrunken =
+        latchRef.current.maxHeight - el.clientHeight > lineH * 1.5;
       const anchor = cursorAnchorRef.current;
       if (!shrunken || anchor == null || anchor >= bottom) return bottom;
       // One spare line keeps the input box border visible.
-      return Math.min(bottom, Math.max(0, anchor + 2 * lineH - el.clientHeight));
+      return Math.min(
+        bottom,
+        Math.max(0, anchor + 2 * lineH - el.clientHeight),
+      );
     },
     [lineH],
   );
@@ -60,23 +67,31 @@ export function useLiveEdgeScroll({
     if (!el) return;
     const prev = geomRef.current;
     const target = liveScrollTarget(el);
-    const heightChanged = prev.target >= 0 && Math.abs(el.clientHeight - prev.clientHeight) > 1;
+    const heightChanged =
+      prev.target >= 0 && Math.abs(el.clientHeight - prev.clientHeight) > 1;
     const movingUp = prev.target >= 0 && el.scrollTop < prev.scrollTop - 0.5;
     // A real scroll-up moved up and sits clearly above the target; appends, content-shrink clamps, and keyboard
     // height changes also lower scrollTop relative to the target but are not the user's doing.
-    if (!heightChanged && movingUp && el.scrollTop < target - 2) liveDetachedRef.current = true;
+    if (!heightChanged && movingUp && el.scrollTop < target - 2)
+      liveDetachedRef.current = true;
     if (heightChanged) pendingHeightPinRef.current = true;
     if (liveDetachedRef.current) {
       pendingHeightPinRef.current = false;
     } else if (
       !touchActiveRef.current &&
       // Following the tail must not fire in the first pixels of an upward flick, or it cancels iOS momentum.
-      (prev.target < 0 || pendingHeightPinRef.current || (!movingUp && target > el.scrollTop))
+      (prev.target < 0 ||
+        pendingHeightPinRef.current ||
+        (!movingUp && target > el.scrollTop))
     ) {
       el.scrollTop = target;
       pendingHeightPinRef.current = false;
     }
-    geomRef.current = { target, clientHeight: el.clientHeight, scrollTop: el.scrollTop };
+    geomRef.current = {
+      target,
+      clientHeight: el.clientHeight,
+      scrollTop: el.scrollTop,
+    };
   }, [scrollerRef, liveScrollTarget]);
 
   const atBottom = useCallback(() => {
@@ -98,13 +113,28 @@ export function useLiveEdgeScroll({
     }
     if (!atBottom()) enterReading(rowsRef.current);
     // Mid-gesture passes over the bottom settle on touchend instead.
-    else if (!touchActiveRef.current) returnToLive(rowsRef.current * LIVE_WINDOW_SCREENS);
+    else if (!touchActiveRef.current)
+      returnToLive(rowsRef.current * LIVE_WINDOW_SCREENS);
     // Scrolling down to the live edge is where auto-follow resumes for mouse scrolling. The live-edge band counts,
     // not just the literal bottom: a scroll that stops a few px short returns to live above, which trims trailing
     // blank rows, and the clamp that follows is an upward move that would never re-attach.
-    const atLiteralBottom = el.scrollHeight - el.clientHeight - el.scrollTop < 2;
-    if (!movingUp && (atLiteralBottom || (!touchActiveRef.current && atBottom()))) liveDetachedRef.current = false;
-  }, [scrollerRef, rowsRef, atBottom, enterReading, forwardModeRef, reading, returnToLive, scheduleViewSync]);
+    const atLiteralBottom =
+      el.scrollHeight - el.clientHeight - el.scrollTop < 2;
+    if (
+      !movingUp &&
+      (atLiteralBottom || (!touchActiveRef.current && atBottom()))
+    )
+      liveDetachedRef.current = false;
+  }, [
+    scrollerRef,
+    rowsRef,
+    atBottom,
+    enterReading,
+    forwardModeRef,
+    reading,
+    returnToLive,
+    scheduleViewSync,
+  ]);
 
   const jumpToLatest = useCallback(() => {
     const el = scrollerRef.current;
