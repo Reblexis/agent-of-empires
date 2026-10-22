@@ -19,6 +19,7 @@ import { FORWARD_TOUCH_GAIN, useForwardInput } from "./live-terminal/useForwardI
 import { Row } from "./live-terminal/TermRow";
 import { LIVE_WINDOW_SCREENS, useLiveEdgeScroll } from "./live-terminal/useLiveEdgeScroll";
 import { useTerminalInput } from "./live-terminal/useTerminalInput";
+import { useLocalEcho } from "./live-terminal/useLocalEcho";
 import { InputTraceOverlay } from "./live-terminal/InputTraceOverlay";
 import { StrokeIcon } from "./icons";
 
@@ -84,6 +85,8 @@ export interface MobileLiveTerminalProps {
   bottomAlign: boolean;
   /** The soft keyboard occludes the viewport; defers the row latch so keyboard-shrunk rows never reach tmux. */
   keyboardOpen: boolean;
+  /** Draw plain typing at the cursor before the server echoes it; only while this browser's keys reach the pane. */
+  predictEcho?: boolean;
 }
 
 /** Heights behind the iOS standalone bottom band: the app root should reach `screen` in portrait. */
@@ -133,6 +136,7 @@ export function MobileLiveTerminal({
   onInputFocusChange,
   bottomAlign,
   keyboardOpen,
+  predictEcho = false,
 }: MobileLiveTerminalProps) {
   const { settings, update } = useWebSettings();
   const coarse = useIsCoarsePointer();
@@ -190,9 +194,11 @@ export function MobileLiveTerminal({
   }, [reading]);
   // Unchanged lines keep their parse and wrap identity across frames, so memoized rows skip them.
   const [parseCache] = useState(() => new LineParseCache());
-  const lines = useMemo(() => (frame ? parseCache.lines(frame.lines ?? frame.content) : []), [frame, parseCache]);
+  const parsedLines = useMemo(() => (frame ? parseCache.lines(frame.lines ?? frame.content) : []), [frame, parseCache]);
   // Columns rendered at; wrapping keeps a frame readable when another client widened the window.
   const [renderCols, setRenderCols] = useState(0);
+  const echo = useLocalEcho({ enabled: predictEcho, reading, frame, lines: parsedLines, renderCols });
+  const lines = echo.lines;
   const [wrapCache] = useState(
     () => new WeakMap<AnsiSegment[], { cols: number; rows: AnsiSegment[][]; key: string }>(),
   );
@@ -290,8 +296,9 @@ export function MobileLiveTerminal({
   // The cursor's visual row and column at the live edge, and its pixel top for the keyboard anchor.
   const live = useMemo(() => {
     const none = { row: -1, col: -1, top: null as number | null };
-    const cursor = !reading ? (frame?.cursor ?? null) : null;
-    if (!cursor) return none;
+    const frameCursor = !reading ? (frame?.cursor ?? null) : null;
+    if (!frameCursor) return none;
+    const cursor = echo.cursorX != null ? { ...frameCursor, x: echo.cursorX } : frameCursor;
     const lineIdx = cursorLineIndex(lines.length, screenRows, cursor.y);
     const baseRow = lineIdx < 0 || lineIdx >= lines.length ? -1 : (visual.lineStartRow[lineIdx] ?? -1);
     if (baseRow < 0) return none;
@@ -301,7 +308,18 @@ export function MobileLiveTerminal({
     if (row > lastNonBlankRow) return none;
     const col = Number.isFinite(cols) ? cursor.x % cols : cursor.x;
     return { row, col, top: (effectiveSpacerLines + row) * lineH };
-  }, [reading, frame, lines.length, screenRows, visual, renderCols, effectiveSpacerLines, lineH, lastNonBlankRow]);
+  }, [
+    reading,
+    frame,
+    echo.cursorX,
+    lines.length,
+    screenRows,
+    visual,
+    renderCols,
+    effectiveSpacerLines,
+    lineH,
+    lastNonBlankRow,
+  ]);
 
   // One view sync per painted frame; scroll events fire per pixel.
   const viewSyncRafRef = useRef(0);
@@ -398,13 +416,17 @@ export function MobileLiveTerminal({
   // Recent drag samples for the release velocity.
   const flickSamplesRef = useRef<FlickSample[]>([]);
   // Every input path funnels through here, so typing interrupts a coast instead of queueing behind it.
+  const echoSent = echo.sent;
   const sendData = useCallback(
     (data: string) => {
       stopMomentum();
       cancelTouchWheelQueue();
-      return sendDataRaw(data);
+      // The key goes out first: a prediction never stands between a key and the session.
+      const delivered = sendDataRaw(data);
+      echoSent(data, delivered);
+      return delivered;
     },
-    [sendDataRaw, stopMomentum, cancelTouchWheelQueue],
+    [sendDataRaw, stopMomentum, cancelTouchWheelQueue, echoSent],
   );
 
   const pinchRef = useRef<{ startDist: number; startSize: number; changed: boolean } | null>(null);
