@@ -28,6 +28,7 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe session current`↴](#aoe-session-current)
 * [`aoe session add-project`↴](#aoe-session-add-project)
 * [`aoe session set-session-id`↴](#aoe-session-set-session-id)
+* [`aoe session verify-pointers`↴](#aoe-session-verify-pointers)
 * [`aoe session set-base`↴](#aoe-session-set-base)
 * [`aoe session snooze`↴](#aoe-session-snooze)
 * [`aoe session unsnooze`↴](#aoe-session-unsnooze)
@@ -428,6 +429,7 @@ Manage session lifecycle (start, stop, attach, etc.)
 * `current` — Auto-detect current session
 * `add-project` — Attach another repo to an existing session, creating a worktree for it and restarting the agent. Moving the session's working directory is refused while its resume target is a known conversation bound to that directory. Explicitly clear the resume target to start a new conversation after attaching. An implicitly preallocated ID is re-linked. See #3103
 * `set-session-id` — Set the resume target for a session; an agent whose exact native resume AoE cannot resolve is refused
+* `verify-pointers` — Check that every tab records the conversation it actually runs: no conversation on two tabs, no aoe one-shot recorded as a conversation, no pane running a different ID than recorded. Exits non-zero on any violation
 * `set-base` — Set or clear the per-session diff base branch. The diff view compares the worktree against this ref instead of the auto-detected default. Useful when the PR target differs from the project default (stacked PRs, hotfix off `release/*`, renamed default branch). See #970
 * `snooze` — Snooze a session for a duration (temporary archive, auto wakes)
 * `unsnooze` — Wake a snoozed session immediately
@@ -616,6 +618,14 @@ Set the resume target for a session; an agent whose exact native resume AoE cann
 ###### **Options:**
 
 * `--store <STORE>` — Assert the native store: a Claude store directory, or a Pi/OMP transcript file
+
+
+
+## `aoe session verify-pointers`
+
+Check that every tab records the conversation it actually runs: no conversation on two tabs, no aoe one-shot recorded as a conversation, no pane running a different ID than recorded. Exits non-zero on any violation
+
+**Usage:** `aoe session verify-pointers`
 
 
 
