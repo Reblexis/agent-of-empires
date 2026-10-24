@@ -1152,6 +1152,14 @@ pub struct SessionConfig {
     )]
     pub claude_inline_tui: bool,
 
+    /// Start Codex with `--no-alt-screen` (its inline mode). Inline output
+    /// lands in tmux's scrollback, where the web dashboard can scroll it; on
+    /// the alternate screen Codex keeps the history inside the app. Applies
+    /// when a session's Codex starts or restarts.
+    #[serde(default)]
+    #[setting(label = "Codex Inline Mode", widget = "toggle", category = "Agents")]
+    pub codex_inline_tui: bool,
+
     /// Install status-detection hooks into the agent's config file (e.g.
     /// ~/.claude/settings.json). When disabled, AoE will not modify the
     /// agent's settings file; status detection falls back to tmux pane
@@ -2050,6 +2058,7 @@ impl Default for SessionConfig {
             agent_extra_args: HashMap::new(),
             agent_command_override: HashMap::new(),
             claude_inline_tui: false,
+            codex_inline_tui: false,
             agent_status_hooks: true,
             merge_hooks_into_selected_agent: true,
             conversation_summary: false,

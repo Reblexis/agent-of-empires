@@ -7,7 +7,8 @@ import { buttonMouseBytes, wheelMouseBytes } from "../lib/liveMouse";
 import { createFrameInflater, supportsFrameDeflate, type FrameInflater } from "../lib/frameStream";
 import { MAX_RETRIES, retryDelayMs } from "../lib/wsBackoff";
 import { reportTelemetrySeen } from "../lib/api";
-import { recallScreen, rememberScreen, screenKey } from "../lib/screenCache";
+import { recallHistory, recallScreen, rememberHistory, rememberScreen, screenKey } from "../lib/screenCache";
+import { HISTORY_CAP_LINES, mergeFrame, type HistoryCache } from "../lib/liveHistory";
 import type { LiveClientMessage, LivePane0, LiveServerMessage } from "../lib/generated/liveWire";
 
 export type { LiveCursor, LivePane0 as LivePaneRect } from "../lib/generated/liveWire";
@@ -17,6 +18,9 @@ const encodeControl = (message: LiveClientMessage) => JSON.stringify(message);
 // Mirrors CLOSE_CODE_PTY_DEAD in src/server/pane.rs.
 const CLOSE_CODE_PTY_DEAD = 4001;
 const MAX_PENDING_INPUT_BYTES = 64 * 1024;
+/** Floor between two scrollback downloads, so a pane whose history keeps failing to align cannot hold the server on
+ *  the wide, slow window. */
+const MIN_REDOWNLOAD_MS = 2000;
 
 export interface LiveStats {
   frames: number;
@@ -85,6 +89,13 @@ export function useLiveTerminal(
   const pendingInputRef = useRef<(Uint8Array<ArrayBuffer> | string)[]>([]);
   // Hold input until the server confirms this connection owns the pane.
   const ownerKnownRef = useRef(false);
+  // Local copy of the pane's scrollback (lib/liveHistory.ts). While it is incomplete the wire window is widened to the
+  // full history (`downloadingRef`); otherwise the wire carries the component's live window and the copy is extended
+  // from it.
+  const historyRef = useRef<HistoryCache | null>(null);
+  const downloadingRef = useRef(false);
+  const lastDownloadRef = useRef(Number.NEGATIVE_INFINITY);
+  const sentWindowRef = useRef<number | null>(null);
 
   const { state, read, setState } = useSnapshotStore(() => INITIAL_STATE);
 
@@ -93,13 +104,23 @@ export function useLiveTerminal(
     if (ws?.readyState === WebSocket.OPEN) ws.send(data);
   }, []);
 
+  // The window actually requested from the server: the full history while the scrollback copy downloads, the
+  // component's live window otherwise.
+  const syncWindow = useCallback(() => {
+    const lines = downloadingRef.current ? HISTORY_CAP_LINES : desiredRef.current.window;
+    const ws = wsRef.current;
+    if (lines == null || sentWindowRef.current === lines || ws?.readyState !== WebSocket.OPEN) return;
+    sentWindowRef.current = lines;
+    ws.send(encodeControl({ type: "window", lines }));
+  }, []);
+
   const setWindowInternal = useCallback(
     (lines: number) => {
       if (desiredRef.current.window === lines) return;
       desiredRef.current.window = lines;
-      sendIfOpen(encodeControl({ type: "window", lines }));
+      syncWindow();
     },
-    [sendIfOpen],
+    [syncWindow],
   );
 
   useEffect(() => {
@@ -115,9 +136,15 @@ export function useLiveTerminal(
     if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
     if (countdownRef.current) clearInterval(countdownRef.current);
     retryCountRef.current = 0;
-    // A screen this page showed before draws at once while the socket connects.
+    // A screen this page showed before draws at once while the socket connects, over its remembered scrollback.
     const memoryKey = screenKey(sessionId, wsPath);
-    setState(() => ({ ...INITIAL_STATE, frame: recallScreen(memoryKey) ?? null }));
+    historyRef.current = recallHistory(memoryKey) ?? null;
+    downloadingRef.current = false;
+    lastDownloadRef.current = Number.NEGATIVE_INFINITY;
+    const recalled = recallScreen(memoryKey);
+    // Display only: a prefetched screen carries no history count, so it must not replace the copy.
+    const shown = recalled && historyRef.current ? mergeFrame(historyRef.current, recalled).frame : recalled;
+    setState(() => ({ ...INITIAL_STATE, frame: shown ?? null }));
 
     let disposed = false;
     const stats: LiveStats = { frames: 0, patches: 0, wireBytes: 0, resyncs: 0 };
@@ -148,6 +175,7 @@ export function useLiveTerminal(
       const ws = new WebSocket(url, protocols);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
+      sentWindowRef.current = null;
 
       const flushPendingInput = () => {
         if (wsRef.current !== ws || !ownerKnownRef.current || ws.readyState !== WebSocket.OPEN) return;
@@ -173,15 +201,15 @@ export function useLiveTerminal(
         if (desired.resize) {
           ws.send(encodeControl({ type: "resize", ...desired.resize }));
         }
-        if (desired.window != null) {
-          ws.send(encodeControl({ type: "window", lines: desired.window }));
-        }
+        syncWindow();
         ws.send(encodeControl({ type: "cadence", fast: desired.fast }));
         ws.send(encodeControl({ type: "caps", deflate: supportsFrameDeflate(), patch: true }));
       };
 
       let hasReceivedData = false;
       let lastSeq: number | null = null;
+      // The last frame as the server sent it: patches apply to these rows, not to the rendered copy.
+      let wireLines: string[] | null = null;
       let resyncPending = false;
       const handleMessageText = (text: string) => {
         if (wsRef.current !== ws) return;
@@ -218,8 +246,7 @@ export function useLiveTerminal(
         let content: string;
         let lines: string[];
         if (msg.type === "patch") {
-          const prev = read().frame;
-          if (prev?.lines == null || lastSeq == null || msg.base !== lastSeq) {
+          if (wireLines == null || lastSeq == null || msg.base !== lastSeq) {
             if (!resyncPending) {
               resyncPending = true;
               stats.resyncs += 1;
@@ -227,7 +254,7 @@ export function useLiveTerminal(
             }
             return;
           }
-          lines = applyPatch(prev.lines, msg.shift, msg.lines);
+          lines = applyPatch(wireLines, msg.shift, msg.lines);
           content = lines.join("\n") + "\n";
           stats.patches += 1;
         } else {
@@ -237,7 +264,8 @@ export function useLiveTerminal(
           stats.frames += 1;
         }
         lastSeq = msg.seq;
-        const incoming: LiveFrame = {
+        wireLines = lines;
+        const received: LiveFrame = {
           content,
           lines,
           seq: msg.seq,
@@ -250,12 +278,21 @@ export function useLiveTerminal(
           mouseSgr: msg.mouseSgr,
           pane0: msg.pane0,
         };
-        // Keep the capture window covering the full history while reading, or old lines fall out.
-        if (readingRef.current) {
-          const full = Math.min(4000, incoming.rows + incoming.history);
-          if (full > (desiredRef.current.window ?? 0)) setWindowInternal(full);
+        rememberScreen(memoryKey, received);
+        // Splice the frame onto the local scrollback copy, and download the whole history (one wide frame) whenever
+        // the copy is incomplete.
+        const merged = mergeFrame(historyRef.current, received);
+        historyRef.current = merged.cache;
+        if (merged.cache) rememberHistory(memoryKey, merged.cache);
+        const incoming = merged.frame;
+        const now = Date.now();
+        if (merged.complete) {
+          if (downloadingRef.current) lastDownloadRef.current = now;
+          downloadingRef.current = false;
+        } else if (!downloadingRef.current && now - lastDownloadRef.current >= MIN_REDOWNLOAD_MS) {
+          downloadingRef.current = true;
         }
-        rememberScreen(memoryKey, incoming);
+        syncWindow();
         setState((prev) => ({
           ...prev,
           retryCount: retryCountRef.current,
@@ -351,7 +388,7 @@ export function useLiveTerminal(
       wsRef.current = null;
       connectRef.current = null;
     };
-  }, [sessionId, wsPath, setState, read, setWindowInternal]);
+  }, [sessionId, wsPath, setState, syncWindow]);
 
   /** Whether `message` was sent or queued for the owner confirmation. */
   const sendInput = useCallback(
@@ -400,6 +437,8 @@ export function useLiveTerminal(
     (cols: number, rows: number) => {
       const prev = desiredRef.current.resize;
       if (prev && prev.cols === cols && prev.rows === rows) return;
+      // tmux re-wraps its whole history to a new width, so the copy is stale.
+      if (prev && prev.cols !== cols) historyRef.current = null;
       desiredRef.current.resize = { cols, rows };
       sendIfOpen(encodeControl({ type: "resize", cols, rows }));
     },
@@ -417,17 +456,12 @@ export function useLiveTerminal(
     [sendIfOpen],
   );
 
-  const enterReading = useCallback(
-    (rows: number) => {
-      if (readingRef.current) return;
-      readingRef.current = true;
-      const latest = read().frame;
-      const full = Math.min(4000, Math.max(rows, latest ? latest.rows + latest.history : rows));
-      setWindowInternal(full);
-      setState((prev) => ({ ...prev, reading: true }));
-    },
-    [read, setState, setWindowInternal],
-  );
+  /** The user left the live edge. Nothing goes to the server: the history they scroll through is the local copy. */
+  const enterReading = useCallback(() => {
+    if (readingRef.current) return;
+    readingRef.current = true;
+    setState((prev) => ({ ...prev, reading: true }));
+  }, [setState]);
 
   const returnToLive = useCallback(
     (rows: number) => {

@@ -52,7 +52,7 @@ which upstream one.
 Config that the v1.21.0 build needs on this machine:
 `acp.default_new_session_view = "terminal"` (replaces the local commit that
 defaulted new web sessions to the terminal view) and
-`session.claude_inline_tui = true`.
+`session.claude_inline_tui = true`, `session.codex_inline_tui = true`.
 
 ## Tab tracking is a hard requirement
 

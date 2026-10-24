@@ -10,7 +10,23 @@ The server renders the pane and pushes its rows over a WebSocket; the dashboard 
 
 Where it can, the server renders from the [VT live transport](../live-mode.md#the-vt-live-transport) and otherwise falls back to `capture-pane` snapshots on a 50 ms cadence with `tmux send-keys` for input. The fallback cannot withhold a half-drawn repaint. Add `?livedebug=1` to the URL to see which transport a session uses, plus frame rate and arrival-to-paint latency. When the view moves up by more than a row although you did not scroll up (no upward wheel, press, or touch on the terminal in the last half second), the dashboard logs a `live-terminal.jump` warning with the scroll geometry and follow state to the daemon's debug log, at most once per 10 seconds, so a reported jump can be traced.
 
-Scrolling up into history widens the window the server sends and surfaces a **Back to live** button; scrolling back to the bottom returns to the live tail. At the live tail the view follows new output until you scroll up again; a scroll down that stops within about a line of the bottom counts as reaching it. The pane's rows come from the tallest the terminal has been at its current width, so a shorter window, a banner, or the soft keyboard never shrinks the agent's pane; a width change starts over from the current height. The agent keeps running while you read.
+Scrolling up into history surfaces a **Back to live** button; scrolling back to the bottom returns to the live tail. At the live tail the view follows new output until you scroll up again; a scroll down that stops within about a line of the bottom counts as reaching it. The pane's rows come from the tallest the terminal has been at its current width, so a shorter window, a banner, or the soft keyboard never shrinks the agent's pane; a width change starts over from the current height. The agent keeps running while you read.
+
+### Scrollback is local
+
+Scrolling never waits on the server:
+
+- When a session's terminal opens, the dashboard downloads the pane's scrollback in the background (the last 4000 lines at most) and keeps that copy current from the live stream, which itself carries only the screen and a little history above it.
+- Scrolling through the copy is the browser's own scroll, with no request to the server. History not downloaded yet (the first round trip after opening) shows as blank lines that fill in when it lands.
+- The copy is downloaded again whenever it can no longer be shown to match the pane: the history was cleared, the pane's width changed (tmux re-wraps its history), or more output arrived between two frames than a frame covers, at most once every 2 seconds. A copy that matches is never thrown away, including across a reconnect.
+
+A full-screen app on the alternate screen keeps its history inside the app, not in tmux, so there is nothing to download, and each scroll step is forwarded to the app and waits a round trip. Claude Code (with `"tui": "fullscreen"`) and Codex (by default) are such apps. To keep their history in tmux, and so get local scrolling and local typing echo for them, turn on `claude_inline_tui` and `codex_inline_tui`: aoe then starts Claude with its inline renderer and Codex with `--no-alt-screen`, without touching your own agent settings. Either applies when the session's agent starts or restarts.
+
+```toml
+[session]
+claude_inline_tui = true
+codex_inline_tui = true
+```
 
 ### Typing echoes locally
 
@@ -26,7 +42,7 @@ What you type shows up at once, without waiting for the server to echo it, the w
 
 Opening a session shows a screen at once instead of a "Starting session..." placeholder:
 
-- The browser remembers the last screen of the 32 sessions it showed most recently, per terminal (agent pane, each paired shell), for as long as the page stays open. Opening one of them draws that screen immediately while the session is started (if it was stopped) and its live stream connects, which takes a few round trips to the server; the live stream then replaces it. Only the screen is remembered: scrolling up waits for the live stream.
+- The browser remembers the last screen of the 32 sessions it showed most recently, per terminal (agent pane, each paired shell), for as long as the page stays open. Opening one of them draws that screen immediately while the session is started (if it was stopped) and its live stream connects, which takes a few round trips to the server; the live stream then replaces it. The scrollback copy (see above) of the 8 most recently shown sessions is remembered too, so their history scrolls at once; for the others scrolling up waits for the download.
 - Resting the pointer on a session in the sidebar fetches its current agent screen in the background (at most once every 10 seconds per session), so a session not yet opened in this page also appears at once when clicked.
 - Without a remembered or prefetched screen (the first open on a touch device, say), the placeholder shows until the stream connects.
 

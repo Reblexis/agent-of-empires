@@ -112,6 +112,7 @@ You can browse tips from **Ctrl+K > Show tips** even with the bar hidden.
 | `agent_extra_args` | `{}` | Per-agent arguments appended after the binary, e.g. `{ opencode = "--port 8080" }`. Ignored for structured view sessions. |
 | `agent_command_override` | `{}` | Per-agent command replacing the binary. Managed resume and fork validate the actual native command and store; opaque wrappers require an explicit execution contract. See [execution identity and wrappers](session-resume.md#execution-identity-and-wrappers). |
 | `claude_inline_tui` | `false` | Start Claude Code with its inline renderer even when your Claude settings choose fullscreen (`"tui": "fullscreen"`), so its output lands in tmux's scrollback, where the web dashboard can scroll it. Applies when a session's Claude starts or restarts. |
+| `codex_inline_tui` | `false` | Start Codex with `--no-alt-screen` (its inline mode), so its output lands in tmux's scrollback, where the web dashboard can scroll it. Applies when a session's Codex starts or restarts. |
 | `custom_agents` | `{}` | User-defined agents (name to command). See [Custom agents](#custom-agents). |
 | `agent_detect_as` | `{}` | Built-in status detection and ACP adapter inheritance for a custom agent. This is not authority for terminal resume or fork. |
 | `agent_execution_as` | `{}` | Explicit native-agent contract for an opaque terminal wrapper. Requires `agent_config_dir` naming its store. Trusted global/profile configuration only; repository overrides are refused. |
