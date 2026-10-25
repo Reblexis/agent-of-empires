@@ -74,6 +74,8 @@ If the WebSocket drops (network blip, tunnel re-auth, daemon restart), the termi
 | 1013 | `tmux_not_ready` | Pane was not capturable within 2s, usually a benign warm-up; retries normally. |
 | 4001 | `pty_dead` | The pane permanently exited; shows a retry banner. |
 
+A network interruption can leave the old connection open on the server while the browser reconnects. The server pings each live connection every five seconds and releases its terminal ownership after 15 seconds without a pong. A visible viewer at the live edge then reclaims the vacant lock automatically, clearing a stale "Live on another device" banner. A healthy idle browser answers pings without any typing.
+
 Under `aoe serve --read-only` the terminal renders the stream but drops keystrokes, and the session-row delete and triage actions are hidden.
 
 ## On mobile

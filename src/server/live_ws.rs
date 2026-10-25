@@ -85,8 +85,9 @@ const PATCH_MAX_CHANGED_RATIO: f32 = 0.5;
 const MAX_WINDOW_LINES: usize = 4000;
 /// Floor for the capture window when the client hasn't sized yet.
 const DEFAULT_WINDOW_LINES: usize = 50;
-/// Keepalive ping interval; the recv side relies on the browser's pong.
-const PING_INTERVAL: Duration = Duration::from_secs(30);
+/// Detect a vanished browser promptly so its terminal lock cannot strand a reconnect.
+const PING_INTERVAL: Duration = Duration::from_secs(5);
+const PONG_IDLE_TIMEOUT: Duration = Duration::from_secs(15);
 /// Floor between drift re-asserts (see the capture loop).
 const REASSERT_MIN_INTERVAL: Duration = Duration::from_secs(2);
 /// After a drift target proves unreachable (same geometry didn't move after
@@ -1287,7 +1288,7 @@ async fn handle_live_ws_inner(
     });
 
     // Sender task: sole socket writer; also emits keepalive pings.
-    let send_task = tokio::spawn(async move {
+    let mut send_task = tokio::spawn(async move {
         let mut ping = tokio::time::interval(PING_INTERVAL);
         ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         ping.tick().await; // arm: first tick fires immediately otherwise
@@ -1316,11 +1317,21 @@ async fn handle_live_ws_inner(
         }
     });
 
+    // TCP can remain open long after the browser loses its network. Capturing
+    // frames must not keep renewing that connection's ownership indefinitely.
+    let mut last_pong_at = tokio::time::Instant::now();
     // Recv loop: input bytes + control messages, until close/shutdown.
     loop {
         tokio::select! {
+            _ = tokio::time::sleep_until(last_pong_at + PONG_IDLE_TIMEOUT) => {
+                warn!(target: "terminal.ws", tmux = %tmux_name, kind = "live", "live ws peer stopped answering pings; releasing ownership");
+                break;
+            }
             msg = ws_receiver.next() => {
                 match msg {
+                    Some(Ok(Message::Pong(_))) => {
+                        last_pong_at = tokio::time::Instant::now();
+                    }
                     Some(Ok(Message::Binary(data))) => {
                         // Only the size owner may type; a non-owner is a
                         // read-only viewer until it explicitly takes over.
@@ -1523,8 +1534,8 @@ async fn handle_live_ws_inner(
     }
 
     capture_task.abort();
+    let _ = capture_task.await;
     drop(out_tx);
-    let _ = send_task.await;
 
     // Release the size-owner lock if we held it.
     {
@@ -1534,6 +1545,15 @@ async fn handle_live_ws_inner(
             crate::tmux::Session::from_name(&name).release_size_owner(&who);
         })
         .await;
+    }
+    // A vanished peer may also leave the writer blocked on a full TCP buffer.
+    // Release ownership first, then bound graceful close/drain of the writer.
+    if tokio::time::timeout(Duration::from_secs(1), &mut send_task)
+        .await
+        .is_err()
+    {
+        send_task.abort();
+        let _ = send_task.await;
     }
     debug!(target: "terminal.ws", tmux = %tmux_name, kind = "live", "live ws closed");
 }

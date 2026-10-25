@@ -3,7 +3,9 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
+import { createConnection } from "node:net";
+import { once } from "node:events";
 import { devices, type Page } from "@playwright/test";
 import { test, expect, type ServeHandle, type ServeOptions } from "../helpers/liveTest";
 import { seedSessionViaAoeAdd, waitForSessions } from "../helpers/aoeServe";
@@ -488,6 +490,57 @@ while true; do sleep 1; done
     } finally {
       await ctxA.close();
       await ctxB.close().catch(() => {});
+    }
+  });
+
+  test("a silent disconnected owner expires and the visible viewer recovers", async ({ page, spawnServe }) => {
+    const serve = await serveAgent(spawnServe, "takeover-test", PROMPTBOX);
+    const session = (await waitForSessions(serve.baseUrl)).find((s) => s.title === "takeover-test")!;
+    const ensured = await fetch(`${serve.baseUrl}/api/sessions/${session.id}/ensure`, { method: "POST" });
+    expect(ensured.status).toBe(200);
+    await ensured.body?.cancel();
+    const name = `${serve.tmuxPrefix}takeover-test_${session.id.slice(0, 8)}`;
+    const owner = () => {
+      const result = spawnSync("tmux", ["-S", serve.tmuxSocket, "show-option", "-qv", "-t", name, "@aoe_size_owner"], {
+        env: serve.env,
+        encoding: "utf8",
+        timeout: 5_000,
+      });
+      expect(result.status, result.stderr).toBe(0);
+      return result.stdout.trim();
+    };
+    // Keep TCP open and drain frames, but never answer a WebSocket Ping. This is the
+    // server's view of a browser whose network vanished without a Close frame.
+    const url = new URL(serve.baseUrl);
+    const ghost = createConnection({ host: url.hostname, port: Number(url.port) });
+    try {
+      await once(ghost, "connect");
+      const upgraded = once(ghost, "data");
+      ghost.write(
+        `GET /sessions/${session.id}/live-ws HTTP/1.1\r\nHost: ${url.host}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ${randomBytes(16).toString("base64")}\r\n\r\n`,
+      );
+      const [response] = await upgraded;
+      expect(response.toString()).toContain("101 Switching Protocols");
+      ghost.resume();
+      const payload = Buffer.from(JSON.stringify({ type: "claim_if_vacant" }));
+      const mask = randomBytes(4);
+      const masked = Buffer.from(payload.map((byte, i) => byte ^ mask[i % 4]!));
+      ghost.write(Buffer.concat([Buffer.from([0x81, 0x80 | payload.length]), mask, masked]));
+      await expect.poll(owner).toMatch(/^live-/);
+      const ghostOwner = owner();
+
+      await openLiveSession(page, serve, "takeover-test");
+      await expect(page.locator("[data-live-takeover]")).toBeVisible();
+      await expect(page.locator("[data-live-takeover]")).toHaveCount(0, { timeout: 25_000 });
+      expect(owner()).not.toBe(ghostOwner);
+      await expect.poll(() => promptAlignment(page)).toEqual(ON_PROMPT);
+      // A healthy browser answers native pings even when the agent is idle.
+      const recoveredOwner = owner();
+      await page.waitForTimeout(16_000);
+      expect(owner()).toBe(recoveredOwner);
+      await expect(page.locator("[data-live-takeover]")).toHaveCount(0);
+    } finally {
+      ghost.destroy();
     }
   });
 });

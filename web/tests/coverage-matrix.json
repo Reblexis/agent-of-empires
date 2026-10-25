@@ -431,6 +431,7 @@
       "id": "terminal.live-size-owner",
       "kind": "live-playwright",
       "risk": "high",
+      "reason": "Ownership handoff, vacant-lock recovery and automatic release when a disconnected browser stops answering WebSocket pings.",
       "specs": ["tests/live/live-terminal.spec.ts", "src/hooks/useLiveTerminal.test.ts"],
       "components": ["web/src/components/LiveTerminalView.tsx", "web/src/hooks/useLiveTerminal.ts"]
     },
