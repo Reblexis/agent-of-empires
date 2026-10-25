@@ -37,11 +37,7 @@ function inlineCode(text: string): ReactNode {
 }
 
 /**
- * Structured rendering of the recap: the "Last ask:" opener becomes a
- * labeled lede, "- " lines a real bullet list, the rest paragraphs, with
- * backtick spans as code chips. The recap prompt asks for exactly this
- * shape, so no markdown engine is needed; any line the parse does not
- * recognize still renders as a paragraph.
+ * The goal is the lede; recent progress follows as plain paragraphs.
  */
 function Recap({ text }: { text: string }) {
   const lines = text.split("\n");
@@ -64,13 +60,13 @@ function Recap({ text }: { text: string }) {
   for (const raw of lines) {
     const line = raw.trim();
     if (!line) continue;
-    const ask = /^last ask:\s*/i.exec(line);
-    if (ask && blocks.length === 0 && bullets.length === 0) {
+    const goal = /^goal:\s*/i.exec(line);
+    if (goal && blocks.length === 0 && bullets.length === 0) {
       blocks.push(
         <div key={key++}>
-          <div className="text-[10px] font-medium uppercase tracking-wider text-text-dim mb-1">Last ask</div>
+          <div className="text-[10px] font-medium uppercase tracking-wider text-text-dim mb-1">Goal</div>
           <div className="text-[13px] font-medium leading-snug text-text-primary">
-            {inlineCode(line.slice(ask[0].length))}
+            {inlineCode(line.slice(goal[0].length))}
           </div>
         </div>,
       );
@@ -93,14 +89,8 @@ function Recap({ text }: { text: string }) {
 }
 
 /**
- * "Context" pane for terminal sessions: a short agent-generated recap of what
- * is happening in the session (last user ask, work done, open threads), so a
- * human returning to a forgotten session re-orients without replaying the
- * scrollback. Reads the daemon-cached snapshot; regenerates on open when the
- * cache predates the session's last completed turn, and on demand via the
- * refresh control. Terminal sessions only; structured sessions carry their
- * own inline conversation summary. The parent keys this component by session
- * id, so a session switch is a fresh mount, not a prop change.
+ * A session's overall goal followed by recent progress. The parent keys by
+ * session id, so changing sessions fetches a fresh snapshot.
  */
 export function ContextPane({ sessionId, session }: Props) {
   const [result, setResult] = useState<TerminalContextResult | null>(null);

@@ -33,14 +33,16 @@ afterEach(cleanup);
 describe("ContextPane", () => {
   it("renders a fresh cached recap without regenerating", async () => {
     getMock.mockResolvedValue({
-      text: "Last ask: fix the login bug",
+      text: "Goal: Make sign-in reliable.\n\nRedirect handling was fixed. The regression test passed.",
       generated_at: "2026-08-21T12:00:00Z",
       inflight: false,
     });
     render(<ContextPane sessionId="s1" session={session("2026-08-21T11:00:00Z")} />);
-    // The "Last ask:" opener renders as a labeled lede, not raw text.
-    expect(await screen.findByText("fix the login bug")).toBeTruthy();
-    expect(screen.getByText("Last ask")).toBeTruthy();
+    expect(await screen.findByText("Make sign-in reliable.")).toBeTruthy();
+    expect(screen.getByText("Goal")).toBeTruthy();
+    expect(screen.getByText("Redirect handling was fixed. The regression test passed.")).toBeTruthy();
+    expect(screen.queryByText("Last ask")).toBeNull();
+    expect(screen.queryByRole("list")).toBeNull();
     expect(refreshMock).not.toHaveBeenCalled();
   });
 

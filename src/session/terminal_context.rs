@@ -18,13 +18,9 @@ use crate::session::smart_rename::{resolve_rename_tool, truncate_bytes, SkipReas
 use serde::Serialize;
 use std::collections::HashMap;
 
-/// Head/tail byte budgets for the pane scrollback handed to the one-shot. The
-/// opening intent sits at the top and the current state at the bottom; the
-/// tail dominates because "what is happening now" matters more than history.
-/// The total stays well under the 48 KiB argv ceiling `conversation_summary`
-/// documents.
-const CONTEXT_HEAD_BYTES: usize = 6 * 1024;
-const CONTEXT_TAIL_BYTES: usize = 26 * 1024;
+// Preserve the opening goal as well as recent activity within the argv budget.
+const CONTEXT_HEAD_BYTES: usize = 16 * 1024;
+const CONTEXT_TAIL_BYTES: usize = 16 * 1024;
 
 /// A recap reads ~32 KiB of transcript on the cheap tier; standalone calls
 /// finish well under a minute, and the pane shows a spinner meanwhile.
@@ -44,16 +40,9 @@ pub struct ContextSnapshot {
     pub generated_at: chrono::DateTime<chrono::Utc>,
 }
 
-/// Instruction for the recap one-shot. Explicitly asks for the last user
-/// request first: the pane exists to re-orient a human returning to a session
-/// they forgot about.
+/// Stable identity prefix, also recognized in older one-shot transcripts.
 pub(crate) const INSTRUCTION: &str =
-    "You are given the terminal scrollback of a coding-agent session. \
-Write a short recap for the human who owns the session and needs to remember what is going on. \
-Start with one line: 'Last ask: <the user's most recent request, compressed>'. Then 2-5 short \
-bullet points: what the agent has done, the current state, and any open thread or blocker. \
-The scrollback may open with the CLI tool's startup banner or tips; ignore that boilerplate. \
-Output only the recap: no preamble, no headings, no code fences.";
+    "You are given the terminal scrollback of a coding-agent session.";
 
 /// Resolve the agent for a terminal-context one-shot and gate it: terminal
 /// sessions only, one-shot-capable, not sandboxed, not command-overridden.
@@ -93,9 +82,21 @@ pub fn resolve_context_agent(
     Ok(agent)
 }
 
-/// Build the one-shot prompt: instruction plus the bounded transcript.
-pub fn build_context_prompt(transcript: &str) -> String {
-    format!("{INSTRUCTION}\n\nScrollback:\n{}", transcript.trim())
+pub fn build_context_prompt(title: &str, previous: Option<&str>, transcript: &str) -> String {
+    let mut prompt = format!(
+        "{INSTRUCTION}\n{}\n\nSession title (a hint):\n{}",
+        crate::session::conversation_summary::RECAP_FORMAT,
+        truncate_bytes(title.trim(), 256)
+    );
+    if let Some(previous) = previous.filter(|text| !text.trim().is_empty()) {
+        prompt.push_str(
+            "\n\nPrevious recap (retain its overall goal unless the user clearly replaced it):\n",
+        );
+        prompt.push_str(truncate_bytes(previous.trim(), 4096));
+    }
+    prompt.push_str("\n\nScrollback (opening conversation, then latest activity):\n");
+    prompt.push_str(&bound_transcript(transcript.trim()));
+    prompt
 }
 
 /// Bounded head + `...` + tail on char boundaries; whole string if it fits.
@@ -222,9 +223,13 @@ mod serve {
             tracing::debug!(target: "terminal_context", session = %session_id, "skip: unusable pane capture");
             return;
         }
-        let transcript = bound_transcript(trimmed);
-
-        let prompt = build_context_prompt(&transcript);
+        let previous = state
+            .terminal_context
+            .lock()
+            .expect("terminal_context poisoned")
+            .get(&session_id)
+            .map(|snapshot| snapshot.text.clone());
+        let prompt = build_context_prompt(&title, previous.as_deref(), trimmed);
         let model = OneshotModel::Title(resolve_title_model_args(
             agent,
             &resolved.session.smart_rename_model,
@@ -321,9 +326,11 @@ mod tests {
 
     #[test]
     fn bound_transcript_keeps_head_and_tail() {
-        let long = "a".repeat(40 * 1024);
+        let long = format!("opening goal{}latest progress", "é".repeat(40 * 1024));
         let bounded = bound_transcript(&long);
         assert!(bounded.len() < long.len());
+        assert!(bounded.starts_with("opening goal"));
+        assert!(bounded.ends_with("latest progress"));
         assert!(bounded.contains("\n...\n"));
         let short = "hello world";
         assert_eq!(bound_transcript(short), short);
@@ -342,9 +349,29 @@ mod tests {
     }
 
     #[test]
-    fn context_prompt_carries_instruction_and_transcript() {
-        let p = build_context_prompt("user: fix the bug\nagent: done");
-        assert!(p.contains("Last ask:"));
-        assert!(p.contains("fix the bug"));
+    fn context_prompt_keeps_goal_evidence_when_recent_work_changes() {
+        let transcript = format!(
+            "user: make sign-in reliable\n{}\nuser: rerun the redirect test\nagent: test passed",
+            "tool output\n".repeat(5000)
+        );
+        let p = build_context_prompt(
+            "Reliable sign-in",
+            Some("Goal: Make sign-in reliable.\n\nRedirect handling was fixed."),
+            &transcript,
+        );
+        for evidence in [
+            "Reliable sign-in",
+            "Goal: Make sign-in reliable.",
+            "make sign-in reliable",
+            "test passed",
+        ] {
+            assert!(p.contains(evidence), "missing {evidence}");
+        }
+        assert!(p.len() < 40 * 1024);
+        let p = build_context_prompt(&"t".repeat(2000), Some(&"p".repeat(10000)), "latest");
+        assert!(!p.contains(&"t".repeat(257)));
+        assert!(!p.contains(&"p".repeat(4097)));
+        assert!(p.ends_with("latest"));
+        assert!(!build_context_prompt("Title", None, "latest").contains("Previous recap ("));
     }
 }

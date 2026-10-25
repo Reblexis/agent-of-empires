@@ -13,7 +13,9 @@ The dashboard is the home screen of the web app: a workspace sidebar on the left
 
 ### Context pane
 
-Terminal sessions get a **Context** tab in the dock beside Diff and Terminal: a short agent-generated recap of the session (the last user ask, work done, open threads), so returning to a forgotten session doesn't mean replaying the scrollback. It is the active right-dock tab every session opens on, including layouts saved before the pane existed; closing it is remembered until you reopen it from the activity bar. Opening the tab shows the cached recap and regenerates it automatically when a turn has completed since it was generated; the refresh control regenerates on demand. The recap renders the **Last ask** line as a lede and its dash lines as a bullet list. The recap is produced by the same utility agent smart rename uses (`smart_rename_agent`, default: the session's own agent) on its cheap model tier, reading a bounded slice of the tmux scrollback. Structured-view sessions summarize inline via **Summarize** instead.
+Terminal sessions get a **Context** tab in the dock beside Diff and Terminal. It starts with the session's overall **Goal**, followed by two or three sentences about recent progress, current state and any actual blocker. The goal stays stable through follow-ups and intermediate steps unless the user changes the overall objective. The recap uses the session title, previous recap and both the opening and latest tmux scrollback as evidence, rather than treating the latest request as the whole purpose.
+
+Context is the active right-dock tab every session opens on, including layouts saved before the pane existed; closing it is remembered until you reopen it from the activity bar. Opening the tab shows the cached recap and regenerates it automatically when a turn has completed since it was generated; the refresh control regenerates on demand. The same utility agent smart rename uses (`smart_rename_agent`, default: the session's own agent) produces the recap on its cheap model tier. Structured-view sessions use the same goal-and-recent-progress format through their inline **Summarize** feature.
 
 ## Creating a session
 

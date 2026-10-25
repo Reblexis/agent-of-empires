@@ -207,12 +207,16 @@ const MAX_TITLE_CHARS: usize = 60;
 /// Reject a candidate title with more than this many words.
 const MAX_TITLE_WORDS: usize = 8;
 
-/// Instruction prefix sent to the agent.
+/// Stable identity prefix, also recognized in older one-shot transcripts.
 pub(crate) const INSTRUCTION: &str =
-    "Generate a concise 3 to 5 word title summarizing the following task. \
+    "Generate a concise 3 to 5 word title summarizing the following task.";
+
+const TITLE_GUIDANCE: &str = "Name the user's overall goal or desired outcome across the session. \
+Choose a concrete title broad enough to remain accurate through implementation, debugging, \
+testing and deployment. Do not name the latest subtask, tool, file, blocker or progress status. \
+Keep enough specificity to distinguish this session from other work. \
 The transcript may begin with the CLI tool's startup banner, welcome message, tips, or help \
-text; ignore that boilerplate and title the user's actual request and the work done, never the \
-tool's own introduction. \
+text; ignore that boilerplate. \
 Output the title and nothing else: no quotes, no markdown, no code fences, no labels, \
 no preamble, no explanation, no trailing punctuation. The entire response must be just \
 the title on a single line. Do not refuse: if the task is unclear, still produce your \
@@ -225,7 +229,7 @@ pub fn build_prompt(user_message: &str) -> String {
     let sanitized = user_message.replace('\0', " ");
     let trimmed = sanitized.trim();
     let capped = truncate_bytes(trimmed, MAX_PROMPT_BYTES);
-    format!("{INSTRUCTION}\n\nTask:\n{capped}")
+    format!("{INSTRUCTION}\n{TITLE_GUIDANCE}\n\nTask:\n{capped}")
 }
 
 /// What a one-shot argv targets.
@@ -592,7 +596,7 @@ pub(crate) const ONESHOT_CONTAINER_WORKDIR: &str = "/tmp";
 /// The opening text of each aoe one-shot prompt. A transcript or rollout whose first user
 /// message starts with one of these is never a tab's conversation
 /// ([`crate::session::pointer_guard::conversation_is_oneshot`]), even if a caller forgets
-/// [`oneshot_cwd`]. Sourced from the prompt builders' own constants so the two cannot drift.
+/// [`oneshot_cwd`]. Keep these identity prefixes stable when changing prompt guidance.
 pub(crate) fn oneshot_prompt_prefixes() -> Vec<&'static str> {
     vec![
         INSTRUCTION,
@@ -2206,9 +2210,24 @@ Patched the race in auth.rs and added a regression test.";
 
     #[test]
     fn a_context_recap_is_never_adopted_as_a_tabs_conversation() {
-        // docs/guides/session-resume.md, "Never a one-shot": the context recap is one of aoe's
-        // own one-shots, so its prompt must be on the guard's list.
-        assert!(oneshot_prompt_prefixes().contains(&crate::session::terminal_context::INSTRUCTION));
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recap.jsonl");
+        let prompts = [
+            "Generate a concise 3 to 5 word title summarizing the following task. The transcript may begin with the CLI tool's startup banner",
+            "You are summarizing an ongoing coding-agent session for a human who wants to see, at a glance, what has happened so far. Write a concise summary in a few short bullet points",
+            "You are given the terminal scrollback of a coding-agent session. Write a short recap for the human who owns the session and needs to remember what is going on. Start with one line: 'Last ask:",
+            &crate::session::terminal_context::build_context_prompt("Improve sign-in", None, "user: fix redirects"),
+        ];
+        for prompt in prompts {
+            std::fs::write(
+                &path,
+                serde_json::json!({"type":"user", "message":{"content":prompt}}).to_string(),
+            )
+            .unwrap();
+            assert!(crate::session::pointer_guard::transcript_is_aoe_oneshot(
+                &path
+            ));
+        }
     }
 
     #[test]
@@ -2235,8 +2254,12 @@ Patched the race in auth.rs and added a regression test.";
         let prefixes = oneshot_prompt_prefixes();
         assert!(build_prompt("do the thing").starts_with(prefixes[0]));
         assert!(
-            crate::session::conversation_summary::build_summary_prompt(None, "delta")
+            crate::session::conversation_summary::build_summary_prompt(None, None, "delta")
                 .starts_with(prefixes[1])
+        );
+        assert!(
+            crate::session::terminal_context::build_context_prompt("Goal", None, "activity")
+                .starts_with(prefixes[2])
         );
         for p in &prefixes {
             assert!(
@@ -2314,7 +2337,7 @@ Rewrote the getting-started section and fixed two broken links.",
         let p = build_prompt(&msg);
         assert!(p.contains("start"));
         assert!(!p.contains('\u{0}'));
-        assert!(p.len() < 5000 + INSTRUCTION.len() + 64);
+        assert!(p.len() < 5000 + INSTRUCTION.len() + TITLE_GUIDANCE.len() + 64);
     }
 
     #[test]

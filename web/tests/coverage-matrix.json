@@ -3,6 +3,14 @@
   "description": "Surface/flow coverage matrix for the agent-of-empires web dashboard. Every component file under web/src/components/** must appear in at least one entry's `components` list (covered, deferred, or out-of-scope), or in coverage-matrix.exempt.json. CI validates this on every PR via tests/validate-coverage-matrix.mjs.",
   "surfaces": [
     {
+      "id": "sessions.context-goal-and-recent-progress",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["src/components/__tests__/ContextPane.test.tsx", "tests/live/session-context.spec.ts"],
+      "components": ["web/src/components/ContextPane.tsx"],
+      "description": "The context pane leads with the session's overall goal and renders recent progress as short prose, with cached, stale, empty and manual-refresh states covered."
+    },
+    {
       "id": "sessions.cross-agent-handoff-live",
       "description": "Both handoff directions launch with full permission bypass and preserve the source session.",
       "kind": "live-playwright",
