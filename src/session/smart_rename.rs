@@ -2271,7 +2271,7 @@ Patched the race in auth.rs and added a regression test.";
 
     #[test]
     fn strip_agent_banner_drops_only_the_claude_startup_box() {
-        let lc = INSTRUCTION.to_lowercase();
+        let lc = build_prompt(CLAUDE_BANNER_TRANSCRIPT).to_lowercase();
         assert!(lc.contains("startup banner") && lc.contains("ignore"));
 
         let stripped = strip_agent_banner(CLAUDE_BANNER_TRANSCRIPT, "claude");
