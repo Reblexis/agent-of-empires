@@ -8,7 +8,7 @@ import { createConnection } from "node:net";
 import { once } from "node:events";
 import { devices, type Page } from "@playwright/test";
 import { test, expect, type ServeHandle, type ServeOptions } from "../helpers/liveTest";
-import { seedSessionViaAoeAdd, waitForSessions } from "../helpers/aoeServe";
+import { resolveAoeBinary, seedSessionViaAoeAdd, waitForSessions } from "../helpers/aoeServe";
 import { clickSidebarSession, openMobileSidebar } from "../helpers/sidebar";
 
 test.use({ ...devices["iPhone 13"] });
@@ -439,57 +439,73 @@ while true; do sleep 1; done
       };
     }, PROMPT);
 
-  async function takeOver(page: Page) {
-    const banner = page.locator("[data-live-takeover]");
-    await banner.waitFor({ state: "visible", timeout: 10_000 });
-    await banner.click();
-    await banner.waitFor({ state: "detached", timeout: 10_000 });
-  }
-
-  test("ownership ping-pong keeps the cursor on the prompt row", async ({ browser, spawnServe }) => {
+  test("another device never blocks typing or shows a takeover prompt and both views stay in sync", async ({
+    browser,
+    spawnServe,
+  }) => {
     test.setTimeout(120_000);
-    const serve = await serveAgent(spawnServe, "takeover-test", PROMPTBOX);
+    const serve = await serveAgent(
+      spawnServe,
+      "takeover-test",
+      `#!/bin/bash
+stty -echo
+printf 'READY> '
+while IFS= read -r line; do printf '\nSYNC:%s\nREADY> ' "$line"; done
+`,
+    );
     const { ctxA, ctxB, a, b, open } = await openPhones(browser, serve);
+    const input = (page: Page) => page.locator('[data-term="agent"] textarea');
+    const output = (page: Page) => page.locator('[data-term="agent"] [data-live-content]');
     try {
       await open(a);
-      await expect(a.locator("[data-live-takeover]")).toHaveCount(0);
-      await expect.poll(() => promptAlignment(a), { timeout: 10_000 }).toEqual(ON_PROMPT);
       await open(b);
-      // The reported bug drifted the cursor a row below the prompt on every take-back.
-      for (const [winner, loser] of [
-        [b, a],
-        [a, b],
-        [b, a],
-        [a, b],
-        [b, a],
+      // The second viewer has received a real screen while a healthy first viewer owns the size.
+      await expect(b.locator("[data-live-takeover]")).toHaveCount(0);
+      for (const [sender, message] of [
+        [b, "phone"],
+        [a, "desktop"],
+        [b, "phone-again"],
       ] as const) {
-        await takeOver(winner);
-        await loser.locator("[data-live-takeover]").waitFor({ state: "visible", timeout: 10_000 });
-        await expect.poll(() => promptAlignment(winner), { timeout: 10_000 }).toEqual(ON_PROMPT);
+        await input(sender).fill(message);
+        await input(sender).press("Enter");
+        for (const viewer of [a, b]) await expect(output(viewer)).toContainText(`SYNC:${message}`);
       }
-    } finally {
+      // Independent sockets can send together without either losing its complete input batch.
+      await Promise.all([input(a).fill("simultaneous-a\n"), input(b).fill("simultaneous-b\n")]);
+      for (const viewer of [a, b]) {
+        await expect(output(viewer)).toContainText("SYNC:simultaneous-a");
+        await expect(output(viewer)).toContainText("SYNC:simultaneous-b");
+      }
+      await b.reload();
+      await expect(output(b)).toContainText("SYNC:simultaneous-a");
+      await expect(b.locator("[data-live-takeover]")).toHaveCount(0);
+      await input(b).fill("reconnected");
+      await input(b).press("Enter");
+      for (const viewer of [a, b]) await expect(output(viewer)).toContainText("SYNC:reconnected");
       await ctxA.close();
+      await input(b).fill("owner-closed");
+      await input(b).press("Enter");
+      await expect(output(b)).toContainText("SYNC:owner-closed");
+      await b.screenshot({ path: test.info().outputPath("multi-device-sync.png") });
+    } finally {
+      await ctxA.close().catch(() => {});
       await ctxB.close();
     }
   });
 
-  test("released lock auto-reclaims without another take-over tap", async ({ browser, spawnServe }) => {
+  test("a released size lock recovers without a prompt or cursor drift", async ({ browser, spawnServe }) => {
     test.setTimeout(120_000);
     const serve = await serveAgent(spawnServe, "takeover-test", PROMPTBOX);
     const { ctxA, ctxB, a, b, open } = await openPhones(browser, serve);
     try {
       await open(a);
-      await expect(a.locator("[data-live-takeover]")).toHaveCount(0);
       await open(b);
-      await takeOver(b);
-      await a.locator("[data-live-takeover]").waitFor({ state: "visible", timeout: 10_000 });
-      // A visible demoted viewer reclaims the vacant lock on its own.
-      await ctxB.close();
-      await a.locator("[data-live-takeover]").waitFor({ state: "detached", timeout: 15_000 });
-      await expect.poll(() => promptAlignment(a), { timeout: 10_000 }).toEqual(ON_PROMPT);
-    } finally {
+      await expect(b.locator("[data-live-takeover]")).toHaveCount(0);
       await ctxA.close();
-      await ctxB.close().catch(() => {});
+      await expect.poll(() => promptAlignment(b), { timeout: 15_000 }).toEqual(ON_PROMPT);
+    } finally {
+      await ctxA.close().catch(() => {});
+      await ctxB.close();
     }
   });
 
@@ -530,9 +546,16 @@ while true; do sleep 1; done
       const ghostOwner = owner();
 
       await openLiveSession(page, serve, "takeover-test");
-      await expect(page.locator("[data-live-takeover]")).toBeVisible();
-      await expect(page.locator("[data-live-takeover]")).toHaveCount(0, { timeout: 25_000 });
-      expect(owner()).not.toBe(ghostOwner);
+      await expect(page.locator("[data-live-takeover]")).toHaveCount(0);
+      await expect
+        .poll(
+          () => {
+            const current = owner();
+            return current.startsWith("live-") && current !== ghostOwner;
+          },
+          { timeout: 25_000 },
+        )
+        .toBe(true);
       await expect.poll(() => promptAlignment(page)).toEqual(ON_PROMPT);
       // A healthy browser answers native pings even when the agent is idle.
       const recoveredOwner = owner();
@@ -626,5 +649,90 @@ while True:
       .toBe(index + 1);
     expected = Buffer.concat([expected, Buffer.from(bytes), Buffer.from([0x1e])]);
     expect(readFileSync(file), label).toEqual(expected);
+  }
+});
+
+test("size ownership never blocks binary or pasted input and read-only rejects both", async ({ page, spawnServe }) => {
+  for (const readOnly of [false, true]) {
+    const serve = await spawnServe({
+      readOnly,
+      seedFn: (seedEnv) => {
+        seedSessionViaAoeAdd({
+          title: "shared-input",
+          agentScript: `#!/bin/bash
+stty raw -echo
+printf '\\e[?2004l'
+exec python3 -u -c 'import os
+f = open(os.path.join(os.environ["HOME"], "shared-input.bin"), "ab", buffering=0)
+while True:
+ b = os.read(0, 4096)
+ if not b: break
+ f.write(b)
+'
+`,
+        })(seedEnv);
+        // Seed a running pane before starting the read-only daemon.
+        const started = spawnSync(resolveAoeBinary(), ["session", "start", "shared-input"], { env: seedEnv.env });
+        expect(started.status, started.stderr?.toString()).toBe(0);
+      },
+    });
+    const session = (await waitForSessions(serve.baseUrl)).find((s) => s.title === "shared-input")!;
+    const file = join(serve.home, "shared-input.bin");
+    await expect.poll(() => existsSync(file)).toBe(true);
+    await page.goto(serve.baseUrl);
+    const ownership = await page.evaluate(async (id) => {
+      const connect = () =>
+        new Promise<WebSocket>((resolve) => {
+          const ws = new WebSocket(`${location.origin.replace(/^http/, "ws")}/sessions/${id}/live-ws`);
+          ws.onopen = () => resolve(ws);
+        });
+      const resize = (ws: WebSocket, cols = 80) =>
+        new Promise<boolean>((resolve) => {
+          const listen = (ev: MessageEvent) => {
+            if (typeof ev.data !== "string") return;
+            const message = JSON.parse(ev.data) as { type?: string; is_owner: boolean };
+            if (message.type !== "size_owner") return;
+            ws.removeEventListener("message", listen);
+            resolve(message.is_owner);
+          };
+          ws.addEventListener("message", listen);
+          ws.send(JSON.stringify({ type: "resize", cols, rows: 24 }));
+        });
+      const a = await connect();
+      const ownedA = await resize(a);
+      const b = await connect();
+      const ownedB = await resize(b, 52);
+      // The size-owner reply is an ordered processing fence after each input batch.
+      await Promise.all(
+        [a, b].map(async (ws, index) => {
+          ws.send(new Uint8Array());
+          ws.send(JSON.stringify({ type: "paste", text: "", submit: false }));
+          ws.send(new TextEncoder().encode(index ? "B2" : "A1"));
+          ws.send(JSON.stringify({ type: "paste", text: index ? "P2" : "P1", submit: false }));
+          await resize(ws, index ? 52 : 80);
+        }),
+      );
+      a.close();
+      b.close();
+      return [ownedA, ownedB];
+    }, session.id);
+    expect(ownership).toEqual([true, false]);
+    const size = spawnSync("tmux", ["-S", serve.tmuxSocket, "list-panes", "-a", "-F", "#{pane_width} #{pane_height}"], {
+      env: serve.env,
+      encoding: "utf8",
+      timeout: 5_000,
+    });
+    expect(size.status).toBe(0);
+    expect(size.stdout.trim()).toBe("80 24");
+    if (readOnly) {
+      expect(readFileSync(file).toString()).toBe("");
+    } else {
+      await expect.poll(() => readFileSync(file).length).toBe(8);
+      const bytes = readFileSync(file).toString();
+      // Concurrent batches can interleave, each complete message arrives exactly once.
+      expect(bytes.match(/A1|B2|P1|P2/g)?.sort()).toEqual(["A1", "B2", "P1", "P2"]);
+      expect(bytes.indexOf("A1")).toBeLessThan(bytes.indexOf("P1"));
+      expect(bytes.indexOf("B2")).toBeLessThan(bytes.indexOf("P2"));
+    }
   }
 });

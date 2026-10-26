@@ -215,75 +215,76 @@ describe("reconnect", () => {
 });
 
 describe("size owner", () => {
-  it("claims a vacant lock on open and waits for the owner verdict", () => {
+  it("claims a vacant size lock and tracks its verdict", () => {
     const { result, ws } = mount();
-    expect(result.current.state).toMatchObject({ isOwner: false, ownerKnown: false });
+    expect(result.current.state).toMatchObject({ isOwner: false });
     expect(ws.json()).toContainEqual({ type: "claim_if_vacant" });
 
     ws.deliver({ type: "size_owner", is_owner: false });
-    expect(result.current.state).toMatchObject({ isOwner: false, ownerKnown: true });
+    expect(result.current.state).toMatchObject({ isOwner: false });
     ws.deliver({ type: "size_owner", is_owner: true });
     expect(result.current.state.isOwner).toBe(true);
   });
 
-  it("drops input once ownership is denied instead of sending it after a later takeover", () => {
+  it("another device never blocks typing or queues it for a later takeover", () => {
     const { result, ws } = mount();
-    ws.deliver({ type: "size_owner", is_owner: false });
-    let accepted: boolean | undefined;
-    act(() => {
-      accepted = result.current.sendData("x");
-    });
-    expect(accepted).toBe(false);
-
-    ws.deliver({ type: "size_owner", is_owner: true });
-    expect(ws.bytes()).toEqual([]);
-    act(() => {
-      accepted = result.current.sendData("y");
-    });
-    expect(accepted).toBe(true);
-    expect(ws.bytes()).toEqual(["y"]);
+    for (const owner of [false, true, false]) {
+      ws.deliver({ type: "size_owner", is_owner: owner });
+      act(() => expect(result.current.sendData(owner ? "y" : "x")).toBe(true));
+    }
+    expect(ws.bytes()).toEqual(["x", "y", "x"]);
+    expect(ws.json().filter((m) => m.type === "claim")).toEqual([]);
   });
 
-  it("queues the first typed bytes until a newly selected session owns the pane", () => {
-    const { result, ws } = mount(false);
-    let accepted: boolean | undefined;
+  it("sends connected input without waiting for a size-owner verdict", () => {
+    const { result, ws } = mount();
     act(() => {
-      accepted = result.current.sendData("first");
+      expect(result.current.sendData("first")).toBe(true);
+      expect(result.current.sendPaste("two\nlines", true)).toBe(true);
     });
-    expect(accepted).toBe(true);
-    ws.open();
-    expect(ws.bytes()).toEqual([]);
-    ws.deliver({ type: "size_owner", is_owner: true });
     expect(ws.bytes()).toEqual(["first"]);
+    expect(ws.json()).toContainEqual({ type: "paste", text: "two\nlines", submit: true });
   });
 
-  it("sends pastes as a JSON message, queued in order with keystrokes and refused to a non-owner", () => {
+  it("flushes input once in order on connect even when another device owns the size", () => {
     const { result, ws } = mount(false);
-    const accepted: boolean[] = [];
     act(() => {
-      accepted.push(result.current.sendData("a"));
-      accepted.push(result.current.sendPaste("two\nlines", true));
+      expect(result.current.sendData("a")).toBe(true);
+      expect(result.current.sendPaste("two\nlines", true)).toBe(true);
     });
     ws.open();
-    ws.deliver({ type: "size_owner", is_owner: true });
     const input = ws.sent.slice(-2).map((d) => (typeof d === "string" ? JSON.parse(d) : new TextDecoder().decode(d)));
     expect(input).toEqual(["a", { type: "paste", text: "two\nlines", submit: true }]);
-
     ws.deliver({ type: "size_owner", is_owner: false });
-    act(() => {
-      accepted.push(result.current.sendPaste("late", false));
-    });
-    expect(accepted).toEqual([true, true, false]);
-    expect(ws.json().filter((m) => m.type === "paste")).toHaveLength(1);
+    ws.deliver({ type: "size_owner", is_owner: true });
+    act(() => expect(result.current.sendPaste("late", false)).toBe(true));
+    expect(ws.bytes()).toEqual(["a"]);
+    expect(ws.json().filter((m) => m.type === "paste")).toEqual([
+      { type: "paste", text: "two\nlines", submit: true },
+      { type: "paste", text: "late", submit: false },
+    ]);
   });
 
-  it("claims on take-over and keeps reporting its grid while a non-owner", () => {
+  it("bounds disconnected input and discards it when switching sessions", () => {
+    const { result, rerender } = renderHook(({ id }) => useLiveTerminal(id), { initialProps: { id: "old" } });
+    act(() => {
+      expect(result.current.sendData("x".repeat(64 * 1024))).toBe(true);
+      expect(result.current.sendData("overflow")).toBe(false);
+    });
+    rerender({ id: "new" });
+    const next = FakeWS.sockets[1]!;
+    next.open();
+    expect(next.bytes()).toEqual([]);
+    act(() => expect(result.current.sendData("new-session")).toBe(true));
+    expect(next.bytes()).toEqual(["new-session"]);
+  });
+
+  it("keeps reporting its grid without stealing the size lock", () => {
     const { result, ws } = mount();
     ws.deliver({ type: "size_owner", is_owner: false });
     ws.sent.length = 0;
-    act(() => result.current.claim());
     act(() => result.current.sendResize(52, 20));
-    expect(ws.json()).toEqual(expect.arrayContaining([{ type: "claim" }, { type: "resize", cols: 52, rows: 20 }]));
+    expect(ws.json()).toEqual([{ type: "resize", cols: 52, rows: 20 }]);
   });
 
   it("ignores a superseded socket closing after its replacement owns the pane", () => {
@@ -294,7 +295,7 @@ describe("size owner", () => {
     replacement.open();
     replacement.deliver({ type: "size_owner", is_owner: true });
     act(() => ws.onclose?.(new CloseEvent("close")));
-    expect(result.current.state).toMatchObject({ isOwner: true, ownerKnown: true });
+    expect(result.current.state).toMatchObject({ isOwner: true });
   });
 
   it("resets ownership when the active socket closes", () => {
@@ -303,7 +304,7 @@ describe("size owner", () => {
       const { result, ws } = mount();
       ws.deliver({ type: "size_owner", is_owner: true });
       act(() => ws.onclose?.(new CloseEvent("close")));
-      expect(result.current.state).toMatchObject({ isOwner: false, ownerKnown: false });
+      expect(result.current.state).toMatchObject({ isOwner: false });
     } finally {
       vi.clearAllTimers();
       vi.useRealTimers();

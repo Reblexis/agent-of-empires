@@ -3,6 +3,18 @@
   "description": "Surface/flow coverage matrix for the agent-of-empires web dashboard. Every component file under web/src/components/** must appear in at least one entry's `components` list (covered, deferred, or out-of-scope), or in coverage-matrix.exempt.json. CI validates this on every PR via tests/validate-coverage-matrix.mjs.",
   "surfaces": [
     {
+      "id": "terminal.multi-device-sync",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/live-terminal.spec.ts",
+        "src/hooks/useLiveTerminal.test.ts",
+        "src/components/__tests__/LiveTerminalView.recover.test.tsx"
+      ],
+      "components": ["web/src/components/LiveTerminalView.tsx"],
+      "description": "Multiple devices type and paste into the same terminal without takeover prompts; output synchronizes, size ownership stays separate, reconnects preserve ordered input, and read-only input is rejected."
+    },
+    {
       "id": "sessions.context-goal-and-recent-progress",
       "kind": "live-playwright",
       "risk": "medium",

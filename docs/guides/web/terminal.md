@@ -64,6 +64,13 @@ Each session can open a **paired terminal**: a host shell (or, for a sandboxed s
 
 The **Container** tab launches the container user's preferred shell, resolved inside the container from the passwd entry, then `$SHELL`, then bash or sh. Candidates must be regular executables that either have a recognized shell name or appear in `/etc/shells`; known-compatible shells run in login mode.
 
+## Multiple devices
+
+- Every connected dashboard receives the same terminal output. Typing, paste, and mouse input work on every device without a takeover prompt, including before the size-owner response arrives.
+- One connection controls the shared terminal dimensions. Other connections keep their own scroll position and render that same screen; opening, typing in, or reconnecting another device never steals the size lock or resizes the pane repeatedly.
+- Input queued while connecting is sent once, in order, when that connection opens. Session changes discard unsent input for the previous session. The pending queue stays bounded.
+- Read-only servers still reject all terminal input from every device.
+
 ## Reconnect
 
 If the WebSocket drops (network blip, tunnel re-auth, daemon restart), the terminal retries on a fast ladder (200 ms through 10 s), so transient warm-up failures recover in well under five seconds. A banner shows the state, and a permanently dead pane offers a manual retry instead of looping. The banner names the close code the server returned:
@@ -74,7 +81,7 @@ If the WebSocket drops (network blip, tunnel re-auth, daemon restart), the termi
 | 1013 | `tmux_not_ready` | Pane was not capturable within 2s, usually a benign warm-up; retries normally. |
 | 4001 | `pty_dead` | The pane permanently exited; shows a retry banner. |
 
-A network interruption can leave the old connection open on the server while the browser reconnects. The server pings each live connection every five seconds and releases its terminal ownership after 15 seconds without a pong. A visible viewer at the live edge then reclaims the vacant lock automatically, clearing a stale "Live on another device" banner. A healthy idle browser answers pings without any typing.
+A network interruption can leave the old connection open on the server while the browser reconnects. The server pings each live connection every five seconds and releases its terminal ownership after 15 seconds without a pong. A visible viewer at the live edge then reclaims the vacant size lock automatically; typing on other devices does not wait for that recovery. A healthy idle browser answers pings without any typing.
 
 Under `aoe serve --read-only` the terminal renders the stream but drops keystrokes, and the session-row delete and triage actions are hidden.
 
