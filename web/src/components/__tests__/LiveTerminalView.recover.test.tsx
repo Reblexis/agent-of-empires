@@ -15,7 +15,6 @@ const live = vi.hoisted(() => ({
     frame: null,
     reading: false,
     isOwner: false,
-    ownerKnown: false,
     transport: null,
     paneDead: true,
     stats: { frames: 0, patches: 0, wireBytes: 0, resyncs: 0 },
@@ -64,6 +63,15 @@ const mountDead = async (status: "Running" | "Stopped" = "Running") => {
 };
 
 describe("LiveTerminalView after the agent exits", () => {
+  it("never prompts to take over a connected session on another device", async () => {
+    live.state.connected = true;
+    live.state.paneDead = false;
+    live.state.isOwner = false;
+    render(<LiveTerminalView session={makeSession({ id: "shared" })} />);
+    await screen.findByRole("textbox", { name: "Live terminal input" });
+    expect(screen.queryByRole("button", { name: /another device|take over/i })).toBeNull();
+  });
+
   it("Restart re-runs ensure so the pane is revived and redialed", async () => {
     await mountDead();
     fireEvent.click(screen.getByRole("button", { name: "Restart" }));

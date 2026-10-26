@@ -17,7 +17,6 @@ const live = vi.hoisted(() => ({
     frame: null,
     reading: false,
     isOwner: true,
-    ownerKnown: true,
     transport: null,
     stats: { frames: 0, patches: 0, wireBytes: 0, resyncs: 0 },
   },
@@ -84,7 +83,7 @@ describe("LiveTerminalView compose", () => {
   it("toasts an undelivered paste and keeps the sheet and draft", async () => {
     live.state.isOwner = false;
     const { error, text } = await openCompose("compose-refused", false);
-    expect(error).toHaveBeenCalledWith(expect.stringContaining("another device"));
+    expect(error).toHaveBeenCalledWith(expect.stringContaining("queue is full"));
     expect(screen.getByRole("dialog", { name: "Compose" })).toBeTruthy();
     expect(text.value).toBe("ship it");
   });

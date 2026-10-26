@@ -16,14 +16,14 @@
 //!     client drops its first `shift` rows, appends `shift` blank ones, then replaces
 //!     the listed rows. `base` names the `seq` it applies to.
 //!   - `{"type":"size_owner","is_owner":bool}`: only the owner resizes the shared tmux
-//!     window and may type; the lock lives in tmux user options, so the web view and the
-//!     native TUI honor the same owner.
+//!     window; input works on every writable connection. The lock lives in tmux user
+//!     options, so the web view and native TUI honor the same size owner.
 //!   - `{"type":"transport","grid":bool}`: `false` is the capture fallback, which cannot
 //!     suppress a half-drawn repaint.
 //!   - `{"type":"clipboard","text":"..."}`: an OSC 52 write by the pane.
 //!
-//! Client to server: binary frames are raw pane input (dropped for a read-only or
-//! non-owner client), and the control messages are `resize` (claim the size lock and
+//! Client to server: binary frames are raw pane input (dropped for a read-only
+//! server), and the control messages are `resize` (claim the size lock and
 //! size the window), `claim` / `claim_if_vacant` (take over from a non-owner), `window`
 //! (capture window in lines), `cadence` (fast at the live edge, idle otherwise),
 //! `resync` (lost patch continuity, send a full frame) and
@@ -936,7 +936,7 @@ async fn handle_live_ws_inner(
                     let cursor = cursor.filter(|c| c.position_reliable);
                     // Keep the size-owner lock alive while we hold it, and
                     // notice promptly if another client took over (then we
-                    // demote ourselves to a read-only viewer).
+                    // stop resizing from this connection).
                     if capture_settings.is_owner.load(Ordering::Relaxed)
                         && last_heartbeat.elapsed() >= SIZE_OWNER_HEARTBEAT
                     {
@@ -1333,12 +1333,8 @@ async fn handle_live_ws_inner(
                         last_pong_at = tokio::time::Instant::now();
                     }
                     Some(Ok(Message::Binary(data))) => {
-                        // Only the size owner may type; a non-owner is a
-                        // read-only viewer until it explicitly takes over.
-                        if read_only
-                            || data.is_empty()
-                            || !settings.is_owner.load(Ordering::Relaxed)
-                        {
+                        // Size ownership prevents resize fights, never input from another device.
+                        if read_only || data.is_empty() {
                             continue;
                         }
                         let send_nudge = Arc::clone(&nudge);
@@ -1492,7 +1488,7 @@ async fn handle_live_ws_inner(
                                 }
                             }
                             LiveClientMessage::Paste { text, submit } => {
-                                if read_only || !settings.is_owner.load(Ordering::Relaxed) {
+                                if read_only {
                                     continue;
                                 }
                                 let text = paste_payload(text, submit);

@@ -46,7 +46,6 @@ export interface LiveTerminalState {
   frame: LiveFrame | null;
   reading: boolean;
   isOwner: boolean;
-  ownerKnown: boolean;
   transport: "grid" | "snapshot" | null;
   /** The agent exited and left a dead pane; redialing cannot help until it is restarted. */
   paneDead: boolean;
@@ -61,7 +60,6 @@ const INITIAL_STATE: LiveTerminalState = {
   frame: null,
   reading: false,
   isOwner: false,
-  ownerKnown: false,
   transport: null,
   paneDead: false,
   stats: { frames: 0, patches: 0, wireBytes: 0, resyncs: 0 },
@@ -87,8 +85,6 @@ export function useLiveTerminal(
   const telemetrySeenRef = useRef(false);
   // Binary keystrokes and JSON paste messages, in send order.
   const pendingInputRef = useRef<(Uint8Array<ArrayBuffer> | string)[]>([]);
-  // Hold input until the server confirms this connection owns the pane.
-  const ownerKnownRef = useRef(false);
   // Local copy of the pane's scrollback (lib/liveHistory.ts). While it is incomplete the wire window is widened to the
   // full history (`downloadingRef`); otherwise the wire carries the component's live window and the copy is extended
   // from it.
@@ -97,7 +93,7 @@ export function useLiveTerminal(
   const lastDownloadRef = useRef(Number.NEGATIVE_INFINITY);
   const sentWindowRef = useRef<number | null>(null);
 
-  const { state, read, setState } = useSnapshotStore(() => INITIAL_STATE);
+  const { state, setState } = useSnapshotStore(() => INITIAL_STATE);
 
   const sendIfOpen = useCallback((data: string | ArrayBufferView<ArrayBuffer>) => {
     const ws = wsRef.current;
@@ -126,13 +122,11 @@ export function useLiveTerminal(
   useEffect(() => {
     if (!sessionId) {
       pendingInputRef.current = [];
-      ownerKnownRef.current = false;
       return;
     }
 
     wsRef.current?.close();
     pendingInputRef.current = [];
-    ownerKnownRef.current = false;
     if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
     if (countdownRef.current) clearInterval(countdownRef.current);
     retryCountRef.current = 0;
@@ -157,7 +151,6 @@ export function useLiveTerminal(
     function connect() {
       if (disposed) return;
       disposeInflater();
-      ownerKnownRef.current = false;
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
       const url = wsPath.startsWith("/")
         ? `${proto}//${location.host}${wsPath}`
@@ -178,7 +171,7 @@ export function useLiveTerminal(
       sentWindowRef.current = null;
 
       const flushPendingInput = () => {
-        if (wsRef.current !== ws || !ownerKnownRef.current || ws.readyState !== WebSocket.OPEN) return;
+        if (wsRef.current !== ws || ws.readyState !== WebSocket.OPEN) return;
         const pending = pendingInputRef.current;
         pendingInputRef.current = [];
         for (const data of pending) ws.send(data);
@@ -204,6 +197,7 @@ export function useLiveTerminal(
         syncWindow();
         ws.send(encodeControl({ type: "cadence", fast: desired.fast }));
         ws.send(encodeControl({ type: "caps", deflate: supportsFrameDeflate(), patch: true }));
+        flushPendingInput();
       };
 
       let hasReceivedData = false;
@@ -221,11 +215,7 @@ export function useLiveTerminal(
         }
         if (msg.type === "size_owner") {
           const owner = msg.is_owner;
-          ownerKnownRef.current = true;
-          setState((prev) =>
-            prev.isOwner === owner && prev.ownerKnown ? prev : { ...prev, isOwner: owner, ownerKnown: true },
-          );
-          if (owner) flushPendingInput();
+          setState((prev) => (prev.isOwner === owner ? prev : { ...prev, isOwner: owner }));
           return;
         }
         if (msg.type === "transport") {
@@ -317,9 +307,8 @@ export function useLiveTerminal(
       ws.onclose = (event: CloseEvent) => {
         if (disposed || wsRef.current !== ws) return;
         disposeInflater();
-        ownerKnownRef.current = false;
         const paneDead = event.code === CLOSE_CODE_PTY_DEAD;
-        setState((prev) => ({ ...prev, connected: false, isOwner: false, ownerKnown: false, paneDead }));
+        setState((prev) => ({ ...prev, connected: false, isOwner: false, paneDead }));
         if (paneDead) {
           retryCountRef.current = MAX_RETRIES;
         }
@@ -390,27 +379,21 @@ export function useLiveTerminal(
     };
   }, [sessionId, wsPath, setState, syncWindow]);
 
-  /** Whether `message` was sent or queued for the owner confirmation. */
-  const sendInput = useCallback(
-    (message: Uint8Array<ArrayBuffer> | string): boolean => {
-      const ws = wsRef.current;
-      const isOwner = read().isOwner;
-      if (ownerKnownRef.current && isOwner && ws?.readyState === WebSocket.OPEN) {
-        ws.send(message);
-        return true;
-      }
-      // A confirmed non-owner must not queue keystrokes for a later takeover.
-      if (ownerKnownRef.current && !isOwner) return false;
-      const size = (item: Uint8Array | string) =>
-        typeof item === "string" ? new TextEncoder().encode(item).byteLength : item.byteLength;
-      const pending = pendingInputRef.current;
-      const used = pending.reduce((total, item) => total + size(item), 0);
-      if (size(message) > MAX_PENDING_INPUT_BYTES - used) return false;
-      pending.push(message);
+  /** Whether `message` was sent or queued while connecting. Size ownership only controls resizing. */
+  const sendInput = useCallback((message: Uint8Array<ArrayBuffer> | string): boolean => {
+    const ws = wsRef.current;
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(message);
       return true;
-    },
-    [read],
-  );
+    }
+    const size = (item: Uint8Array | string) =>
+      typeof item === "string" ? new TextEncoder().encode(item).byteLength : item.byteLength;
+    const pending = pendingInputRef.current;
+    const used = pending.reduce((total, item) => total + size(item), 0);
+    if (size(message) > MAX_PENDING_INPUT_BYTES - used) return false;
+    pending.push(message);
+    return true;
+  }, []);
 
   const sendData = useCallback((data: string) => sendInput(new TextEncoder().encode(data)), [sendInput]);
 
@@ -419,8 +402,6 @@ export function useLiveTerminal(
     (text: string, submit: boolean) => sendInput(encodeControl({ type: "paste", text, submit })),
     [sendInput],
   );
-
-  const claim = useCallback(() => sendIfOpen(encodeControl({ type: "claim" })), [sendIfOpen]);
 
   const forwardWheel = useCallback(
     (up: boolean, sgr: boolean, col: number, row: number) => sendIfOpen(wheelMouseBytes(up, sgr, col, row)),
@@ -504,7 +485,6 @@ export function useLiveTerminal(
     enterReading,
     returnToLive,
     manualReconnect,
-    claim,
     maxRetries: MAX_RETRIES,
   };
 }

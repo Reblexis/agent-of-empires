@@ -24,7 +24,6 @@ import {
 } from "../lib/terminalFocus";
 import { isSessionActive } from "../lib/session";
 import { recallScreen, screenKey } from "../lib/screenCache";
-import { StrokeIcon } from "./icons";
 
 interface Props {
   session: SessionResponse;
@@ -92,19 +91,14 @@ export function LiveTerminalView({ session, active = true, surface = "agent", te
   }, [ctrlActive]);
   const [composeOpen, setComposeOpen] = useState(false);
 
-  const notOwner = live.state.ownerKnown && !live.state.isOwner;
   const lastUndeliveredToastRef = useRef(0);
   // Throttled, so a held repeat key does not stack toasts.
   const reportUndelivered = useCallback(() => {
     const now = Date.now();
     if (now - lastUndeliveredToastRef.current < 2000) return;
     lastUndeliveredToastRef.current = now;
-    reportError(
-      notOwner
-        ? "Not sent: this session is live on another device. Take over first."
-        : "Not sent: terminal not connected.",
-    );
-  }, [notOwner]);
+    reportError("Not sent: terminal input queue is full.");
+  }, []);
   const { sendData, sendPaste } = live;
   // Explicit sends (toolbar, paste, compose) report a drop; typed keys stay quiet.
   const sendDataOrReport = useCallback(
@@ -335,22 +329,6 @@ export function LiveTerminalView({ session, active = true, surface = "agent", te
           <span className="text-xs text-status-warning bg-surface-900/90 border border-surface-700/60 rounded-full px-4 py-2 max-w-md break-words text-center">
             {ensureWarning}
           </span>
-        </div>
-      )}
-
-      {live.state.connected && live.state.ownerKnown && !live.state.isOwner && (
-        <div className="absolute left-0 right-0 top-3 flex justify-center z-20 px-3">
-          <button
-            type="button"
-            onClick={live.claim}
-            data-live-takeover
-            className="flex items-center gap-1.5 text-xs font-semibold text-white bg-brand-600 hover:bg-brand-500 active:bg-brand-700 border border-brand-400/50 rounded-full px-4 py-2 shadow-lg cursor-pointer animate-fade-in"
-          >
-            <StrokeIcon size={13} strokeWidth="2.5" hidden>
-              <path d="M9 18l6-6-6-6" />
-            </StrokeIcon>
-            Live on another device. Take over
-          </button>
         </div>
       )}
 
