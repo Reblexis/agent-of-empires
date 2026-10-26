@@ -11,6 +11,12 @@ The dashboard is the home screen of the web app: a workspace sidebar on the left
 - **Top bar** carries the command palette, the right-panel picker, and the overflow menu.
 - **Home screen** (no session selected) shows a count of running, waiting, and error sessions.
 
+### Timeline pane
+
+The **Timeline** tab shows the planner's now marker and upcoming work, read-only.
+It stays available across sessions and reloads. See the [planner contract](../web-dashboard.md#planner-timeline)
+for date precision, refresh, timezone and operator setup.
+
 ### Context pane
 
 Terminal sessions get a **Context** tab in the dock beside Diff and Terminal. It starts with the session's overall **Goal**, followed by two or three sentences about recent progress, current state and any actual blocker. The goal stays stable through follow-ups and intermediate steps unless the user changes the overall objective. The recap uses the session title, previous recap and both the opening and latest tmux scrollback as evidence, rather than treating the latest request as the whole purpose.
@@ -60,9 +66,11 @@ A grouping toggle next to it cycles **By repo** (default), **By group** (the gro
 
 ## Triage: pin, archive, snooze
 
+**Favorites**: with `session.favorites_first` enabled (the default), live favorited workspaces appear once in a **Favorites** section above every project or group, on every grouping axis and in every sort mode. Favorites sort by workspace ID so selection, activity, status and priority changes cannot move them. Project and group collapse does not hide them. Text and plugin filters still apply, including matches on their original group names. A workspace spanning groups is reunited in its one favorite row, preserving its sessions and routing. Snoozed, archived and trashed sessions do not qualify. Disabling the setting restores ordinary grouping and the within-tier Attention favorite signal. The setting refreshes with the dashboard settings.
+
 Right-click (long-press on touch) a session row:
 
-- **Pin** floats the workspace to the top in every sort mode. Pin is web-only and distinct from the favorite mark. Favorites keep their `✦` marker in both normal and compact sidebars.
+- **Pin** floats the workspace to the top inside its group in every sort mode. Pin is web-only and distinct from the favorite mark. Favorites keep their `✦` marker in both normal and compact sidebars.
 - **Archive** tears down every tmux session the workspace owns (pass `kill_pane: false` in the API, or `--no-kill` on the CLI, to skip that) and shuts down the structured-view worker, then sinks the row into the collapsible "Snoozed & archived" footer. An archived session never starts or resumes, whether from a message, **Start**, attaching, or a daemon restart; unarchive it first.
 - **Snooze** sinks the row for a chosen duration (1h through 1w); it wakes when the timer expires, or early if you send a message.
 
@@ -92,6 +100,6 @@ The profile picker, shown beside the title of tabs that hold profile-overridable
 
 ## On mobile
 
-Below the `md` breakpoint the dashboard shows one full-viewport pane. The right-panel button swaps the main pane between **Agent terminal**, **Paired terminal**, and whichever panes the session allows: **Sub agents** in structured-view sessions, **Diff** and **Files** (hidden in CityHall mode), and plugin panes. A back chip returns to the agent terminal. Both terminals stay alive in the background, preserving scrollback and focus.
+Below the `md` breakpoint the dashboard shows one full-viewport pane. The right-panel button swaps the main pane between **Agent terminal**, **Paired terminal**, and whichever panes the session allows: **Sub agents** in structured-view sessions, **Timeline**, **Diff** and **Files** (hidden in CityHall mode), and plugin panes. A back chip returns to the agent terminal. Both terminals stay alive in the background, preserving scrollback and focus.
 
 In a structured-view conversation, a tab at the top right and another just above the composer fold away the top bar and the composer independently, giving the transcript their height back; both tabs stay on screen while collapsed. Leaving the conversation shows the top bar again, since it is the only navigation the other views have.

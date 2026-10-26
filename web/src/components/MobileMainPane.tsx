@@ -4,6 +4,7 @@ import { TerminalSessionStack } from "./TerminalSessionStack";
 import { ForecastBand } from "./ForecastBand";
 import { PairedShellPane } from "./PairedTerminal";
 import { BackgroundAgentsPanel } from "./acp/BackgroundAgentsPanel";
+import { TimelinePane } from "./TimelinePane";
 import { FilesPane } from "./FilesPane";
 import { DiffFileList } from "./diff/DiffFileList";
 import { DiffFileViewer } from "./diff/DiffFileViewer";
@@ -100,7 +101,9 @@ export function MobileMainPane({
           ? "Paired terminal"
           : view === "agents"
             ? "Sub agents"
-            : (activePluginPane?.title ?? "Plugin");
+            : view === "timeline"
+              ? "Timeline"
+              : (activePluginPane?.title ?? "Plugin");
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
@@ -231,6 +234,14 @@ export function MobileMainPane({
           </div>
         )}
 
+        {view === "timeline" && (
+          <div
+            className="absolute inset-0 z-10 flex flex-col min-h-0 overflow-hidden bg-surface-900"
+            style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+          >
+            <TimelinePane />
+          </div>
+        )}
         {activePluginPane && (
           // Reserve the bottom home-indicator inset here too (see the diff and paired wrappers); the App root no
           // longer does.

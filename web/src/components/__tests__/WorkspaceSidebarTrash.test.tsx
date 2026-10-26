@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 
+import { FavoritesFirstContext } from "../../lib/sidebarFavorites";
 import { WorkspaceSidebar } from "../WorkspaceSidebar";
 import { buildSessionGroups } from "../../lib/sidebarGroups";
 import type { SessionResponse, Workspace } from "../../lib/types";
@@ -27,6 +28,7 @@ const trashed = (id: string, ...ids: string[]) =>
 /** `groups` holds the workspaces for navigation; the Trash list is passed separately, as App computes it. */
 function renderSidebar(workspaces: Workspace[], over: Partial<Props> = {}) {
   const props: Props = {
+    workspaces,
     groups: buildSessionGroups(workspaces, {
       idleDecayWindowMs: 60_000,
       sortMode: "lastActivity",
@@ -63,8 +65,8 @@ function renderSidebar(workspaces: Workspace[], over: Partial<Props> = {}) {
     onAxisChange: noop,
     ...over,
   };
-  render(<WorkspaceSidebar {...props} />);
-  return props;
+  const rendered = render(<WorkspaceSidebar {...props} />);
+  return { ...props, ...rendered };
 }
 const withTrash = (over: Partial<Props> = {}) => {
   const ws = trashed("trashed-ws", "s1");
@@ -264,5 +266,169 @@ describe("WorkspaceSidebar row actions on a group slice (#4019)", () => {
     fireEvent.contextMenu(screen.getByTestId("sidebar-session-row"));
     expect(query("sidebar-context-menu-start")).toBeNull();
     expect(screen.getByTestId("sidebar-context-menu-archive").textContent).toBe("Unarchive");
+  });
+});
+
+function renderFavorites(over: Partial<Props>) {
+  return renderSidebar(
+    over.workspaces ?? over.groups?.flatMap((g) => g.workspaces.map((v) => v.workspace)) ?? [],
+    over,
+  );
+}
+
+describe("global favorites", () => {
+  function models(collapsed = false) {
+    const personal = workspace("personal", [
+      makeSession({ id: "controller", title: "Personal assistant", favorited: true, group_path: "Personal" }),
+    ]);
+    const project = workspace("project", [makeSession({ id: "worker", title: "Project work", group_path: "Work" })]);
+    const groups = buildSessionGroups([project, personal], {
+      idleDecayWindowMs: 60_000,
+      sortMode: "attention",
+      isCollapsed: () => collapsed,
+    });
+    return { groups, personal, project };
+  }
+
+  it("keeps Personal assistant above projects across collapse, selection, priority and status changes", () => {
+    const { groups } = models(true);
+    const { rerender, ...props } = renderFavorites({ groups, axis: "repo", sortMode: "attention" });
+    const favorites = screen.getByTestId("sidebar-favorites-section");
+    const row = screen.getByTestId("sidebar-session-row");
+    expect(favorites.contains(row)).toBe(true);
+    expect(row.textContent).toContain("Personal assistant");
+    fireEvent.click(row);
+    expect(props.onSelect).toHaveBeenCalledWith("personal", "controller");
+    const changed = groups.map((g) => ({
+      ...g,
+      collapsed: false,
+      workspaces: g.workspaces.map((v) => ({
+        ...v,
+        workspace: {
+          ...v.workspace,
+          sessions: v.workspace.sessions.map((s) => ({ ...s, status: "Running" as const, priority: 0 })),
+        },
+      })),
+    }));
+    rerender(<WorkspaceSidebar {...props} activeId="project" groups={changed} />);
+    expect(screen.getAllByTestId("sidebar-session-row").map((r) => r.textContent)).toEqual([
+      expect.stringContaining("Personal assistant"),
+      expect.stringContaining("Project work"),
+    ]);
+    expect(
+      screen
+        .getByTestId("sidebar-favorites-section")
+        .compareDocumentPosition(screen.getAllByTestId("sidebar-group-header")[0]!) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("shows each favorite once on every axis and applies original-group text filters", () => {
+    for (const axis of ["repo", "group", "repo+group", "org"] as const) {
+      const { groups } = models();
+      renderFavorites({
+        groups,
+        axis,
+        nestedGroups: groups.map((g) => ({ repo: g, subgroups: [g] })),
+        orgGroups: [{ org: groups[0]!, repos: groups }],
+      });
+      expect(screen.getByTestId("sidebar-favorites-section").textContent).toContain("Personal assistant");
+      expect(
+        screen.getAllByTestId("sidebar-session-row").filter((r) => r.textContent?.includes("Personal assistant")),
+      ).toHaveLength(1);
+      fireEvent.click(screen.getByLabelText("Filter sessions"));
+      fireEvent.change(screen.getByTestId("sidebar-filter-input"), { target: { value: "Personal" } });
+      expect(screen.getByTestId("sidebar-favorites-section").textContent).toContain("Personal assistant");
+      fireEvent.change(screen.getByTestId("sidebar-filter-input"), { target: { value: "zzz-no-match" } });
+      expect(screen.queryByTestId("sidebar-favorites-section")).toBeNull();
+      cleanup();
+    }
+  });
+
+  it("restores group placement when favorites_first is disabled and survives remount", () => {
+    const { groups } = models();
+    const { rerender, ...props } = renderFavorites({ groups });
+    expect(screen.getByTestId("sidebar-favorites-section")).toBeTruthy();
+    rerender(
+      <FavoritesFirstContext.Provider value={false}>
+        <WorkspaceSidebar {...props} />
+      </FavoritesFirstContext.Provider>,
+    );
+    expect(screen.queryByTestId("sidebar-favorites-section")).toBeNull();
+    expect(screen.getAllByTestId("sidebar-session-row")).toHaveLength(2);
+    cleanup();
+    renderFavorites({ groups });
+    expect(screen.getByTestId("sidebar-favorites-section").textContent).toContain("Personal assistant");
+  });
+
+  it("keeps a pinned project header after its only row moves to Favorites", () => {
+    for (const axis of ["repo", "repo+group", "org"] as const) {
+      const { groups } = models();
+      const favoriteGroup = groups.find((g) => g.workspaces.some((v) => v.workspace.id === "personal"))!;
+      const pinned = { ...favoriteGroup, kind: "repo" as const, pinned: true };
+      renderFavorites({
+        groups: [pinned],
+        nestedGroups: [{ repo: pinned, subgroups: [{ ...favoriteGroup, pinned: false }] }],
+        orgGroups: [{ org: { ...pinned, id: "org" }, repos: [pinned] }],
+        axis,
+      });
+      expect(screen.getAllByTestId("sidebar-group-header").length).toBeGreaterThan(0);
+      expect(screen.getAllByTestId("sidebar-session-row")).toHaveLength(1);
+      cleanup();
+    }
+  });
+
+  it("reunites a favorite when the filter matches its nonfavorite group slice", () => {
+    const { personal } = models();
+    const split = {
+      ...personal,
+      sessions: [...personal.sessions, makeSession({ id: "sibling", title: "Other session", group_path: "Other" })],
+    };
+    const groups = buildSessionGroups([split], {
+      idleDecayWindowMs: 60_000,
+      sortMode: "manual",
+      isCollapsed: () => false,
+    });
+    renderFavorites({ groups, workspaces: [split] });
+    fireEvent.click(screen.getByLabelText("Filter sessions"));
+    fireEvent.change(screen.getByTestId("sidebar-filter-input"), { target: { value: "Other" } });
+    expect(screen.getByTestId("sidebar-favorites-section").textContent).toContain("Personal assistant");
+    expect(screen.getAllByTestId("sidebar-session-row")).toHaveLength(1);
+  });
+
+  it("selects a range from a favorite through the visible nested rows", () => {
+    const { groups } = models(true);
+    const visible = groups.map((g) => ({ ...g, collapsed: false }));
+    renderFavorites({ groups, axis: "repo+group", nestedGroups: visible.map((g) => ({ repo: g, subgroups: [g] })) });
+    const rows = screen.getAllByTestId("sidebar-session-row");
+    expect(rows).toHaveLength(2);
+    fireEvent.click(rows[0]!, { ctrlKey: true });
+    fireEvent.click(rows[1]!, { shiftKey: true });
+    expect(rows.map((r) => r.getAttribute("data-selected"))).toEqual(["true", "true"]);
+  });
+
+  it("orders multiple favorites by identity and excludes every sink state", () => {
+    const states = [null, "archived_at", "snoozed_until", "trashed_at"] as const;
+    const workspaces = states.map((field, i) =>
+      workspace(`fav-${i}`, [
+        makeSession({
+          id: `s-${i}`,
+          title: `Favorite ${i}`,
+          favorited: true,
+          ...(field ? { [field]: "2026-01-01T00:00:00Z" } : {}),
+        }),
+      ]),
+    );
+    workspaces.push(workspace("aaa", [makeSession({ id: "s-a", title: "First favorite", favorited: true })]));
+    renderFavorites({
+      groups: buildSessionGroups(workspaces.reverse(), {
+        idleDecayWindowMs: 60_000,
+        sortMode: "attention",
+        isCollapsed: () => false,
+      }),
+    });
+    const favorites = screen.getByTestId("sidebar-favorites-section");
+    expect(
+      Array.from(favorites.querySelectorAll('[data-testid="sidebar-session-row"]')).map((r) => r.textContent),
+    ).toEqual([expect.stringContaining("First favorite"), expect.stringContaining("Favorite 0")]);
   });
 });

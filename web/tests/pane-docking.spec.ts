@@ -160,16 +160,16 @@ test.describe("Dockable pane system", () => {
 
     await expect(page.getByTestId("pane-tab-diff")).toBeVisible();
     await expect(page.getByTestId("pane-tab-terminal:0")).toBeVisible();
-    expect(await dockTabOrder(page, "right")).toEqual(["diff", "terminal:0"]);
+    expect(await dockTabOrder(page, "right")).toEqual(["diff", "terminal:0", "timeline"]);
 
     const diff = await page.getByTestId("pane-tab-diff").boundingBox();
     if (!diff) throw new Error("missing diff tab");
     await dragTab(page, "terminal:0", { x: diff.x + 4, y: diff.y + diff.height / 2 });
-    await expect.poll(() => dockTabOrder(page, "right")).toEqual(["terminal:0", "diff"]);
+    await expect.poll(() => dockTabOrder(page, "right")).toEqual(["terminal:0", "diff", "timeline"]);
 
     await page.reload();
     await expect(page.getByTestId("pane-tab-diff")).toBeVisible();
-    await expect.poll(() => dockTabOrder(page, "right")).toEqual(["terminal:0", "diff"]);
+    await expect.poll(() => dockTabOrder(page, "right")).toEqual(["terminal:0", "diff", "timeline"]);
   });
 
   test("dragging a tab onto the empty bottom dock opens it there", async ({ page }) => {
@@ -187,7 +187,7 @@ test.describe("Dockable pane system", () => {
 
     await expect(page.getByTestId("bottom-dock-resize")).toBeVisible();
     await expect.poll(() => dockTabOrder(page, "bottom")).toEqual(["diff"]);
-    expect(await dockTabOrder(page, "right")).toEqual(["terminal:0"]);
+    expect(await dockTabOrder(page, "right")).toEqual(["terminal:0", "timeline"]);
   });
 
   test("a cross-dock drag shows an insertion marker and moves the pane", async ({ page }) => {
@@ -197,7 +197,7 @@ test.describe("Dockable pane system", () => {
 
     await page.getByLabel("Move diff to bottom dock").click();
     await expect(page.getByTestId("bottom-dock-resize")).toBeVisible();
-    expect(await dockTabOrder(page, "right")).toEqual(["terminal:0"]);
+    expect(await dockTabOrder(page, "right")).toEqual(["terminal:0", "timeline"]);
     expect(await dockTabOrder(page, "bottom")).toEqual(["diff"]);
 
     // Cross-dock inserts show a marker because the destination strip does not shift.
@@ -206,7 +206,7 @@ test.describe("Dockable pane system", () => {
       await expect(page.getByTestId("pane-insertion-marker")).toBeVisible();
     });
 
-    await expect.poll(() => dockTabOrder(page, "right")).toEqual([]);
+    await expect.poll(() => dockTabOrder(page, "right")).toEqual(["timeline"]);
     await expect.poll(() => dockTabOrder(page, "bottom")).toContain("terminal:0");
   });
 

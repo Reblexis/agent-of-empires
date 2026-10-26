@@ -6,4 +6,4 @@
  *  `"agents"` mirror the desktop `BuiltinPaneId`s of the same name and are
  *  gated the same way desktop gates them: see `availablePanes` (derived
  *  from `allPaneIds` in `App.tsx`) on `MobileRightPanelPicker`. */
-export type RightPanelView = "agent" | "diff" | "files" | "paired" | "agents" | `plugin:${string}`;
+export type RightPanelView = "agent" | "diff" | "files" | "paired" | "agents" | "timeline" | `plugin:${string}`;

@@ -1,4 +1,5 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useContext, useMemo, useRef, useState } from "react";
+import { collectSidebarFavorites, FavoritesFirstContext } from "../lib/sidebarFavorites";
 import { usePluginUiEntries } from "../lib/pluginUiContext";
 import { pluginSortSpecs } from "../lib/pluginUi";
 import type { ProjectInfo, RepoGroup, Workspace } from "../lib/types";
@@ -22,15 +23,7 @@ import { ProjectsSection } from "./ProjectsSection";
 import { FoldChevron, PlusIcon, StrokeIcon } from "./icons";
 import { usePersistedFlag } from "./usePersistedFlag";
 import { useSuppressClickAfterDrag } from "./sidebar/dnd";
-import {
-  filterFlat,
-  filterNested,
-  filterOrg,
-  makeRowFilter,
-  renderedOrder,
-  sunkViews,
-  uniqueWorkspaces,
-} from "./sidebar/filterGroups";
+import { filterFlat, filterNested, filterOrg, makeRowFilter, renderedOrder, sunkViews } from "./sidebar/filterGroups";
 import { FlatGroupList, NestedGroupList, OrgGroupList, type ListContext } from "./sidebar/GroupLists";
 import { SessionRow } from "./sidebar/SessionRow";
 import { FacetPanel, SidebarToolbar } from "./sidebar/SidebarToolbar";
@@ -40,6 +33,7 @@ import { useSidebarSelection } from "./sidebar/useSidebarSelection";
 import { useSidebarWidth } from "./sidebar/useSidebarWidth";
 
 interface Props {
+  workspaces: Workspace[];
   groups: SidebarGroup[];
   /** Used only when `axis === "repo+group"`. */
   nestedGroups: NestedSidebarGroup[];
@@ -125,7 +119,7 @@ export function WorkspaceSidebar(props: Props) {
   const hasFilter = !!q || facets.activeFacets.length > 0;
 
   const { matchesFacets } = facets;
-  const [filteredGroups, filteredNested, filteredOrgGroups] = useMemo(() => {
+  const [matchedGroups, matchedNested, matchedOrgGroups] = useMemo(() => {
     if (!hasFilter) return [groups, nestedGroups, orgGroups] as const;
     const keep = makeRowFilter(q, matchesFacets);
     return [filterFlat(groups, keep), filterNested(nestedGroups, keep), filterOrg(orgGroups, keep)] as const;
@@ -133,12 +127,47 @@ export function WorkspaceSidebar(props: Props) {
   const isNested = axis === "repo+group";
   const isOrgAxis = axis === "org";
 
-  const allWorkspaces = useMemo(() => uniqueWorkspaces(groups), [groups]);
-  const triage = useSidebarTriage(allWorkspaces);
-  const orderedIds = useMemo(
-    () => renderedOrder(filteredGroups, hasFilter, sunkExpanded),
-    [filteredGroups, hasFilter, sunkExpanded],
+  const favoritesFirst = useContext(FavoritesFirstContext);
+  const matchingViews = isNested
+    ? matchedNested.flatMap((ng) => ng.subgroups.flatMap((g) => g.workspaces))
+    : isOrgAxis
+      ? matchedOrgGroups.flatMap((og) => og.repos.flatMap((g) => g.workspaces))
+      : matchedGroups.flatMap((g) => g.workspaces);
+  const matchingIds = new Set(matchingViews.map((v) => v.workspace.id));
+  const favoriteWorkspaces = collectSidebarFavorites(props.workspaces).filter(
+    (ws) => favoritesFirst && matchingIds.has(ws.id),
   );
+  const favoriteIds = new Set(favoriteWorkspaces.map((ws) => ws.id));
+  const withoutFavorites = (g: SidebarGroup): SidebarGroup => {
+    const workspaces = g.workspaces.filter((v) => !favoriteIds.has(v.workspace.id));
+    return { ...g, workspaces, pinnedEmpty: !!g.pinned && workspaces.length === 0 };
+  };
+  const filteredGroups = matchedGroups.map(withoutFavorites);
+  const filteredNested = matchedNested.map((ng) => ({
+    repo: withoutFavorites(ng.repo),
+    subgroups: ng.subgroups.map(withoutFavorites),
+  }));
+  const filteredOrgGroups = matchedOrgGroups.map((og) => ({ ...og, repos: og.repos.map(withoutFavorites) }));
+  const allWorkspaces = props.workspaces;
+  const triage = useSidebarTriage(allWorkspaces);
+  const visibleGroups = isNested
+    ? filteredNested.flatMap((ng) => (hasFilter || !ng.repo.collapsed ? ng.subgroups : []))
+    : isOrgAxis
+      ? filteredOrgGroups.flatMap((og) => (hasFilter || !og.org.collapsed ? og.repos : []))
+      : filteredGroups;
+  const orderedIds = [
+    ...favoriteIds,
+    ...renderedOrder(visibleGroups, hasFilter, false),
+    ...(sunkExpanded
+      ? sunkViews(
+          isNested
+            ? filteredNested.flatMap((ng) => ng.subgroups)
+            : isOrgAxis
+              ? filteredOrgGroups.flatMap((og) => og.repos)
+              : filteredGroups,
+        ).map((v) => v.workspace.id)
+      : []),
+  ].filter((id, index, ids) => ids.indexOf(id) === index);
   const selection = useSidebarSelection({
     allWorkspaces,
     orderedIds,
@@ -196,6 +225,7 @@ export function WorkspaceSidebar(props: Props) {
     !!q &&
     props.savedProjects.some((p) => p.displayName.toLowerCase().includes(q) || p.repoPath.toLowerCase().includes(q));
   const hasResults =
+    favoriteWorkspaces.length > 0 ||
     (isNested ? filteredNested.length : isOrgAxis ? filteredOrgGroups.length : filteredGroups.length) > 0 ||
     savedProjectsMatchQuery;
   const sunk = sunkViews(
@@ -281,6 +311,17 @@ export function WorkspaceSidebar(props: Props) {
         )}
 
         <div className="flex-1 overflow-y-auto overflow-x-hidden border-t border-surface-700/60">
+          {favoriteWorkspaces.length > 0 && (
+            <section data-testid="sidebar-favorites-section" aria-label="Favorites">
+              {!compact && <div className="px-3 pt-2 pb-1 text-xs text-text-muted">Favorites</div>}
+              {favoriteWorkspaces.map((workspace) => (
+                <SessionRow
+                  key={workspace.id}
+                  {...ctx.rowProps({ ...matchingViews.find((v) => v.workspace.id === workspace.id)!, workspace })}
+                />
+              ))}
+            </section>
+          )}
           {isNested ? (
             <NestedGroupList
               ctx={ctx}
@@ -345,13 +386,13 @@ export function WorkspaceSidebar(props: Props) {
           )}
 
           {!hasResults && hasFilter && (
-            <div className="px-4 py-8 text-center">
+            <div className="px-4 py-8 text-left">
               <p className="text-sm text-text-muted">No matches for &ldquo;{activeFilterQuery}&rdquo;</p>
             </div>
           )}
 
           {!hasResults && !hasFilter && (
-            <div className="px-4 py-10 text-center" data-testid="sidebar-empty-state">
+            <div className="px-4 py-10 text-left" data-testid="sidebar-empty-state">
               <p className="text-sm font-medium text-text-secondary">No sessions yet</p>
               <p className="mt-1 text-[13px] text-text-muted">Create a session to start working in a repo.</p>
               <button

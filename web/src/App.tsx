@@ -102,6 +102,7 @@ import { normalizeProjectPathKey } from "./lib/registeredProjects";
 import { IdleDecayWindowContext, parseIdleDecayWindowMs } from "./lib/idleDecay";
 import { parseUnreadIndicatorEnabled, UnreadIndicatorContext, useUnreadIndicatorEnabled } from "./lib/unreadIndicator";
 import { parseSessionRowTagMode, SessionRowTagContext, type SessionRowTagMode } from "./lib/sessionRowTag";
+import { FavoritesFirstContext, parseFavoritesFirst } from "./lib/sidebarFavorites";
 import { parseSessionColorsEnabled, SessionColorsContext } from "./lib/sessionColors";
 import { onSettingsChanged } from "./lib/settingsEvents";
 import { parseSystemHealthEnabled, SystemHealthEnabledContext } from "./lib/systemHealth";
@@ -142,6 +143,7 @@ import { BottomDock } from "./components/BottomDock";
 import { PaneDndController } from "./components/PaneDndController";
 import { visibleToFullIndex, type DropTarget } from "./components/paneDnd";
 import { BackgroundAgentsPanel } from "./components/acp/BackgroundAgentsPanel";
+import { TimelinePane } from "./components/TimelinePane";
 import { ContextPane } from "./components/ContextPane";
 import { DiffPane } from "./components/DiffPane";
 import { FilesPane } from "./components/FilesPane";
@@ -194,6 +196,7 @@ export default function App() {
   const [idleDecayWindowMs, setIdleDecayWindowMs] = useState(IDLE_DECAY_WINDOW_MS);
   const [unreadIndicatorEnabled, setUnreadIndicatorEnabled] = useState(true);
   const [sessionRowTagMode, setSessionRowTagMode] = useState<SessionRowTagMode>("branch");
+  const [favoritesFirst, setFavoritesFirst] = useState(true);
   const [sessionColorsEnabled, setSessionColorsEnabled] = useState(true);
   const [systemHealthEnabled, setSystemHealthEnabled] = useState(false);
 
@@ -202,6 +205,7 @@ export default function App() {
     setUnreadIndicatorEnabled(parseUnreadIndicatorEnabled(settings));
     setSessionRowTagMode(parseSessionRowTagMode(settings));
     setSessionColorsEnabled(parseSessionColorsEnabled(settings));
+    setFavoritesFirst(parseFavoritesFirst(settings));
     setSystemHealthEnabled(parseSystemHealthEnabled(settings));
   }, []);
 
@@ -293,17 +297,19 @@ export default function App() {
     <IdleDecayWindowContext.Provider value={idleDecayWindowMs}>
       <UnreadIndicatorContext.Provider value={unreadIndicatorEnabled}>
         <SessionRowTagContext.Provider value={sessionRowTagMode}>
-          <SessionColorsContext.Provider value={sessionColorsEnabled}>
-            <SystemHealthEnabledContext.Provider value={systemHealthEnabled}>
-              {/* PluginUiProvider must sit above AppContent: AppContent itself reads
+          <FavoritesFirstContext.Provider value={favoritesFirst}>
+            <SessionColorsContext.Provider value={sessionColorsEnabled}>
+              <SystemHealthEnabledContext.Provider value={systemHealthEnabled}>
+                {/* PluginUiProvider must sit above AppContent: AppContent itself reads
                 the plugin UI snapshot (usePluginPanes), so the provider can't live
                 inside its own return. */}
-              <PluginUiProvider>
-                <AppContent loginRequired={loginRequired} onLogout={handleLogout} resolvedTheme={resolvedTheme} />
-              </PluginUiProvider>
-              <ElevationPrompt />
-            </SystemHealthEnabledContext.Provider>
-          </SessionColorsContext.Provider>
+                <PluginUiProvider>
+                  <AppContent loginRequired={loginRequired} onLogout={handleLogout} resolvedTheme={resolvedTheme} />
+                </PluginUiProvider>
+                <ElevationPrompt />
+              </SystemHealthEnabledContext.Provider>
+            </SessionColorsContext.Provider>
+          </FavoritesFirstContext.Provider>
         </SessionRowTagContext.Provider>
       </UnreadIndicatorContext.Provider>
     </IdleDecayWindowContext.Provider>
@@ -660,9 +666,11 @@ function AppContent({
 
   // A persisted tab is visible only if its backing pane currently exists: diff
   // and terminals always do; a plugin tab does only while its plugin is loaded.
+  const [serverAbout, setServerAbout] = useState<ServerAbout | null>(null);
   const tabAvailable = useCallback(
-    (id: string) => !id.startsWith("plugin:") || pluginPaneById.has(id),
-    [pluginPaneById],
+    (id: string) =>
+      (id !== "timeline" || !serverAbout?.cityhall_mode) && (!id.startsWith("plugin:") || pluginPaneById.has(id)),
+    [pluginPaneById, serverAbout?.cityhall_mode],
   );
   // A dock's groups reduced to what's actually shown: each surviving group keeps
   // its persisted index (so a drop addresses the right group) and a valid active
@@ -710,7 +718,7 @@ function AppContent({
       const defaultDock: DockLocation =
         pluginPaneById.get(kind)?.defaultDock ?? BUILTIN_PANES.find((p) => p.id === kind)?.defaultDock ?? "right";
       if (isPluginPaneId(kind)) togglePlugin(kind, defaultDock);
-      else toggleKind(kind as "diff" | "terminal" | "agents" | "files" | "context", defaultDock);
+      else toggleKind(kind as "diff" | "terminal" | "agents" | "files" | "context" | "timeline", defaultDock);
     },
     [toggleKind, togglePlugin, pluginPaneById],
   );
@@ -819,7 +827,6 @@ function AppContent({
     setKeyboardProxy(element);
   }, []);
 
-  const [serverAbout, setServerAbout] = useState<ServerAbout | null>(null);
   // CityHall client mode collapses the dashboard to a locked-down end-user
   // client; the capability flags gate the terminal/diff panes, project
   // management, the wizard, and settings from one place. See #7.
@@ -831,6 +838,7 @@ function AppContent({
   }, [workspaces, activeSessionId]);
   const activeSession = activeWorkspace?.sessions.find((s) => s.id === activeSessionId);
   const allPaneIds: string[] = [
+    ...(caps.cityhall ? [] : ["timeline"]),
     // CityHall client mode hides the code-inspection panes (diff, files) and
     // the terminal (plus plugin panes below) so only the composer + structured
     // view remain. See #7.
@@ -942,7 +950,11 @@ function AppContent({
   // back to the agent view so the user is never stranded on a blank pane.
   // Mirrors the paired guard above; render-phase derivation per the block at
   // the top.
-  const isGatedBuiltinView = rightPanelView === "diff" || rightPanelView === "files" || rightPanelView === "agents";
+  const isGatedBuiltinView =
+    rightPanelView === "diff" ||
+    rightPanelView === "files" ||
+    rightPanelView === "agents" ||
+    rightPanelView === "timeline";
   if ((isGatedBuiltinView || isPluginPaneId(rightPanelView)) && !mobilePaneIds.includes(rightPanelView)) {
     setRightPanelView("agent");
   }
@@ -1901,6 +1913,7 @@ function AppContent({
         // session. See #3088 review.
         return <FilesPane key={activeSessionId ?? "none"} sessionId={activeSessionId} />;
       }
+      if (id === "timeline") return <TimelinePane />;
       if (id === "context") {
         // Remount on session switch so the recap and its polling reset.
         return (
@@ -2445,6 +2458,7 @@ function AppContent({
         <div className="flex flex-1 min-h-0">
           {!fullPageView && (
             <WorkspaceSidebar
+              workspaces={workspaces}
               groups={sidebarGroups}
               nestedGroups={nestedGroups}
               orgGroups={orgGroups}
