@@ -71,6 +71,7 @@ import {
   type SidebarGroup,
   type SidebarWorkspaceView,
 } from "../lib/sidebarGroups";
+import { collectSidebarFavorites, FavoritesFirstContext } from "../lib/sidebarFavorites";
 import { safeGetItem, safeSetItem } from "../lib/safeStorage";
 import { menuBus, closeOtherContextMenus } from "../lib/menuBus";
 import { REPO_COLOR_OPTIONS, repoColorStyle, repoSwatchStyle, type RepoAppearanceUpdate } from "../lib/repoAppearance";
@@ -306,6 +307,8 @@ const typedClosestCenter: CollisionDetection = (args) => {
 };
 
 interface Props {
+  /** Authoritative unsliced rows, preserving session order and navigation. */
+  workspaces: Workspace[];
   groups: SidebarGroup[];
   // The nested `repo+group` axis model (#1720). Only consumed when
   // `axis === "repo+group"`; the flat `groups` list drives the other axes.
@@ -1052,10 +1055,7 @@ export const SessionRow = memo(function SessionRow({
   const rowTagTitle =
     rowTag?.kind === "branch" && baseBranch ? `${rowTag.title} (based on ${baseBranch})` : rowTag?.title;
   const label = singleSession ? sessionTitle || branchLabel || "default" : branchLabel || sessionTitle || "default";
-  // Workspace renders as favorited when any of its sessions are
-  // favorited. Mirrors the TUI's within-tier pin: the star promotes the
-  // row visually so the user can find their starred work fast. Toggled
-  // via TUI `f`/`F` or `aoe session favorite|unfavorite`.
+  // The star stays visible even when global favorites placement is disabled.
   const isFavorited = workspace.sessions.some((s) => s.favorited);
   // Per-session color label (#2383): the first session in the workspace that
   // carries a color wins, mirroring how `snoozedUntil` picks the first match.
@@ -3118,6 +3118,7 @@ const AXIS_ARIA: Record<SidebarAxis, string> = {
 };
 
 export function WorkspaceSidebar({
+  workspaces,
   groups,
   nestedGroups,
   orgGroups,
@@ -3361,7 +3362,7 @@ export function WorkspaceSidebar({
   const textMatches = (v: SidebarWorkspaceView, ...groupNames: string[]) =>
     !q || workspaceMatchesFilter(v.workspace, q) || groupNames.some((n) => n.toLowerCase().includes(q));
 
-  const filteredGroups = hasFilter
+  const matchedGroups = hasFilter
     ? groups
         .map((g) => ({
           ...g,
@@ -3373,7 +3374,7 @@ export function WorkspaceSidebar({
   // Filter the nested model the same way the flat list is filtered: a row
   // survives if it matches, or if its subgroup or repo header name matches;
   // empty subgroups and then empty repos drop out. See #1720.
-  const filteredNested: NestedSidebarGroup[] = hasFilter
+  const matchedNested: NestedSidebarGroup[] = hasFilter
     ? nestedGroups
         .map((ng) => ({
           repo: ng.repo,
@@ -3392,7 +3393,7 @@ export function WorkspaceSidebar({
   // Filter the org model the same way the nested model is filtered: a repo
   // survives if it, or its org header name, matches; empty repos and then
   // empty orgs drop out. See #3283.
-  const filteredOrgGroups: OrgNestedGroup[] = hasFilter
+  const matchedOrgGroups: OrgNestedGroup[] = hasFilter
     ? orgGroups
         .map((og) => ({
           org: og.org,
@@ -3408,12 +3409,30 @@ export function WorkspaceSidebar({
         .filter((og) => og.repos.length > 0)
     : orgGroups;
 
+  const favoritesFirst = useContext(FavoritesFirstContext);
+  const matchingViews = isNested
+    ? matchedNested.flatMap((ng) => ng.subgroups.flatMap((g) => g.workspaces))
+    : isOrgAxis
+      ? matchedOrgGroups.flatMap((og) => og.repos.flatMap((g) => g.workspaces))
+      : matchedGroups.flatMap((g) => g.workspaces);
+  // Filters match any original slice; the favorite row retains all sessions.
+  const matchingIds = new Set(matchingViews.map((v) => v.workspace.id));
+  const favoriteWorkspaces = collectSidebarFavorites(workspaces).filter(
+    (ws) => favoritesFirst && matchingIds.has(ws.id),
+  );
+  const favoriteIds = new Set(favoriteWorkspaces.map((ws) => ws.id));
+  const withoutFavorites = (g: SidebarGroup): SidebarGroup => {
+    const workspaces = g.workspaces.filter((v) => !favoriteIds.has(v.workspace.id));
+    return { ...g, workspaces, pinnedEmpty: g.pinned && workspaces.length === 0 };
+  };
+  const filteredGroups = matchedGroups.map(withoutFavorites);
+  const filteredNested = matchedNested.map((ng) => ({ repo: ng.repo, subgroups: ng.subgroups.map(withoutFavorites) }));
+  const filteredOrgGroups = matchedOrgGroups.map((og) => ({ org: og.org, repos: og.repos.map(withoutFavorites) }));
+
   // Full (pre-filter) repo objects keyed by `${orgId}::${repoId}`, so
   // "Archive all" on a filtered org repo can still act on every workspace,
   // not just the filter-matching ones. Built once per render instead of a
-  // double `.find()` per rendered repo. Memoized: an unmemoized `new Map()`
-  // here broke the React Compiler's ability to preserve the manual
-  // `useMemo` below (`flatRenderedOrder`).
+  // double `.find()` per rendered repo.
   const fullOrgRepoById: Map<string, SidebarGroup> = useMemo(
     () =>
       isOrgAxis
@@ -3429,6 +3448,7 @@ export function WorkspaceSidebar({
   const savedProjectsMatchQuery =
     !!q && savedProjects.some((p) => p.displayName.toLowerCase().includes(q) || p.repoPath.toLowerCase().includes(q));
   const hasResults =
+    favoriteWorkspaces.length > 0 ||
     (isNested ? filteredNested.length > 0 : isOrgAxis ? filteredOrgGroups.length > 0 : filteredGroups.length > 0) ||
     savedProjectsMatchQuery;
 
@@ -3451,13 +3471,23 @@ export function WorkspaceSidebar({
       seen.add(id);
       ids.push(id);
     };
-    for (const g of filteredGroups) {
-      if (!sidebarGroupHasLiveWorkspace(g)) continue;
-      const expanded = hasFilter ? true : !g.collapsed;
-      if (!expanded) continue;
+    favoriteWorkspaces.forEach((ws) => push(ws.id));
+    const pushGroup = (g: SidebarGroup) => {
+      if (!sidebarGroupHasLiveWorkspace(g) || (!hasFilter && g.collapsed)) return;
       for (const v of g.workspaces) {
         if (!workspaceIsSunk(v.workspace)) push(v.workspace.id);
       }
+    };
+    if (isNested) {
+      for (const ng of filteredNested) {
+        if (hasFilter || !ng.repo.collapsed) ng.subgroups.forEach(pushGroup);
+      }
+    } else if (isOrgAxis) {
+      for (const og of filteredOrgGroups) {
+        if (hasFilter || !og.org.collapsed) og.repos.forEach(pushGroup);
+      }
+    } else {
+      filteredGroups.forEach(pushGroup);
     }
     if (sunkExpanded) {
       for (const g of filteredGroups) {
@@ -3467,7 +3497,16 @@ export function WorkspaceSidebar({
       }
     }
     return ids;
-  }, [filteredGroups, hasFilter, sunkExpanded]);
+  }, [
+    filteredGroups,
+    filteredNested,
+    filteredOrgGroups,
+    hasFilter,
+    sunkExpanded,
+    favoriteWorkspaces,
+    isNested,
+    isOrgAxis,
+  ]);
 
   // Drop selected ids for workspaces that no longer exist (a session was
   // deleted or moved). Existence-based, not visibility-based: collapsing a
@@ -3902,6 +3941,31 @@ export function WorkspaceSidebar({
         )}
 
         <div className="flex-1 overflow-y-auto overflow-x-hidden border-t border-surface-700/60">
+          {favoriteWorkspaces.length > 0 && (
+            <section data-testid="sidebar-favorites-section" aria-label="Favorites">
+              {!compact && <div className="px-3 pt-2 pb-1 text-xs text-text-muted">Favorites</div>}
+              {favoriteWorkspaces.map((ws) => (
+                <SessionRow
+                  key={ws.id}
+                  workspace={ws}
+                  isActive={ws.id === displayedActiveId}
+                  isSelected={!readOnly && selection.selectedIds.has(ws.id)}
+                  onActivate={(e) => handleRowActivate(ws.id, e)}
+                  onDelete={onDeleteSession}
+                  onStop={onStopSession}
+                  onStart={onStartSession}
+                  onSwitchView={onSwitchView}
+                  readOnly={readOnly}
+                  optimistic={triage.optimisticFor(ws.id)}
+                  onPinToggle={triage.pinToggle}
+                  onArchiveToggle={triage.archiveToggle}
+                  onSnooze={triage.snooze}
+                  onUnreadToggle={triage.unreadToggle}
+                  bulkApi={rowBulkApi}
+                />
+              ))}
+            </section>
+          )}
           {!isNested && !isOrgAxis && (
             <DragSuppressContext.Provider value={dragSuppressRef}>
               <DndContext

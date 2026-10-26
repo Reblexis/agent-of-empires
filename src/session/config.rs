@@ -1378,8 +1378,9 @@ pub struct SessionConfig {
     /// only biases the Attention sort (its tier-local tiebreak) and the
     /// favorite key is inert everywhere else, which is the pre-1.14 behavior.
     ///
-    /// Governs the TUI list only. The web dashboard keeps favorite as a
-    /// within-tier Attention signal and has its own pin control.
+    /// On the web dashboard, live favorites appear once above all project
+    /// groups when on. When off, they keep their within-tier Attention signal.
+    /// The web-only Pin control remains scoped to the workspace's group.
     ///
     /// `global_only`: read through a single process-wide flag
     /// (`crate::session::favorites_first`) on the sort hot path, so a

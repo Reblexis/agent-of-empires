@@ -94,6 +94,7 @@ import { normalizeProjectPathKey } from "./lib/registeredProjects";
 import { IdleDecayWindowContext, parseIdleDecayWindowMs, useIdleDecayWindowMs } from "./lib/idleDecay";
 import { parseUnreadIndicatorEnabled, UnreadIndicatorContext, useUnreadIndicatorEnabled } from "./lib/unreadIndicator";
 import { parseSessionRowTagMode, SessionRowTagContext, type SessionRowTagMode } from "./lib/sessionRowTag";
+import { FavoritesFirstContext, parseFavoritesFirst } from "./lib/sidebarFavorites";
 import { parseSessionColorsEnabled, SessionColorsContext } from "./lib/sessionColors";
 import { toastBus, reportError } from "./lib/toastBus";
 import { isAbsolutePath, resolveToRepoRelative, type FileRef } from "./lib/fileRef";
@@ -177,6 +178,7 @@ export default function App() {
   const [idleDecayWindowMs, setIdleDecayWindowMs] = useState(IDLE_DECAY_WINDOW_MS);
   const [unreadIndicatorEnabled, setUnreadIndicatorEnabled] = useState(true);
   const [sessionRowTagMode, setSessionRowTagMode] = useState<SessionRowTagMode>("branch");
+  const [favoritesFirst, setFavoritesFirst] = useState(true);
   const [sessionColorsEnabled, setSessionColorsEnabled] = useState(true);
 
   const applyAppSettings = useCallback((settings: Record<string, unknown> | null | undefined) => {
@@ -184,6 +186,7 @@ export default function App() {
     setUnreadIndicatorEnabled(parseUnreadIndicatorEnabled(settings));
     setSessionRowTagMode(parseSessionRowTagMode(settings));
     setSessionColorsEnabled(parseSessionColorsEnabled(settings));
+    setFavoritesFirst(parseFavoritesFirst(settings));
   }, []);
 
   const refreshAppSettings = useCallback(async () => {
@@ -261,19 +264,21 @@ export default function App() {
     <IdleDecayWindowContext.Provider value={idleDecayWindowMs}>
       <UnreadIndicatorContext.Provider value={unreadIndicatorEnabled}>
         <SessionRowTagContext.Provider value={sessionRowTagMode}>
-          <SessionColorsContext.Provider value={sessionColorsEnabled}>
-            {/* PluginUiProvider must sit above AppContent: AppContent itself reads
+          <FavoritesFirstContext.Provider value={favoritesFirst}>
+            <SessionColorsContext.Provider value={sessionColorsEnabled}>
+              {/* PluginUiProvider must sit above AppContent: AppContent itself reads
                 the plugin UI snapshot (usePluginPanes), so the provider can't live
                 inside its own return. */}
-            <PluginUiProvider>
-              <AppContent
-                loginRequired={loginRequired}
-                onLogout={handleLogout}
-                onSettingsRefresh={refreshAppSettings}
-              />
-            </PluginUiProvider>
-            <ElevationPrompt />
-          </SessionColorsContext.Provider>
+              <PluginUiProvider>
+                <AppContent
+                  loginRequired={loginRequired}
+                  onLogout={handleLogout}
+                  onSettingsRefresh={refreshAppSettings}
+                />
+              </PluginUiProvider>
+              <ElevationPrompt />
+            </SessionColorsContext.Provider>
+          </FavoritesFirstContext.Provider>
         </SessionRowTagContext.Provider>
       </UnreadIndicatorContext.Provider>
     </IdleDecayWindowContext.Provider>
@@ -2229,6 +2234,7 @@ function AppContent({
         <div className="flex flex-1 min-h-0">
           {!showSettings && (
             <WorkspaceSidebar
+              workspaces={workspaces}
               groups={sidebarGroups}
               nestedGroups={nestedGroups}
               orgGroups={orgGroups}
