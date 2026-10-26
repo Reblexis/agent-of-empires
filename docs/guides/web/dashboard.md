@@ -66,6 +66,8 @@ A grouping toggle next to it cycles **By repo** (default), **By group** (the gro
 
 ## Triage: pin, archive, snooze
 
+**Favorites**: with `session.favorites_first` enabled (the default), live favorited workspaces appear once in a **Favorites** section above every project or group, on every grouping axis and in every sort mode. Favorites sort by workspace ID so selection, activity, status and priority changes cannot move them. Project and group collapse does not hide them. Text and plugin filters still apply, including matches on their original group names. A workspace spanning groups is reunited in its one favorite row, preserving its sessions and routing. Snoozed, archived and trashed sessions do not qualify. Disabling the setting restores ordinary grouping and the within-tier Attention favorite signal. The setting refreshes with the dashboard settings.
+
 Right-click (long-press on touch) a session row:
 
 - **Pin** floats the workspace to the top in every sort mode. Pin is web-only and distinct from the favorite mark. Favorites keep their `✦` marker in both normal and compact sidebars.

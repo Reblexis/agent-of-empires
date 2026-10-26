@@ -155,3 +155,52 @@ test.describe("Sidebar sort picker (#1418, #1640)", () => {
     await expect(page.locator("div.overflow-y-auto.border-t")).toHaveCount(1);
   });
 });
+
+test("Personal assistant stays globally pinned across sorts, navigation and reload", async ({ page }) => {
+  const sessions: MockSession[] = [
+    {
+      id: "project",
+      title: "Project work",
+      project_path: "/tmp/project",
+      branch: null,
+      created_at: "2026-10-26T00:00:00Z",
+      status: "Waiting",
+    },
+    {
+      id: "personal",
+      title: "Personal assistant",
+      project_path: "/tmp/personal",
+      branch: null,
+      created_at: "2025-01-01T00:00:00Z",
+      favorited: true,
+    },
+  ];
+  await mockApis(
+    page,
+    () => sessions,
+    () => [],
+  );
+  let favoritesFirst = true;
+  await page.route("**/api/settings", (r) => r.fulfill({ json: { session: { favorites_first: favoritesFirst } } }));
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto("/");
+  const favorites = page.getByTestId("sidebar-favorites-section");
+  for (const mode of ["manual", "lastActivity", "attention"]) {
+    await selectSortMode(page, mode);
+    await expect(favorites.getByTestId("sidebar-session-row")).toHaveCount(1);
+    await expect(page.getByTestId("sidebar-session-row").first()).toContainText("Personal assistant");
+  }
+  await favorites.getByTestId("sidebar-session-row").click();
+  await expect(page).toHaveURL(/personal/);
+  sessions[1]!.status = "Running";
+  await page.reload();
+  await expect(page.getByTestId("sidebar-session-row").first()).toContainText("Personal assistant");
+  await expect(page.getByTestId("sidebar-session-row").filter({ hasText: "Personal assistant" })).toHaveCount(1);
+  const favoriteBox = await favorites.boundingBox();
+  const projectBox = await page.getByTestId("sidebar-group-header").first().boundingBox();
+  expect(favoriteBox!.y + favoriteBox!.height).toBeLessThanOrEqual(projectBox!.y);
+  favoritesFirst = false;
+  await page.reload();
+  await expect(favorites).toHaveCount(0);
+  await expect(page.getByTestId("sidebar-session-row").filter({ hasText: "Personal assistant" })).toHaveCount(1);
+});

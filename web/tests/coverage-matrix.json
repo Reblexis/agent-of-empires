@@ -4778,6 +4778,16 @@
         "web/src/components/acp/Composer.tsx",
         "web/src/components/acp/ComposerControls.tsx"
       ]
+    },
+    {
+      "id": "sidebar.global-favorites",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": [
+        "src/components/__tests__/WorkspaceSidebarTrash.test.tsx",
+        "src/lib/__tests__/sidebarFavorites.test.ts"
+      ],
+      "components": ["web/src/components/WorkspaceSidebar.tsx"]
     }
   ]
 }
