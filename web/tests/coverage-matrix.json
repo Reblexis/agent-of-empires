@@ -3,6 +3,23 @@
   "description": "Surface/flow coverage matrix for the agent-of-empires web dashboard. Every component file under web/src/components/** must appear in at least one entry's `components` list (covered, deferred, or out-of-scope), or in coverage-matrix.exempt.json. CI validates this on every PR via tests/validate-coverage-matrix.mjs.",
   "surfaces": [
     {
+      "id": "planner.timeline-read-only",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/planner-timeline.spec.ts",
+        "src/components/__tests__/TimelinePane.test.tsx",
+        "src/lib/__tests__/plannerTimeline.test.ts",
+        "src/lib/__tests__/plannerDock.test.ts"
+      ],
+      "components": [
+        "web/src/components/TimelinePane.tsx",
+        "web/src/components/MobileMainPane.tsx",
+        "web/src/components/Dock.tsx"
+      ],
+      "description": "Authenticated read-only planner projection, server-only credentials, now and future windows in planner timezone, precision, loading/empty/stale/retry, persistent dock tab and mobile navigation."
+    },
+    {
       "id": "terminal.multi-device-sync",
       "kind": "live-playwright",
       "risk": "high",

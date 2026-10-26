@@ -142,6 +142,7 @@ import { BottomDock } from "./components/BottomDock";
 import { PaneDndController } from "./components/PaneDndController";
 import { visibleToFullIndex, type DropTarget } from "./components/paneDnd";
 import { BackgroundAgentsPanel } from "./components/acp/BackgroundAgentsPanel";
+import { TimelinePane } from "./components/TimelinePane";
 import { ContextPane } from "./components/ContextPane";
 import { DiffPane } from "./components/DiffPane";
 import { FilesPane } from "./components/FilesPane";
@@ -660,9 +661,11 @@ function AppContent({
 
   // A persisted tab is visible only if its backing pane currently exists: diff
   // and terminals always do; a plugin tab does only while its plugin is loaded.
+  const [serverAbout, setServerAbout] = useState<ServerAbout | null>(null);
   const tabAvailable = useCallback(
-    (id: string) => !id.startsWith("plugin:") || pluginPaneById.has(id),
-    [pluginPaneById],
+    (id: string) =>
+      (id !== "timeline" || !serverAbout?.cityhall_mode) && (!id.startsWith("plugin:") || pluginPaneById.has(id)),
+    [pluginPaneById, serverAbout?.cityhall_mode],
   );
   // A dock's groups reduced to what's actually shown: each surviving group keeps
   // its persisted index (so a drop addresses the right group) and a valid active
@@ -710,7 +713,7 @@ function AppContent({
       const defaultDock: DockLocation =
         pluginPaneById.get(kind)?.defaultDock ?? BUILTIN_PANES.find((p) => p.id === kind)?.defaultDock ?? "right";
       if (isPluginPaneId(kind)) togglePlugin(kind, defaultDock);
-      else toggleKind(kind as "diff" | "terminal" | "agents" | "files" | "context", defaultDock);
+      else toggleKind(kind as "diff" | "terminal" | "agents" | "files" | "context" | "timeline", defaultDock);
     },
     [toggleKind, togglePlugin, pluginPaneById],
   );
@@ -819,7 +822,6 @@ function AppContent({
     setKeyboardProxy(element);
   }, []);
 
-  const [serverAbout, setServerAbout] = useState<ServerAbout | null>(null);
   // CityHall client mode collapses the dashboard to a locked-down end-user
   // client; the capability flags gate the terminal/diff panes, project
   // management, the wizard, and settings from one place. See #7.
@@ -831,6 +833,7 @@ function AppContent({
   }, [workspaces, activeSessionId]);
   const activeSession = activeWorkspace?.sessions.find((s) => s.id === activeSessionId);
   const allPaneIds: string[] = [
+    ...(caps.cityhall ? [] : ["timeline"]),
     // CityHall client mode hides the code-inspection panes (diff, files) and
     // the terminal (plus plugin panes below) so only the composer + structured
     // view remain. See #7.
@@ -942,7 +945,11 @@ function AppContent({
   // back to the agent view so the user is never stranded on a blank pane.
   // Mirrors the paired guard above; render-phase derivation per the block at
   // the top.
-  const isGatedBuiltinView = rightPanelView === "diff" || rightPanelView === "files" || rightPanelView === "agents";
+  const isGatedBuiltinView =
+    rightPanelView === "diff" ||
+    rightPanelView === "files" ||
+    rightPanelView === "agents" ||
+    rightPanelView === "timeline";
   if ((isGatedBuiltinView || isPluginPaneId(rightPanelView)) && !mobilePaneIds.includes(rightPanelView)) {
     setRightPanelView("agent");
   }
@@ -1901,6 +1908,7 @@ function AppContent({
         // session. See #3088 review.
         return <FilesPane key={activeSessionId ?? "none"} sessionId={activeSessionId} />;
       }
+      if (id === "timeline") return <TimelinePane />;
       if (id === "context") {
         // Remount on session switch so the recap and its polling reset.
         return (

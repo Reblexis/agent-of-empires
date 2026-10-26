@@ -11,6 +11,12 @@ The dashboard is the home screen of the web app: a workspace sidebar on the left
 - **Top bar** carries the command palette, the right-panel picker, and the overflow menu.
 - **Home screen** (no session selected) shows a count of running, waiting, and error sessions.
 
+### Timeline pane
+
+The **Timeline** tab shows the planner's now marker and upcoming work, read-only.
+It stays available across sessions and reloads. See the [planner contract](../web-dashboard.md#planner-timeline)
+for date precision, refresh, timezone and operator setup.
+
 ### Context pane
 
 Terminal sessions get a **Context** tab in the dock beside Diff and Terminal. It starts with the session's overall **Goal**, followed by two or three sentences about recent progress, current state and any actual blocker. The goal stays stable through follow-ups and intermediate steps unless the user changes the overall objective. The recap uses the session title, previous recap and both the opening and latest tmux scrollback as evidence, rather than treating the latest request as the whole purpose.
@@ -92,6 +98,6 @@ The profile picker, shown beside the title of tabs that hold profile-overridable
 
 ## On mobile
 
-Below the `md` breakpoint the dashboard shows one full-viewport pane. The right-panel button swaps the main pane between **Agent terminal**, **Paired terminal**, and whichever panes the session allows: **Sub agents** in structured-view sessions, **Diff** and **Files** (hidden in CityHall mode), and plugin panes. A back chip returns to the agent terminal. Both terminals stay alive in the background, preserving scrollback and focus.
+Below the `md` breakpoint the dashboard shows one full-viewport pane. The right-panel button swaps the main pane between **Agent terminal**, **Paired terminal**, and whichever panes the session allows: **Sub agents** in structured-view sessions, **Timeline**, **Diff** and **Files** (hidden in CityHall mode), and plugin panes. A back chip returns to the agent terminal. Both terminals stay alive in the background, preserving scrollback and focus.
 
 In a structured-view conversation, a tab at the top right and another just above the composer fold away the top bar and the composer independently, giving the transcript their height back; both tabs stay on screen while collapsed. Leaving the conversation shows the top bar again, since it is the only navigation the other views have.

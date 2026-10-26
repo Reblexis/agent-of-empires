@@ -2226,3 +2226,7 @@ export function syncSkills(options?: {
     { outcomes: [] },
   );
 }
+
+export function getPlannerTimeline(signal?: AbortSignal): Promise<import("./plannerTimeline").PlannerSnapshot | null> {
+  return fetchJson("/api/planner/timeline", { signal, cache: "no-store" });
+}

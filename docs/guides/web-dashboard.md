@@ -154,3 +154,48 @@ Produce one with `aoe cityhall export --out cityhall.toml` or from the dashboard
 To have a workspace fetch its bundle at startup, set `AOE_CITYHALL_BUNDLE_URL` (and `AOE_CITYHALL_BUNDLE_TOKEN` for the bearer token). The fetch happens before any config is read. On a first boot a fetch failure is fatal, rather than leaving a user in a workspace with no projects; once a bundle has been applied it is cached, and a later failure only warns and serves the cached configuration. A malformed bundle, or one naming an unknown setting, is fatal either way.
 
 A git identity and credential arrive in the same document (`[git]`), which is what makes clone, pull, and push work inside a workspace. `export` never writes that section; the host serving the bundle composes it per user.
+
+## Planner timeline
+
+The persistent Timeline pane lives in the existing right dock beside Diff,
+Terminal and Context. It is available across terminal and structured sessions,
+including read-only dashboards. Existing layouts gain the tab without changing
+focus or dock collapse. Each session retains its selected tab and dock placement
+across navigation and reload; closing Timeline is remembered and its activity-bar
+button reopens it. Mobile uses the existing pane picker.
+
+Timeline is a read-only projection of the configured planner, never a second
+planner. It shows a live now marker in the planner's IANA timezone, timed windows
+open now, upcoming timed work in chronological order, overdue work, and broader
+or undated windows separately. A window describes availability, not evidence of
+what the person is doing. Start means the beginning of its precision interval;
+due means the end. Date-only, month-only and year-only values retain their stated
+precision, never invented appointment times. Missing bounds stay unbounded.
+Recurring work comes only from ordinary instances already emitted by the planner;
+AoE never expands templates. Done tasks and templates are omitted.
+
+The pane fetches on open and every minute while mounted, refreshes on return to
+the page, and updates now every 15 seconds. Only one fetch runs at a time. It
+shows loading, empty and unavailable states, keeps the last successful snapshot
+in memory on refresh failure with a Stale label and last-update time, and retries.
+Nothing writes task data to browser storage. The browser validates the IANA zone
+and real calendar dates; invalid data fails visibly instead of becoming an empty
+schedule. A full 500-item page is marked incomplete.
+
+The operator configures `AOE_PLANNER_URL` and `AOE_PLANNER_READ_TOKEN_FILE` on the
+daemon. The file contains only a read credential, is outside the repository and
+is never returned in settings, logs, errors, browser assets or planner responses.
+The URL must be HTTPS (HTTP is permitted only on loopback); redirects are refused.
+No browser-supplied URL, query, method or credential is forwarded.
+`GET /api/planner/timeline` requires normal dashboard authentication and remains
+available in read-only mode, but is refused in CityHall mode. No write endpoint
+exists. With no configuration it returns 503; upstream, credential or schema
+errors return a generic 502 with no upstream body or secret. Responses are
+`Cache-Control: no-store`.
+
+The server reads the planner's help (`usage=1`) for `timeZone`, and its open and
+missed tasks (`status=open|missed`, `limit=500`). Each request has a ten-second
+deadline and a two-MiB response limit. It projects only id, number, title, start,
+due, priority and status, with `timeZone`, `fetchedAt` and `truncated`; descriptions,
+keys and other upstream metadata are excluded. A failure in any read fails the
+snapshot. The planner retains ownership of recurrence, precision and task state.

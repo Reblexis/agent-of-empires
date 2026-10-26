@@ -314,6 +314,7 @@ pub(super) fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/devices", get(login::devices_handler))
         // About (version, auth status, read-only state)
         .route("/api/about", get(api::get_about))
+        .route("/api/planner/timeline", get(api::get_planner_timeline))
         // Update status (latest release, available flag)
         .route("/api/system/update-status", get(api::get_update_status))
         .route(
