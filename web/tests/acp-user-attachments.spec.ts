@@ -83,6 +83,7 @@ test("the lightbox holds back the terminal-focus shortcut while a paired termina
   );
   await openStructuredSession(page, mock);
 
+  await page.getByTestId("pane-toggle-terminal").click();
   await page.locator('[data-testid^="pane-tab-terminal:"]').first().click();
   const pairedInput = page.locator('[data-term="paired"]:visible textarea').first();
   await expect(pairedInput).toBeAttached();

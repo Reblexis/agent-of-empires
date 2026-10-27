@@ -81,9 +81,12 @@ export async function openDiffSession(page: Page, title = "pinch-test") {
   await activateDiffTab(page);
 }
 
-/** The local build opens a session on its Context tab (docs/guides/web/dashboard.md); bring the Diff tab forward. */
+/** Diff is opt-in; open it before testing its contents. */
 export async function activateDiffTab(page: Page) {
   const tab = page.getByTestId("pane-tab-diff").first();
+  const toggle = page.getByTestId("pane-toggle-diff");
+  await expect(toggle).toBeVisible();
+  if (!(await tab.count())) await toggle.click();
   await expect(tab).toBeVisible({ timeout: 10000 });
   if ((await tab.getAttribute("aria-selected")) !== "true") await tab.click();
 }
