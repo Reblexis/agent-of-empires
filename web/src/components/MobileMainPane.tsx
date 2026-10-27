@@ -5,6 +5,7 @@ import { ForecastBand } from "./ForecastBand";
 import { PairedShellPane } from "./PairedTerminal";
 import { BackgroundAgentsPanel } from "./acp/BackgroundAgentsPanel";
 import { TimelinePane } from "./TimelinePane";
+import { ContextPane } from "./ContextPane";
 import { FilesPane } from "./FilesPane";
 import { DiffFileList } from "./diff/DiffFileList";
 import { DiffFileViewer } from "./diff/DiffFileViewer";
@@ -103,7 +104,9 @@ export function MobileMainPane({
             ? "Sub agents"
             : view === "timeline"
               ? "Timeline"
-              : (activePluginPane?.title ?? "Plugin");
+              : view === "context"
+                ? "Context"
+                : (activePluginPane?.title ?? "Plugin");
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
@@ -240,6 +243,14 @@ export function MobileMainPane({
             style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
           >
             <TimelinePane />
+          </div>
+        )}
+        {view === "context" && (
+          <div
+            className="absolute inset-0 z-10 flex flex-col min-h-0 overflow-hidden bg-surface-900"
+            style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+          >
+            <ContextPane key={activeSessionId ?? "none"} sessionId={activeSessionId} session={activeSession} />
           </div>
         )}
         {activePluginPane && (

@@ -8,6 +8,12 @@ const SESSION = "pinch-test";
 
 async function openSession(page: Page) {
   await mockTerminalApis(page);
+  await page.addInitScript(() => {
+    localStorage.setItem(
+      "aoe-web-settings",
+      JSON.stringify({ paneDefaultsVersion: 1, autoOpenDiffPane: true, autoOpenTerminalPane: true }),
+    );
+  });
   await page.setViewportSize({ width: 1280, height: 720 });
 }
 

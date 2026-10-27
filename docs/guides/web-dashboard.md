@@ -157,11 +157,10 @@ A git identity and credential arrive in the same document (`[git]`), which is wh
 
 ## Planner timeline
 
-The persistent Timeline pane lives in the existing right dock beside Diff,
-Terminal and Context. It is available across terminal and structured sessions,
+The persistent Timeline pane lives in the right dock beside Context. It is available across terminal and structured sessions,
 including read-only dashboards. Existing layouts gain the tab without changing
-focus or dock collapse. Each session retains its selected tab and dock placement
-across navigation and reload; closing Timeline is remembered and its activity-bar
+focus or dock collapse. The selected tab follows you across sessions and reload,
+while dock placement stays per session; closing Timeline is remembered and its activity-bar
 button reopens it. Mobile uses the existing pane picker.
 
 Timeline is a read-only projection of the configured planner, never a second

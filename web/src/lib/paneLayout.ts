@@ -33,6 +33,8 @@ export interface DockLayout {
 
 interface LayoutStore {
   version: 2;
+  starterTabsRemoved: true;
+  preferredTab: TabId | null;
   template: DockLayout;
   sessions: Record<string, DockLayout>;
 }
@@ -145,12 +147,7 @@ function ensureTimelineTab(layout: DockLayout): DockLayout {
   return addTab(layout, "right", "timeline", false);
 }
 
-/** LOCAL PATCH: the Context pane opens by default as the ACTIVE right-dock
- *  tab of every session, including stored layouts that predate the pane, so
- *  re-orienting never needs a per-session click. Applied at both layout
- *  resolution sites (render and mutate) so the displayed and persisted
- *  layouts agree. An explicit close is remembered in `closedPlugins` until
- *  the tab is reopened (addTab clears the ledger entry). */
+/** Add Context to older layouts unless explicitly closed. */
 export function ensureContextTab(layout: DockLayout): DockLayout {
   if (layout.closedPlugins.includes("context")) return layout;
   if (findTab(layout, "context")) return layout;
@@ -266,8 +263,6 @@ function defaultTemplate(): DockLayout {
     const tabId = p.id === "terminal" ? terminalTabId(0) : p.id;
     l = addTab(l, p.defaultDock, tabId, false);
   }
-  // LOCAL PATCH: context is the tab a session opens on (see ensureContextTab);
-  // the recap is what re-orients, diff/terminal are a click away.
   return setActive(l, "right", "context");
 }
 
@@ -368,15 +363,31 @@ function loadStore(): LayoutStore {
         const sessionsRaw = (parsed.sessions ?? {}) as Record<string, unknown>;
         const sessions: Record<string, DockLayout> = {};
         for (const [id, layout] of Object.entries(sessionsRaw)) {
-          sessions[id] = normalizeDock(layout);
+          const normalized = normalizeDock(layout);
+          sessions[id] =
+            parsed.starterTabsRemoved === true
+              ? normalized
+              : removeTab(removeTab(normalized, "diff"), terminalTabId(0));
         }
-        return { version: 2, template: normalizeDock(parsed.template), sessions };
+        return {
+          version: 2,
+          starterTabsRemoved: true,
+          preferredTab: typeof parsed.preferredTab === "string" ? parsed.preferredTab : null,
+          template: normalizeDock(parsed.template),
+          sessions,
+        };
       }
     } catch {
       // Malformed JSON: fall through to migration and defaults.
     }
   }
-  return { version: 2, template: migrateTemplate(), sessions: {} };
+  return { version: 2, starterTabsRemoved: true, preferredTab: null, template: migrateTemplate(), sessions: {} };
+}
+
+function preferTab(layout: DockLayout, tabId: TabId | null): DockLayout {
+  if (!tabId) return layout;
+  const at = findTab(layout, tabId);
+  return at ? setActive(layout, at.dock, tabId) : layout;
 }
 
 export interface PaneLayoutApi {
@@ -446,53 +457,65 @@ export function usePaneLayout(sessionId: string | null, outsideRepository: boole
   const layout = useMemo(
     () =>
       sessionId
-        ? ensureTimelineTab(
-            ensureContextTab(
-              store.sessions[sessionId] ??
-                seedLayout(store.template, {
-                  diff: autoOpenDiffPane && outsideRepository === false,
-                  terminal: autoOpenTerminalPane,
-                }),
+        ? preferTab(
+            ensureTimelineTab(
+              ensureContextTab(
+                store.sessions[sessionId] ??
+                  seedLayout(store.template, {
+                    diff: autoOpenDiffPane && outsideRepository === false,
+                    terminal: autoOpenTerminalPane,
+                  }),
+              ),
             ),
+            store.preferredTab,
           )
         : emptyDockLayout(),
     [store, sessionId, autoOpenDiffPane, autoOpenTerminalPane, outsideRepository],
   );
 
   const mutate = useCallback(
-    (fn: (l: DockLayout) => DockLayout) => {
+    (fn: (l: DockLayout) => DockLayout, selected?: TabId | ((l: DockLayout) => TabId)) => {
       if (!sessionId) return;
       setStore((s) => {
         // Read prefs synchronously: depending on `settings` would rebuild the pane API on any setting change.
         const prefs = getWebSettingsSnapshot();
-        const current = ensureTimelineTab(
-          ensureContextTab(
-            s.sessions[sessionId] ??
-              seedLayout(s.template, {
-                diff: prefs.autoOpenDiffPane && outsideRepositoryRef.current === false,
-                terminal: prefs.autoOpenTerminalPane,
-              }),
+        const current = preferTab(
+          ensureTimelineTab(
+            ensureContextTab(
+              s.sessions[sessionId] ??
+                seedLayout(s.template, {
+                  diff: prefs.autoOpenDiffPane && outsideRepositoryRef.current === false,
+                  terminal: prefs.autoOpenTerminalPane,
+                }),
+            ),
           ),
+          s.preferredTab,
         );
         const updated = fn(current);
-        if (updated === current && sessionId in s.sessions) return s;
-        return { ...s, sessions: { ...s.sessions, [sessionId]: updated } };
+        const chosen = typeof selected === "function" ? selected(updated) : selected;
+        const preferredTab = chosen && isActiveTab(updated, chosen) ? chosen : s.preferredTab;
+        if (updated === current && s.sessions[sessionId] === current && preferredTab === s.preferredTab) return s;
+        return { ...s, preferredTab, sessions: { ...s.sessions, [sessionId]: updated } };
       });
     },
     [sessionId, outsideRepositoryRef],
   );
 
   const openTab = useCallback(
-    (tabId: TabId, dock: DockLocation) => mutate((l) => openOrRevealTab(l, tabId, dock)),
+    (tabId: TabId, dock: DockLocation) => mutate((l) => openOrRevealTab(l, tabId, dock), tabId),
     [mutate],
   );
   const addTerminalCb = useCallback(
-    (dock: DockLocation) => mutate((l) => revealDock(addTerminal(l, dock).layout, dock)),
+    (dock: DockLocation) =>
+      mutate(
+        (l) => revealDock(addTerminal(l, dock).layout, dock),
+        (l) => terminalTabId(l.nextTerminalIndex - 1),
+      ),
     [mutate],
   );
   const closeTab = useCallback((tabId: TabId) => mutate((l) => removeTab(l, tabId)), [mutate]);
   const activateTab = useCallback(
-    (dock: DockLocation, tabId: TabId) => mutate((l) => activateOrRevealTab(l, dock, tabId)),
+    (dock: DockLocation, tabId: TabId) => mutate((l) => activateOrRevealTab(l, dock, tabId), tabId),
     [mutate],
   );
   const moveTabCb = useCallback(
@@ -500,7 +523,7 @@ export function usePaneLayout(sessionId: string | null, outsideRepository: boole
       mutate((l) => {
         const next = moveTab(l, tabId, toDock);
         return dockOf(next, tabId) === toDock ? revealDock(next, toDock) : next;
-      }),
+      }, tabId),
     [mutate],
   );
   const placeTabCb = useCallback(
@@ -508,25 +531,28 @@ export function usePaneLayout(sessionId: string | null, outsideRepository: boole
       mutate((l) => {
         const next = placeTab(l, tabId, target);
         return dockOf(next, tabId) === target.dock ? revealDock(next, target.dock) : next;
-      }),
+      }, tabId),
     [mutate],
   );
   const toggleKind = useCallback(
     (kind: "diff" | "terminal" | "agents" | "files" | "context" | "timeline", defaultDock: DockLocation) =>
-      mutate((l) => {
-        // Single-instance panes toggle their tab; terminals toggle the whole group.
-        if (kind === "diff" || kind === "agents" || kind === "files" || kind === "context" || kind === "timeline") {
-          const at = findTab(l, kind);
-          if (at) return isDockCollapsed(l, at.dock) ? openOrRevealTab(l, kind, defaultDock) : removeTab(l, kind);
-          return openOrRevealTab(l, kind, defaultDock);
-        }
-        const terminals = terminalTabs(l);
-        if (terminals.length === 0) return openOrRevealTab(l, terminalTabId(0), defaultDock);
-        const visibleTerminal = terminals.find(({ dock }) => !isDockCollapsed(l, dock));
-        if (visibleTerminal) return removeAllTerminals(l);
-        const first = terminals[0]!;
-        return activateOrRevealTab(l, first.dock, first.id);
-      }),
+      mutate(
+        (l) => {
+          // Single-instance panes toggle their tab; terminals toggle the whole group.
+          if (kind === "diff" || kind === "agents" || kind === "files" || kind === "context" || kind === "timeline") {
+            const at = findTab(l, kind);
+            if (at) return isDockCollapsed(l, at.dock) ? openOrRevealTab(l, kind, defaultDock) : removeTab(l, kind);
+            return openOrRevealTab(l, kind, defaultDock);
+          }
+          const terminals = terminalTabs(l);
+          if (terminals.length === 0) return openOrRevealTab(l, terminalTabId(0), defaultDock);
+          const visibleTerminal = terminals.find(({ dock }) => !isDockCollapsed(l, dock));
+          if (visibleTerminal) return removeAllTerminals(l);
+          const first = terminals[0]!;
+          return activateOrRevealTab(l, first.dock, first.id);
+        },
+        (l) => (kind === "terminal" ? (terminalTabs(l).find(({ id }) => isActiveTab(l, id))?.id ?? "") : kind),
+      ),
     [mutate],
   );
   const togglePlugin = useCallback(
@@ -535,7 +561,7 @@ export function usePaneLayout(sessionId: string | null, outsideRepository: boole
         const at = findTab(l, id);
         if (at) return isDockCollapsed(l, at.dock) ? openOrRevealTab(l, id, defaultDock) : removeTab(l, id);
         return openOrRevealTab(l, id, defaultDock);
-      }),
+      }, id),
     [mutate],
   );
   const syncPlugins = useCallback(

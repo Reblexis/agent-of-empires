@@ -11,6 +11,17 @@ The dashboard is the home screen of the web app: a workspace sidebar on the left
 - **Top bar** carries the command palette, the right-panel picker, and the overflow menu.
 - **Home screen** (no session selected) shows a count of running, waiting, and error sessions.
 
+The dock starts with Context and Timeline. Diff and the starter Terminal tab are
+opt-in through the panel picker; existing layouts drop those two starter tabs
+once and disable their auto-open preferences, preserving additional terminals and their running shells. Manually reopened
+tabs stay open. Auto-open preferences still apply to new sessions.
+
+The last tab you choose follows you between sessions and survives reload in the
+same browser. A destination keeps its own tab placement, collapse state and
+terminals; an absent or explicitly closed tab falls back to that session's active
+tab without reopening it. Mobile remembers its selected panel separately, falling
+back to the agent view when that panel is unavailable.
+
 ### Timeline pane
 
 The **Timeline** tab shows the planner's now marker and upcoming work, read-only.
@@ -19,9 +30,9 @@ for date precision, refresh, timezone and operator setup.
 
 ### Context pane
 
-Terminal sessions get a **Context** tab in the dock beside Diff and Terminal. It starts with the session's overall **Goal**, followed by two or three sentences about recent progress, current state and any actual blocker. The goal stays stable through follow-ups and intermediate steps unless the user changes the overall objective. The recap uses the session title, previous recap and both the opening and latest tmux scrollback as evidence, rather than treating the latest request as the whole purpose.
+Terminal sessions get a **Context** tab in the dock. It starts with the session's overall **Goal**, followed by two or three sentences about recent progress, current state and any actual blocker. The goal stays stable through follow-ups and intermediate steps unless the user changes the overall objective. The recap uses the session title, previous recap and both the opening and latest tmux scrollback as evidence, rather than treating the latest request as the whole purpose.
 
-Context is the active right-dock tab every session opens on, including layouts saved before the pane existed; closing it is remembered until you reopen it from the activity bar. Opening the tab shows the cached recap and regenerates it automatically when a turn has completed since it was generated; the refresh control regenerates on demand. The same utility agent smart rename uses (`smart_rename_agent`, default: the session's own agent) produces the recap on its cheap model tier. Structured-view sessions use the same goal-and-recent-progress format through their inline **Summarize** feature.
+Context is initially active until you choose another tab; closing it is remembered until you reopen it from the activity bar. Opening the tab shows the cached recap and regenerates it automatically when a turn has completed since it was generated; the refresh control regenerates on demand. The same utility agent smart rename uses (`smart_rename_agent`, default: the session's own agent) produces the recap on its cheap model tier. Structured-view sessions use the same goal-and-recent-progress format through their inline **Summarize** feature.
 
 ## Creating a session
 
@@ -100,6 +111,6 @@ The profile picker, shown beside the title of tabs that hold profile-overridable
 
 ## On mobile
 
-Below the `md` breakpoint the dashboard shows one full-viewport pane. The right-panel button swaps the main pane between **Agent terminal**, **Paired terminal**, and whichever panes the session allows: **Sub agents** in structured-view sessions, **Timeline**, **Diff** and **Files** (hidden in CityHall mode), and plugin panes. A back chip returns to the agent terminal. Both terminals stay alive in the background, preserving scrollback and focus.
+Below the `md` breakpoint the dashboard shows one full-viewport pane. The right-panel button swaps the main pane between **Agent terminal**, **Paired terminal**, and whichever panes the session allows: **Sub agents** in structured-view sessions, **Context** in terminal sessions, **Timeline**, **Diff** and **Files** (hidden in CityHall mode), and plugin panes. A back chip returns to the agent terminal. Both terminals stay alive in the background, preserving scrollback and focus.
 
 In a structured-view conversation, a tab at the top right and another just above the composer fold away the top bar and the composer independently, giving the transcript their height back; both tabs stay on screen while collapsed. Leaving the conversation shows the top bar again, since it is the only navigation the other views have.
