@@ -14,7 +14,10 @@ it("timeline stays discoverable across sessions and reload without stealing focu
     closedPlugins: [],
     collapsed: { right: true, bottom: false },
   };
-  localStorage.setItem("aoe-pane-layout-v2", JSON.stringify({ version: 2, template: legacy, sessions: { a: legacy } }));
+  localStorage.setItem(
+    "aoe-pane-layout-v2",
+    JSON.stringify({ version: 2, starterTabsRemoved: true, template: legacy, sessions: { a: legacy } }),
+  );
   const { result, rerender, unmount } = renderHook(({ id }) => usePaneLayout(id), { initialProps: { id: "a" } });
   expect(dockTabs(result.current.layout, "right")).toContain("timeline");
   expect(result.current.layout.right[0]!.active).toBe("diff");

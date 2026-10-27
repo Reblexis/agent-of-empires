@@ -37,7 +37,7 @@ test.describe("Right dock pane-layout persistence", () => {
     expect(await getLayout(page)).toEqual({ diff: true, terminal: true });
   });
 
-  test("desktop seeds both panes open; the keyboard toggle flips the diff pane and survives reload", async ({
+  test("desktop seeds both starter panes closed; the keyboard toggle flips the diff pane and survives reload", async ({
     page,
   }) => {
     await page.setViewportSize({ width: 1280, height: 720 });
@@ -47,16 +47,16 @@ test.describe("Right dock pane-layout persistence", () => {
     await mockSessionsList(page, () => [{ id: SESSION }]);
     await page.goto(`/session/${SESSION}`);
     await expect(page.locator("header")).toBeVisible();
-    await expect.poll(() => getLayout(page, { sessionOnly: true })).toEqual({ diff: true, terminal: true });
+    await expect.poll(() => getLayout(page, { sessionOnly: true })).toEqual({ diff: false, terminal: false });
 
     // Shift+D toggles the diff pane specifically (Ctrl+Alt+B now collapses the
     // whole dock). Focus the body first so the handler receives the event.
     await page.locator("body").click();
     await page.keyboard.press("Shift+D");
-    await expect.poll(() => getLayout(page)).toEqual({ diff: false, terminal: true });
+    await expect.poll(() => getLayout(page)).toEqual({ diff: true, terminal: false });
 
     await page.reload();
     await expect(page.locator("header")).toBeVisible();
-    expect(await getLayout(page)).toEqual({ diff: false, terminal: true });
+    expect(await getLayout(page)).toEqual({ diff: true, terminal: false });
   });
 });

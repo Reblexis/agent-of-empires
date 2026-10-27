@@ -306,7 +306,7 @@ test.describe("Plugin pages (#4460)", () => {
     const pane = page.getByTestId("plugin-page-split-session");
     await expect(pane.getByTestId("plugin-page-split-title")).toHaveText("Ethiopians");
     // The pane is the session's full view, docks included.
-    await expect(pane.getByTestId("pane-tab-diff")).toBeVisible();
+    await expect(pane.getByTestId("pane-tab-timeline")).toBeVisible();
     await expect(page).toHaveURL("/plugins/acme.kit/board?session=sess-a");
     await expect.poll(selections).toEqual([{ sessionId: null }, { sessionId: "sess-a" }]);
 

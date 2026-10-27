@@ -142,6 +142,7 @@ describe("usePaneLayout migration + persistence", () => {
       "aoe-pane-layout-v2",
       JSON.stringify({
         version: 2,
+        starterTabsRemoved: true,
         template: { right: [], bottom: [], nextTerminalIndex: 1, closedPlugins: [] },
         sessions: { s1: { right, bottom, nextTerminalIndex: 1, closedPlugins: [] } },
       }),
@@ -153,7 +154,7 @@ describe("usePaneLayout migration + persistence", () => {
       JSON.stringify({ diff: { open: true, dock: "right" }, terminal: { open: true, dock: "bottom" } }),
     );
     const { layout: l } = hook().current;
-    expect([dockTabs(l, "right"), dockTabs(l, "bottom")]).toEqual([["diff", "context", "timeline"], ["terminal:0"]]);
+    expect([dockTabs(l, "right"), dockTabs(l, "bottom")]).toEqual([["context", "timeline"], []]);
   });
 
   it("migrates the legacy collapsed flag to empty docks except the ensured context tab", () => {
@@ -251,6 +252,7 @@ describe("usePaneLayout outside a repository (#4574)", () => {
       "aoe-pane-layout-v2",
       JSON.stringify({
         version: 2,
+        starterTabsRemoved: true,
         template: { ...layout(["diff", "terminal:0"]), nextTerminalIndex: 1 },
         sessions: {},
       }),
@@ -267,7 +269,7 @@ describe("usePaneLayout outside a repository (#4574)", () => {
     seededTemplate();
     localStorage.setItem(
       "aoe-web-settings",
-      JSON.stringify({ autoOpenDiffPane: true, autoOpenTerminalPane: terminal }),
+      JSON.stringify({ paneDefaultsVersion: 1, autoOpenDiffPane: true, autoOpenTerminalPane: terminal }),
     );
     const { result } = renderHook(() => usePaneLayout("s1", outside));
     expect(dockTabs(result.current.layout, "right")).toEqual(expected);
@@ -275,6 +277,7 @@ describe("usePaneLayout outside a repository (#4574)", () => {
 
   it("applies a flag that arrives after seeding, but never closes a Diff the user opened", () => {
     seededTemplate();
+    localStorage.setItem("aoe-web-settings", JSON.stringify({ paneDefaultsVersion: 1, autoOpenDiffPane: true }));
     const { result, rerender } = renderHook(({ outside }) => usePaneLayout("s1", outside), {
       initialProps: { outside: false },
     });

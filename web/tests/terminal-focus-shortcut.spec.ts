@@ -35,6 +35,7 @@ async function focusKind(page: Page, kind: "agent" | "paired") {
   }
   // #2437: on desktop the paired shell mounts only while its tab is active.
   const termTab = page.locator('[data-testid^="pane-tab-terminal:"]').first();
+  if (!(await termTab.count())) await page.getByTestId("pane-toggle-terminal").click();
   if (await termTab.count()) await termTab.click();
   const visiblePaired = page.locator('[data-term="paired"]:visible').first();
   await visiblePaired.locator("textarea").focus();
@@ -110,6 +111,7 @@ test.describe("Cmd/Ctrl+` desktop", () => {
     try {
       await page.goto("/");
       await openSession(page);
+      await page.getByTestId("pane-toggle-terminal").click();
       await page.locator('[data-testid^="pane-tab-terminal:"]').first().click();
       await expect.poll(() => requested).toBe(true);
       await focusKind(page, "agent");

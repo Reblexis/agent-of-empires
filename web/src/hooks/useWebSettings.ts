@@ -46,8 +46,8 @@ function getDefaults(): WebSettings {
     collapsedDiffDirs: [],
     sidebarSide: "left",
     sidebarCompact: false,
-    autoOpenDiffPane: true,
-    autoOpenTerminalPane: true,
+    autoOpenDiffPane: false,
+    autoOpenTerminalPane: false,
     autoOpenPluginPanes: false,
     mobileToolbarKeys: [...DEFAULT_TOOLBAR_KEYS],
     showArrowJoystick: true,
@@ -58,7 +58,7 @@ function normalizeBool(value: unknown, fallback: boolean): boolean {
   return typeof value === "boolean" ? value : fallback;
 }
 
-function normalizeSnapshot(settings: WebSettings): WebSettings {
+function normalizeSnapshot(settings: WebSettings & { paneDefaultsVersion?: number }): WebSettings {
   const defaults = getDefaults();
   return {
     ...settings,
@@ -67,8 +67,8 @@ function normalizeSnapshot(settings: WebSettings): WebSettings {
     structuredMobileFontSize: normalizeConversationFontSize(settings.structuredMobileFontSize),
     structuredDesktopFontSize: normalizeConversationFontSize(settings.structuredDesktopFontSize),
     sidebarCompact: normalizeBool(settings.sidebarCompact, defaults.sidebarCompact),
-    autoOpenDiffPane: normalizeBool(settings.autoOpenDiffPane, defaults.autoOpenDiffPane),
-    autoOpenTerminalPane: normalizeBool(settings.autoOpenTerminalPane, defaults.autoOpenTerminalPane),
+    autoOpenDiffPane: settings.paneDefaultsVersion === 1 && normalizeBool(settings.autoOpenDiffPane, false),
+    autoOpenTerminalPane: settings.paneDefaultsVersion === 1 && normalizeBool(settings.autoOpenTerminalPane, false),
     autoOpenPluginPanes: normalizeBool(settings.autoOpenPluginPanes, defaults.autoOpenPluginPanes),
     mobileToolbarKeys: normalizeToolbarKeys(settings.mobileToolbarKeys),
     showArrowJoystick: normalizeBool(settings.showArrowJoystick, defaults.showArrowJoystick),
@@ -117,7 +117,7 @@ export function useWebSettings() {
 
   const update = useCallback((patch: Partial<WebSettings>) => {
     const current = getSnapshot();
-    const next = { ...current, ...patch };
+    const next = { ...current, ...patch, paneDefaultsVersion: 1 };
     if (!safeSetItem(STORAGE_KEY, JSON.stringify(next))) {
       console.warn("aoe-web-settings: failed to persist (storage full or disabled)");
     }

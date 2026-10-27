@@ -20,7 +20,7 @@ import { useDashboardPresence } from "./hooks/useDashboardPresence";
 import { clearAcpCache } from "./hooks/useAcpSession";
 import { clearDraft, sweepOrphanDrafts } from "./lib/acpDrafts";
 import { AcpPrefsProvider } from "./lib/acpPrefs";
-import { safeGetItem, safeRemoveItem } from "./lib/safeStorage";
+import { safeGetItem, safeRemoveItem, safeSetItem } from "./lib/safeStorage";
 import { isAutomatedSession } from "./lib/onboarding";
 import { useWorkspaces } from "./hooks/useWorkspaces";
 import { useLastSessionRestore } from "./hooks/useLastSessionRestore";
@@ -586,8 +586,7 @@ function AppContent({
   const selectedFileLine = selectedFile?.line;
   // Dock panes render as tabbed groups (#2437): each dock holds an ordered set
   // of tabs (diff, one-or-more terminals, plugin panes) with one active body.
-  // The tab membership + active tab + terminal count are persisted per session;
-  // dock sizes stay global (Dock/BottomDock own those localStorage keys).
+  // Membership and terminals are per session; tab preference and dock sizes are shared.
   // Null until the active Session's row loads, so nothing is seeded from a guess.
   const activeRow = sessions.find((s) => s.id === activeSessionId);
   const activeOutsideRepository = activeRow ? Boolean(activeRow.outside_repository) : null;
@@ -775,7 +774,16 @@ function AppContent({
   // pane shows one of agent / diff / paired, chosen via the picker (#1452).
   const isMdUp = useIsWideViewport();
   const singlePane = !isMdUp;
-  const [rightPanelView, setRightPanelView] = useState<RightPanelView>("agent");
+  const [rightPanelView, setRightPanelView] = useState<RightPanelView>(() => {
+    const saved = safeGetItem("aoe-mobile-panel");
+    return saved &&
+      (["agent", "diff", "files", "paired", "agents", "timeline", "context"].includes(saved) || isPluginPaneId(saved))
+      ? (saved as RightPanelView)
+      : "agent";
+  });
+  useEffect(() => {
+    safeSetItem("aoe-mobile-panel", rightPanelView);
+  }, [rightPanelView]);
   const [pickerOpen, setPickerOpen] = useState(false);
   // Reading mode for the phone conversation view: the top bar folds away so the
   // transcript gets its 48px back (the composer has its own, independent
@@ -919,14 +927,13 @@ function AppContent({
     }
   }, [unreadIndicatorEnabled, activeSessionId, activeSession?.unread]);
 
-  // Derive selectedFile/rightPanelView/pickerOpen/pairedMounted resets
+  // Derive selectedFile/pickerOpen/pairedMounted resets
   // during render to satisfy
   // react-you-might-not-need-an-effect/no-adjust-state-on-prop-change
   // and react-hooks/set-state-in-effect.
   const prevActiveSessionIdRef = useRef(activeSessionId);
   if (activeSessionId !== prevActiveSessionIdRef.current) {
     prevActiveSessionIdRef.current = activeSessionId;
-    setRightPanelView("agent");
     setPickerOpen(false);
     setPairedMounted(false);
     setSelectedFile(null);
@@ -954,8 +961,13 @@ function AppContent({
     rightPanelView === "diff" ||
     rightPanelView === "files" ||
     rightPanelView === "agents" ||
-    rightPanelView === "timeline";
-  if ((isGatedBuiltinView || isPluginPaneId(rightPanelView)) && !mobilePaneIds.includes(rightPanelView)) {
+    rightPanelView === "timeline" ||
+    rightPanelView === "context";
+  if (
+    sessionsLoaded &&
+    (isGatedBuiltinView || (isPluginPaneId(rightPanelView) && pluginPages !== null)) &&
+    !mobilePaneIds.includes(rightPanelView)
+  ) {
     setRightPanelView("agent");
   }
 
