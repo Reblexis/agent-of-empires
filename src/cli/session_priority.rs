@@ -12,14 +12,32 @@ use crate::session::{priority, Storage};
 pub struct PriorityArgs {
     /// An integer 0 to 10 (higher = needs you sooner), or `clear`.
     pub value: String,
-    /// Why the session needs the user, one line of at most 300 characters,
-    /// shown in the web Inbox and status pushes. Without one, a still-current
-    /// reason is kept.
-    pub reason: Vec<String>,
+    /// The ask: one line saying exactly what the user should do, at most 300
+    /// characters, listed in the web Inbox and carried by status pushes.
+    /// Without one, a still-current ask is kept. See docs/guides/session-inbox.md.
+    pub text: Vec<String>,
+    /// What kind of ask it is.
+    #[arg(long = "ask", value_enum)]
+    pub kind: Option<priority::AskKind>,
+    /// The focus objective the ask serves, at most 80 characters.
+    #[arg(long)]
+    pub objective: Option<String>,
+    /// A URL or a command to run, at most 500 characters.
+    #[arg(long)]
+    pub link: Option<String>,
     /// Session ID or title. Defaults to `$AOE_INSTANCE_ID`, which aoe sets
     /// inside every session it launches.
     #[arg(long)]
     pub session: Option<String>,
+}
+
+/// The CLI's ask arguments, before validation.
+#[derive(Default, Clone, Copy)]
+struct AskParts<'a> {
+    kind: Option<priority::AskKind>,
+    text: Option<&'a str>,
+    objective: Option<&'a str>,
+    link: Option<&'a str>,
 }
 
 /// Validate `value`, resolve the session, and store the score. Returns the
@@ -27,12 +45,12 @@ pub struct PriorityArgs {
 fn set_priority(
     profile: &str,
     value: &str,
-    reason: Option<&str>,
+    ask: AskParts<'_>,
     session: Option<&str>,
     env_id: Option<&str>,
 ) -> Result<(String, Option<u8>)> {
     let value = priority::parse_priority_arg(value)?;
-    let reason = priority::parse_reason(reason)?;
+    let ask = priority::parse_ask(ask.kind, ask.text, ask.objective, ask.link)?;
     let id = super::session_forecast::resolve_target(profile, session, env_id)?;
     // `$AOE_INSTANCE_ID` may name a session in another profile; write where
     // it lives.
@@ -50,7 +68,7 @@ fn set_priority(
     };
     let title = Storage::new_unwatched(&home)?.update(|instances, _groups| {
         super::patch_instance(instances, &id, |inst| {
-            inst.set_priority(value, reason);
+            inst.set_priority(value, ask);
             Ok(inst.title.clone())
         })
     })?;
@@ -59,11 +77,17 @@ fn set_priority(
 
 pub async fn run(profile: &str, args: PriorityArgs) -> Result<()> {
     let env_id = std::env::var(crate::tmux::env::AOE_INSTANCE_ID_KEY).ok();
-    let reason = (!args.reason.is_empty()).then(|| args.reason.join(" "));
+    let text = (!args.text.is_empty()).then(|| args.text.join(" "));
+    let ask = AskParts {
+        kind: args.kind,
+        text: text.as_deref(),
+        objective: args.objective.as_deref(),
+        link: args.link.as_deref(),
+    };
     let (title, value) = set_priority(
         profile,
         &args.value,
-        reason.as_deref(),
+        ask,
         args.session.as_deref(),
         env_id.as_deref(),
     )?;
@@ -107,7 +131,8 @@ mod tests {
     fn an_agent_scores_its_own_session_from_the_environment() {
         let _app = crate::session::test_support::isolate_app_dir();
         seed("default", "aaaa1111", "pricing work");
-        let (title, value) = set_priority("default", "8", None, None, Some("aaaa1111")).unwrap();
+        let (title, value) =
+            set_priority("default", "8", AskParts::default(), None, Some("aaaa1111")).unwrap();
         assert_eq!((title.as_str(), value), ("pricing work", Some(8)));
         let inst = stored("default", "aaaa1111");
         assert_eq!(inst.priority.as_ref().map(|p| p.value), Some(8));
@@ -120,7 +145,7 @@ mod tests {
         let _app = crate::session::test_support::isolate_app_dir();
         seed("default", "aaaa1111", "here");
         seed("other", "bbbb2222", "elsewhere");
-        set_priority("default", "9", None, None, Some("bbbb2222")).unwrap();
+        set_priority("default", "9", AskParts::default(), None, Some("bbbb2222")).unwrap();
         assert_eq!(
             stored("other", "bbbb2222").priority.map(|p| p.value),
             Some(9)
@@ -134,14 +159,27 @@ mod tests {
         let _app = crate::session::test_support::isolate_app_dir();
         seed("default", "aaaa1111", "pricing work");
         seed("default", "cccc3333", "other work");
-        set_priority("default", "7", None, Some("pricing work"), Some("cccc3333")).unwrap();
+        set_priority(
+            "default",
+            "7",
+            AskParts::default(),
+            Some("pricing work"),
+            Some("cccc3333"),
+        )
+        .unwrap();
         assert_eq!(
             stored("default", "aaaa1111").priority.map(|p| p.value),
             Some(7)
         );
         assert_eq!(stored("default", "cccc3333").priority, None);
-        let (_, value) =
-            set_priority("default", "clear", None, Some("pricing work"), None).unwrap();
+        let (_, value) = set_priority(
+            "default",
+            "clear",
+            AskParts::default(),
+            Some("pricing work"),
+            None,
+        )
+        .unwrap();
         assert_eq!(value, None);
         assert_eq!(stored("default", "aaaa1111").priority, None);
     }
@@ -151,11 +189,12 @@ mod tests {
     fn an_invalid_value_changes_nothing() {
         let _app = crate::session::test_support::isolate_app_dir();
         seed("default", "aaaa1111", "pricing work");
-        set_priority("default", "6", None, None, Some("aaaa1111")).unwrap();
+        set_priority("default", "6", AskParts::default(), None, Some("aaaa1111")).unwrap();
         for bad in ["11", "-1", "high"] {
             let err = format!(
                 "{:#}",
-                set_priority("default", bad, None, None, Some("aaaa1111")).unwrap_err()
+                set_priority("default", bad, AskParts::default(), None, Some("aaaa1111"))
+                    .unwrap_err()
             );
             assert!(err.contains("0 to 10"), "{bad}: {err}");
         }
@@ -167,41 +206,52 @@ mod tests {
 
     #[test]
     #[serial_test::serial]
-    fn the_reason_is_stored_with_the_score_and_an_over_long_one_changes_nothing() {
+    fn the_ask_is_stored_with_the_score_and_a_bad_one_changes_nothing() {
         let _app = crate::session::test_support::isolate_app_dir();
         seed("default", "aaaa1111", "pricing work");
+        let decide = AskParts {
+            kind: Some(priority::AskKind::Decide),
+            text: Some("Approve  the\nbudget"),
+            objective: Some("Telarchy social media"),
+            link: Some("https://example.com"),
+        };
+        set_priority("default", "8", decide, None, Some("aaaa1111")).unwrap();
+        let text = |inst: Instance| inst.priority.and_then(|p| p.ask).map(|a| a.text);
+        let inst = stored("default", "aaaa1111");
+        let ask = inst.priority_ask().cloned().unwrap();
+        assert_eq!(ask.text, "Approve the budget");
+        assert_eq!(ask.kind, Some(priority::AskKind::Decide));
+        assert_eq!(ask.objective.as_deref(), Some("Telarchy social media"));
+        assert_eq!(ask.link.as_deref(), Some("https://example.com"));
+        // A focus re-rank without an ask keeps it.
         set_priority(
             "default",
-            "8",
-            Some("Approve  the\nbudget"),
+            "5",
+            AskParts::default(),
+            Some("pricing work"),
             None,
-            Some("aaaa1111"),
         )
         .unwrap();
-        let reason = |inst: Instance| inst.priority.and_then(|p| p.reason);
         assert_eq!(
-            reason(stored("default", "aaaa1111")).as_deref(),
-            Some("Approve the budget")
-        );
-        assert_eq!(
-            stored("default", "aaaa1111").priority_reason(),
-            Some("Approve the budget")
-        );
-        // A focus re-rank without a reason keeps it.
-        set_priority("default", "5", None, Some("pricing work"), None).unwrap();
-        assert_eq!(
-            reason(stored("default", "aaaa1111")).as_deref(),
+            text(stored("default", "aaaa1111")).as_deref(),
             Some("Approve the budget")
         );
         let long = "x".repeat(301);
-        let err = format!(
-            "{:#}",
-            set_priority("default", "9", Some(&long), None, Some("aaaa1111")).unwrap_err()
-        );
-        assert!(err.contains("300"), "{err}");
+        for bad in [
+            AskParts {
+                text: Some(&long),
+                ..AskParts::default()
+            },
+            AskParts {
+                kind: Some(priority::AskKind::Learn),
+                ..AskParts::default()
+            },
+        ] {
+            set_priority("default", "9", bad, None, Some("aaaa1111")).unwrap_err();
+        }
         let inst = stored("default", "aaaa1111");
         assert_eq!(inst.priority.as_ref().map(|p| p.value), Some(5));
-        assert_eq!(reason(inst).as_deref(), Some("Approve the budget"));
+        assert_eq!(text(inst).as_deref(), Some("Approve the budget"));
     }
 
     #[test]
@@ -210,7 +260,7 @@ mod tests {
         let _app = crate::session::test_support::isolate_app_dir();
         let err = format!(
             "{:#}",
-            set_priority("default", "5", None, None, None).unwrap_err()
+            set_priority("default", "5", AskParts::default(), None, None).unwrap_err()
         );
         assert!(
             err.contains(super::super::session_forecast::NO_SESSION),

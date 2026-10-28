@@ -86,9 +86,12 @@ test.describe("Mobile right panel picker (#1452)", () => {
     // Tailwind v4 `translate-x-*` sets `translate`, so a transition on
     // `transform` alone snaps the drawer instead of sliding it.
     expect(await picker(page).evaluate((el) => getComputedStyle(el).transitionProperty)).toContain("translate");
-    // Options hug the bottom of the drawer, not its top.
-    const option = await page.getByTestId("mobile-right-panel-pick-agent").boundingBox();
-    expect(option!.y).toBeGreaterThan(viewport.height / 2);
+    // Options hug the bottom of the drawer, not its top: the last one ends at
+    // its foot, however many panes the session offers.
+    const options = page.locator('[data-testid^="mobile-right-panel-pick-"]');
+    const last = await options.last().boundingBox();
+    const drawer = await picker(page).boundingBox();
+    expect(drawer!.y + drawer!.height - (last!.y + last!.height)).toBeLessThan(40);
 
     await swipe(page, viewport.width / 2, viewport.width / 2 + 160, y);
     await expect(picker(page)).toBeHidden();

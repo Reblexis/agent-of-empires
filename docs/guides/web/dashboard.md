@@ -30,9 +30,10 @@ for date precision, refresh, timezone and operator setup.
 
 ### Inbox pane
 
-The **Inbox** tab lists the sessions that need you, the one to open first on
-top, each with the one-line reason its agent gave. Clicking an entry opens that
-session, and it leaves the list once read. See [session-inbox.md](../session-inbox.md).
+The **Inbox** tab is your prompt queue: one ask per session that needs you
+(check, do, evaluate, answer, decide or learn), the one to do next on top, each
+naming the focus objective it serves. Clicking an entry opens that session;
+it leaves the list once read or marked Done. See [session-inbox.md](../session-inbox.md).
 
 ### Context pane
 

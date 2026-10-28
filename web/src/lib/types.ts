@@ -43,9 +43,9 @@ export interface SessionResponse {
    *  current score. Optional so older payloads read as 0. See
    *  docs/guides/session-priority.md. */
   priority?: number;
-  /** The agent's current one-line reason for `priority`, shown in the Inbox;
-   *  null without one. See docs/guides/session-inbox.md. */
-  priority_reason?: string | null;
+  /** The agent's current ask of the user, listed in the Inbox; null without
+   *  one. See docs/guides/session-inbox.md. */
+  priority_ask?: PriorityAsk | null;
   /** The session's forecast card in brief, for the sidebar chip and to tell
    *  the session band when to refetch the full card. Null when the session
    *  has no card. See docs/guides/session-forecast.md. */
@@ -541,6 +541,16 @@ export interface SettingsFieldDescriptor {
 }
 
 export type ForecastVerdict = "continue" | "stop" | "unpriced";
+
+export type AskKind = "check" | "do" | "evaluate" | "answer" | "decide" | "learn";
+
+/** One concrete ask of the user; `link` is a URL or a command. */
+export interface PriorityAsk {
+  kind?: AskKind | null;
+  text: string;
+  objective?: string | null;
+  link?: string | null;
+}
 
 /** What `GET /api/sessions` carries per session about its forecast card. */
 export interface ForecastSummary {

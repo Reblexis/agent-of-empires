@@ -17,68 +17,132 @@ pub const MAX_PRIORITY: u8 = 10;
 pub struct PriorityScore {
     pub value: u8,
     pub set_at: DateTime<Utc>,
-    /// One line saying why the session needs the user, shown in the Inbox and
-    /// status pushes. Shares the score's lifetime. See docs/guides/session-inbox.md.
+    /// What the session asks the user to do, listed in the Inbox and carried
+    /// by status pushes. Shares the score's lifetime. See docs/guides/session-inbox.md.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reason: Option<String>,
+    pub ask: Option<Ask>,
 }
 
-/// The reason is at most this many characters once normalized.
-pub const MAX_REASON_CHARS: usize = 300;
+/// One concrete ask of the user.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct Ask {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<AskKind>,
+    pub text: String,
+    /// The focus objective the ask serves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub objective: Option<String>,
+    /// A URL or a command to run.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
+}
 
-/// Normalize the CLI reason: trim, collapse whitespace runs to one space; an
-/// empty reason is none, an over-long one is refused.
-pub fn parse_reason(raw: Option<&str>) -> Result<Option<String>> {
-    let Some(raw) = raw else {
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema, clap::ValueEnum,
+)]
+#[serde(rename_all = "lowercase")]
+pub enum AskKind {
+    Check,
+    Do,
+    Evaluate,
+    Answer,
+    Decide,
+    Learn,
+}
+
+impl AskKind {
+    /// Capitalized name, as a push body prefixes it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Check => "Check",
+            Self::Do => "Do",
+            Self::Evaluate => "Evaluate",
+            Self::Answer => "Answer",
+            Self::Decide => "Decide",
+            Self::Learn => "Learn",
+        }
+    }
+}
+
+pub const MAX_ASK_TEXT_CHARS: usize = 300;
+pub const MAX_OBJECTIVE_CHARS: usize = 80;
+pub const MAX_LINK_CHARS: usize = 500;
+
+/// Build the ask from the CLI parts: each is trimmed with whitespace runs
+/// collapsed, an empty part is absent, an over-long one is refused, and kind,
+/// objective or link without text is refused. Nothing given is no ask.
+pub fn parse_ask(
+    kind: Option<AskKind>,
+    text: Option<&str>,
+    objective: Option<&str>,
+    link: Option<&str>,
+) -> Result<Option<Ask>> {
+    let objective = one_line(objective, "objective", MAX_OBJECTIVE_CHARS)?;
+    let link = one_line(link, "link", MAX_LINK_CHARS)?;
+    let Some(text) = one_line(text, "ask", MAX_ASK_TEXT_CHARS)? else {
+        if kind.is_some() || objective.is_some() || link.is_some() {
+            bail!("an ask needs its one line saying what to do");
+        }
         return Ok(None);
     };
-    let reason = raw.split_whitespace().collect::<Vec<_>>().join(" ");
-    if reason.is_empty() {
-        return Ok(None);
+    Ok(Some(Ask {
+        kind,
+        text,
+        objective,
+        link,
+    }))
+}
+
+/// Trim and collapse whitespace; empty is none, over `max` characters refused.
+fn one_line(raw: Option<&str>, what: &str, max: usize) -> Result<Option<String>> {
+    let line = raw
+        .map(|raw| raw.split_whitespace().collect::<Vec<_>>().join(" "))
+        .filter(|line| !line.is_empty());
+    if let Some(line) = &line {
+        let chars = line.chars().count();
+        if chars > max {
+            bail!("{what} must be at most {max} characters, got {chars}");
+        }
     }
-    let chars = reason.chars().count();
-    if chars > MAX_REASON_CHARS {
-        bail!("reason must be at most {MAX_REASON_CHARS} characters, got {chars}");
-    }
-    Ok(Some(reason))
+    Ok(line)
 }
 
 /// The score after `aoe session priority`: `value` `None` clears score and
-/// reason; a new score without a reason keeps the stored reason only while the
-/// stored score is current.
+/// ask; a new score without an ask keeps the stored ask only while the stored
+/// score is current.
 pub fn next_score(
     stored: Option<&PriorityScore>,
     value: Option<u8>,
-    reason: Option<String>,
+    ask: Option<Ask>,
     run_started_at: Option<DateTime<Utc>>,
     now: DateTime<Utc>,
 ) -> Option<PriorityScore> {
     let kept = || {
         stored
             .filter(|s| is_current(s, run_started_at))
-            .and_then(|s| s.reason.clone())
+            .and_then(|s| s.ask.clone())
     };
     value.map(|value| PriorityScore {
         value,
         set_at: now,
-        reason: reason.or_else(kept),
+        ask: ask.or_else(kept),
     })
 }
 
-/// The reason the Inbox and pushes show: the current score's, and only while
+/// The ask the Inbox and pushes show: the current score's, and only while
 /// that score is what the effective priority uses and it is above 0.
-pub fn current_reason(
+pub fn current_ask(
     status: Status,
     sunk: bool,
     score: Option<&PriorityScore>,
     run_started_at: Option<DateTime<Utc>>,
-) -> Option<&str> {
+) -> Option<&Ask> {
     let score = score.filter(|s| is_current(s, run_started_at))?;
     let uses_score = !sunk && matches!(status, Status::Waiting | Status::Idle | Status::Error);
     if !uses_score || score.value == 0 {
         return None;
     }
-    score.reason.as_deref()
+    score.ask.as_ref()
 }
 
 /// A score is current when it was set after the session last started running.
@@ -152,11 +216,20 @@ mod tests {
         DateTime::from_timestamp(1_800_000_000 + secs, 0).unwrap()
     }
 
-    fn owned(value: u8, at: i64, reason: Option<&str>) -> PriorityScore {
+    fn ask(text: &str) -> Ask {
+        Ask {
+            kind: None,
+            text: text.to_string(),
+            objective: None,
+            link: None,
+        }
+    }
+
+    fn owned(value: u8, at: i64, text: Option<&str>) -> PriorityScore {
         PriorityScore {
             value,
             set_at: t(at),
-            reason: reason.map(str::to_string),
+            ask: text.map(ask),
         }
     }
 
@@ -165,34 +238,109 @@ mod tests {
     }
 
     #[test]
-    fn a_reason_is_one_line_of_at_most_300_characters() {
-        let long = "x".repeat(MAX_REASON_CHARS);
-        let cases: [(Option<&str>, Option<&str>); 6] = [
-            (None, None),
-            (Some(""), None),
-            (Some("  \n\t "), None),
+    fn an_ask_is_one_concrete_line_with_an_optional_kind_objective_and_link() {
+        use AskKind::*;
+        let full = Ask {
+            kind: Some(Learn),
+            text: "Read the creator pricing note".into(),
+            objective: Some("YouTube creators product".into()),
+            link: Some("https://example.com/note".into()),
+        };
+        type Accepted<'a> = (
+            Option<AskKind>,
+            Option<&'a str>,
+            Option<&'a str>,
+            Option<&'a str>,
+            Option<Ask>,
+        );
+        // (kind, text, objective, link, expected)
+        let cases: [Accepted; 6] = [
+            (None, None, None, None, None),
+            (None, Some("  \n "), None, None, None),
             (
+                None,
                 Some("  Approve the\n\n ad   budget "),
-                Some("Approve the ad budget"),
+                None,
+                None,
+                Some(ask("Approve the ad budget")),
             ),
-            // Characters, not bytes: 300 multi-byte characters fit.
-            (Some(&long), Some(&long)),
-            (Some("Schválit rozpočet"), Some("Schválit rozpočet")),
+            (
+                Some(Learn),
+                Some("Read the creator pricing note"),
+                Some(" YouTube  creators product "),
+                Some("https://example.com/note "),
+                Some(full),
+            ),
+            (
+                Some(Decide),
+                Some("Pick a date"),
+                Some(""),
+                Some(""),
+                Some(Ask {
+                    kind: Some(Decide),
+                    ..ask("Pick a date")
+                }),
+            ),
+            (
+                None,
+                Some(&"ü".repeat(MAX_ASK_TEXT_CHARS)),
+                None,
+                None,
+                Some(ask(&"ü".repeat(MAX_ASK_TEXT_CHARS))),
+            ),
         ];
-        for (raw, expected) in cases {
-            assert_eq!(parse_reason(raw).unwrap().as_deref(), expected, "{raw:?}");
+        for (kind, text, objective, link, expected) in cases {
+            assert_eq!(
+                parse_ask(kind, text, objective, link).unwrap(),
+                expected,
+                "{text:?}"
+            );
         }
-        let umlauts = "ü".repeat(MAX_REASON_CHARS);
-        assert_eq!(parse_reason(Some(&umlauts)).unwrap(), Some(umlauts.clone()));
-        let err = format!("{:#}", parse_reason(Some(&format!("{long}y"))).unwrap_err());
-        assert!(err.contains("300"), "{err}");
+        let long = |n: usize| "x".repeat(n + 1);
+        type Refused<'a> = (
+            Option<AskKind>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            &'a str,
+        );
+        // (kind, text, objective, link, error mentions)
+        let refused: [Refused; 5] = [
+            (None, Some(long(MAX_ASK_TEXT_CHARS)), None, None, "300"),
+            (
+                None,
+                Some("ok".into()),
+                Some(long(MAX_OBJECTIVE_CHARS)),
+                None,
+                "80",
+            ),
+            (
+                None,
+                Some("ok".into()),
+                None,
+                Some(long(MAX_LINK_CHARS)),
+                "500",
+            ),
+            (Some(Check), None, None, None, "one line"),
+            (
+                None,
+                None,
+                Some("Objective".into()),
+                Some("https://x".into()),
+                "one line",
+            ),
+        ];
+        for (kind, text, objective, link, needle) in refused {
+            let err = parse_ask(kind, text.as_deref(), objective.as_deref(), link.as_deref())
+                .expect_err(needle);
+            assert!(format!("{err:#}").contains(needle), "{needle}: {err:#}");
+        }
     }
 
     #[test]
-    fn rescoring_without_a_reason_never_erases_why_a_current_session_needs_you() {
+    fn rescoring_without_an_ask_never_erases_what_a_current_session_asks() {
         let now = t(100);
         let had = owned(8, 20, Some("Approve the budget"));
-        // (stored, value, new reason, run_started_at, expected reason)
         type Case<'a> = (
             Option<&'a PriorityScore>,
             Option<u8>,
@@ -200,8 +348,9 @@ mod tests {
             Option<DateTime<Utc>>,
             Option<&'a str>,
         );
+        // (stored, value, new ask, run_started_at, expected ask)
         let cases: [Case; 6] = [
-            // Focus re-rank of a current score keeps its reason.
+            // Focus re-rank of a current score keeps its ask.
             (
                 Some(&had),
                 Some(5),
@@ -210,7 +359,7 @@ mod tests {
                 Some("Approve the budget"),
             ),
             (Some(&had), Some(5), None, None, Some("Approve the budget")),
-            // A new reason replaces the old one.
+            // A new ask replaces the old one.
             (
                 Some(&had),
                 Some(9),
@@ -218,7 +367,7 @@ mod tests {
                 Some(t(10)),
                 Some("Pay the invoice"),
             ),
-            // The session ran since: the old reason belongs to an answered ask.
+            // The session ran since: the old ask was answered.
             (Some(&had), Some(5), None, Some(t(30)), None),
             (None, Some(5), None, None, None),
             (
@@ -229,14 +378,14 @@ mod tests {
                 Some("Read the report"),
             ),
         ];
-        for (stored, value, reason, run, expected) in cases {
-            let next = next_score(stored, value, reason.map(str::to_string), run, now).unwrap();
+        for (stored, value, new, run, expected) in cases {
+            let next = next_score(stored, value, new.map(ask), run, now).unwrap();
             assert_eq!(next.value, value.unwrap());
             assert_eq!(next.set_at, now);
             assert_eq!(
-                next.reason.as_deref(),
+                next.ask.as_ref().map(|a| a.text.as_str()),
                 expected,
-                "{stored:?} {reason:?} {run:?}"
+                "{stored:?} {new:?} {run:?}"
             );
         }
         assert_eq!(
@@ -247,7 +396,7 @@ mod tests {
     }
 
     #[test]
-    fn a_reason_counts_only_while_its_score_ranks_the_session_above_zero() {
+    fn an_ask_counts_only_while_its_score_ranks_the_session_above_zero() {
         let why = owned(8, 20, Some("Approve the budget"));
         let zero = owned(0, 20, Some("Nothing needed"));
         // (status, sunk, score, run_started_at, shown)
@@ -266,7 +415,7 @@ mod tests {
         ];
         for (status, sunk, score, run, shown) in cases {
             assert_eq!(
-                current_reason(status, sunk, Some(score), run).is_some(),
+                current_ask(status, sunk, Some(score), run).is_some(),
                 shown,
                 "{status:?} sunk={sunk} {score:?} {run:?}"
             );

@@ -15,18 +15,15 @@ is the only party that knows what it is waiting on:
 
 ```sh
 aoe session priority 8                    # from inside the session
-aoe session priority 8 "Approve the ad budget"   # with a reason
+aoe session priority 8 --ask decide --objective "<focus objective>" "Approve the ad budget"
 aoe session priority 8 --session <id>
 aoe session priority clear [--session <id>]
 ```
 
-The optional **reason** is one line saying why the session needs you; the
-[Inbox](session-inbox.md) and status pushes show it. It is trimmed, whitespace
-runs collapse to one space, an empty reason counts as none, and more than 300
-characters exits non-zero and changes nothing. Setting a score without a reason
-keeps the stored reason if the stored score is still current (so re-ranking with
-`--session` never erases why a session needs you), and otherwise stores none.
-`clear` drops score and reason together.
+The optional **ask** (kind, one line, objective, link) is what the session
+wants you to do; the [Inbox](session-inbox.md) lists it and status pushes carry
+it. Its fields, limits and keep rule are in [session-inbox.md](session-inbox.md#an-ask).
+`clear` drops score and ask together.
 
 The target resolves exactly like `aoe session forecast` (see
 [session-forecast.md](session-forecast.md)): `--session` (id or title) wins,
@@ -64,7 +61,7 @@ belongs to one ask: the agent sets it while finishing its turn, it shows while
 the session waits for you, and once you reply and the session runs again it
 stops counting. If the agent then ends its next turn without scoring, the
 default applies rather than the stale number. `clear` drops the score, so the
-default applies. The reason is current exactly when its score is.
+default applies. The ask is current exactly when its score is.
 
 ## Where it shows
 
@@ -81,9 +78,10 @@ default applies. The reason is current exactly when its score is.
   it is above 0.
 - **Web sidebar row**: a small numeric badge when above 0.
 - **API**: `GET /api/sessions` carries `priority` (the effective value) and
-  `priority_reason` (the current reason, or `null`) on each session.
-- **Inbox** (web): the unread sessions above 0, highest first, with their
-  reasons; see [session-inbox.md](session-inbox.md).
+  `priority_ask` (the current ask `{kind, text, objective, link}`, or `null`) on
+  each session.
+- **Inbox** (web): the unread sessions above 0, highest first, as asks; see
+  [session-inbox.md](session-inbox.md).
 
 ## Telling agents to score
 
@@ -91,6 +89,6 @@ aoe only stores and ranks. Agents score because their instructions tell them
 to; for Claude Code that is a line in the user's `CLAUDE.md`, for example:
 
 > At the end of every turn in an aoe session, run
-> `aoe session priority <0-10> "<why, one line>"` scoring how soon the user
-> should look at this session and saying what it has for them (scale in
-> agent-of-empires docs/guides/session-priority.md).
+> `aoe session priority <0-10> --ask <kind> --objective "<focus objective>" "<one line>"`
+> scoring how much doing the ask now moves the focus and saying exactly what the
+> user should do (scale here, ask in docs/guides/session-inbox.md).

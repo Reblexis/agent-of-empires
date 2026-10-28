@@ -150,7 +150,7 @@ export function Dashboard({
             Inbox
           </h2>
           <div className="flex overflow-hidden rounded-lg border border-surface-700/40">
-            <InboxPane sessions={sessions} onOpen={onSelectSession} />
+            <InboxPane sessions={sessions} onOpen={onSelectSession} readOnly={readOnly} />
           </div>
         </section>
       )}

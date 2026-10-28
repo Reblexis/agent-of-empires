@@ -53,6 +53,7 @@ interface Props {
   onCloseSendDialog: () => void;
   onClearSelectedFile: () => void;
   onOpenSession: (sessionId: string) => void;
+  readOnly: boolean;
 }
 
 function layerClass(active: boolean): string {
@@ -94,6 +95,7 @@ export function MobileMainPane({
   onCloseSendDialog,
   onClearSelectedFile,
   onOpenSession,
+  readOnly,
 }: Props) {
   const activePluginPane = isPluginPaneId(view) ? (pluginPanes.find((p) => p.id === view) ?? null) : null;
   const viewLabel =
@@ -255,7 +257,12 @@ export function MobileMainPane({
             className="absolute inset-0 z-10 flex flex-col min-h-0 overflow-hidden bg-surface-900"
             style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
           >
-            <InboxPane sessions={sessions} activeSessionId={activeSessionId} onOpen={onOpenSession} />
+            <InboxPane
+              sessions={sessions}
+              activeSessionId={activeSessionId}
+              onOpen={onOpenSession}
+              readOnly={readOnly}
+            />
           </div>
         )}
         {view === "context" && (

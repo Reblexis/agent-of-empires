@@ -678,7 +678,7 @@ async fn fire_due_pushes(
             continue;
         }
 
-        let (title, body) = status_push_text(event, &instance_title, instance.priority_reason());
+        let (title, body) = status_push_text(event, &instance_title, instance.priority_ask());
         let path = format!("/session/{}", instance_id);
         let tag = format!("session-{}", instance_id);
 
@@ -706,14 +706,19 @@ async fn fire_due_pushes(
     }
 }
 
-/// Title and body of a status push. A current priority reason says why the
-/// session needs the user, so it replaces the generic status line
+/// Title and body of a status push. A current ask says what the session wants
+/// the user to do, so it replaces the generic status line
 /// (docs/guides/session-inbox.md).
 fn status_push_text(
     event: NotificationEvent,
     session_title: &str,
-    reason: Option<&str>,
+    ask: Option<&crate::session::priority::Ask>,
 ) -> (&'static str, String) {
+    let reason = ask.map(|a| match a.kind {
+        Some(kind) => format!("{}: {}", kind.label(), a.text),
+        None => a.text.clone(),
+    });
+    let reason = reason.as_deref();
     let (title, body_prefix) = match event {
         NotificationEvent::Waiting => ("Claude is waiting", "Waiting for input"),
         NotificationEvent::Idle => ("Session finished", "Agent is idle"),
@@ -1147,30 +1152,46 @@ pub async fn test(
 #[cfg(test)]
 mod tests {
     #[test]
-    fn a_status_push_says_why_the_session_needs_you_when_its_agent_said() {
+    fn a_status_push_carries_the_ask_when_its_agent_posted_one() {
+        use crate::session::priority::{Ask, AskKind};
         use NotificationEvent::*;
-        // (event, session title, reason, expected title, expected body)
+        let ask = |kind: Option<AskKind>, text: &str| {
+            Some(Ask {
+                kind,
+                text: text.to_string(),
+                objective: Some("Social media".into()),
+                link: None,
+            })
+        };
+        // (event, session title, ask, expected title, expected body)
         let cases = [
             (
                 Waiting,
                 "Ads",
-                Some("Approve the budget"),
+                ask(Some(AskKind::Decide), "Approve the budget"),
                 "Claude is waiting",
-                "Ads: Approve the budget",
+                "Ads: Decide: Approve the budget",
             ),
             (
                 Idle,
                 "Ads",
-                Some("Report is ready"),
+                ask(None, "Report is ready"),
                 "Session finished",
                 "Ads: Report is ready",
             ),
             (
                 Error,
                 "",
-                Some("Login expired"),
+                ask(Some(AskKind::Do), "Log in again"),
                 "Session error",
-                "Login expired",
+                "Do: Log in again",
+            ),
+            (
+                Idle,
+                "Notes",
+                ask(Some(AskKind::Learn), "Read the pricing note"),
+                "Session finished",
+                "Notes: Learn: Read the pricing note",
             ),
             (
                 Waiting,
@@ -1181,11 +1202,11 @@ mod tests {
             ),
             (Idle, "", None, "Session finished", "Agent is idle"),
         ];
-        for (event, session, reason, title, body) in cases {
+        for (event, session, ask, title, body) in cases {
             assert_eq!(
-                status_push_text(event, session, reason),
+                status_push_text(event, session, ask.as_ref()),
                 (title, body.to_string()),
-                "{event:?} {session:?} {reason:?}"
+                "{event:?} {session:?} {ask:?}"
             );
         }
     }
