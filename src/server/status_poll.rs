@@ -385,7 +385,7 @@ mod tests {
     #[test]
     fn a_session_the_daemon_sees_start_running_drops_its_old_priority_score() {
         let mut started = Instance::new("started", "/tmp/started");
-        started.set_priority(Some(9));
+        started.set_priority(Some(9), None);
         started.status = Status::Running;
         let mut finished = Instance::new("finished", "/tmp/finished");
         finished.status = Status::Idle;

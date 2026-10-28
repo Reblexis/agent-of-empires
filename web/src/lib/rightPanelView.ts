@@ -13,5 +13,6 @@ export type RightPanelView =
   | "paired"
   | "agents"
   | "timeline"
+  | "inbox"
   | "context"
   | `plugin:${string}`;

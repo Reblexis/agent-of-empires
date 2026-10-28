@@ -1538,7 +1538,7 @@ mod tests {
         let mut inst = Instance::new(title, &format!("/tmp/{title}"));
         inst.group_path = title.to_string();
         inst.status = status;
-        inst.set_priority(value);
+        inst.set_priority(value, None);
         inst
     }
 

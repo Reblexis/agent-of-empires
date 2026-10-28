@@ -1,8 +1,17 @@
 // Built-in dockable panes; plugin panes come from the `pane` UI slot.
 
-import { Bot, CalendarClock, FileDiff, FolderTree, ScrollText, SquareTerminal, type LucideIcon } from "lucide-react";
+import {
+  Bot,
+  CalendarClock,
+  FileDiff,
+  FolderTree,
+  Inbox,
+  ScrollText,
+  SquareTerminal,
+  type LucideIcon,
+} from "lucide-react";
 
-export type BuiltinPaneId = "diff" | "terminal" | "agents" | "files" | "context" | "timeline";
+export type BuiltinPaneId = "diff" | "terminal" | "agents" | "files" | "context" | "timeline" | "inbox";
 
 export type DockLocation = "right" | "bottom";
 
@@ -15,6 +24,7 @@ export interface PaneDescriptor {
 
 export const BUILTIN_PANES: PaneDescriptor[] = [
   { id: "timeline", title: "Timeline", icon: CalendarClock, defaultDock: "right" },
+  { id: "inbox", title: "Inbox", icon: Inbox, defaultDock: "right" },
   { id: "diff", title: "Diff", icon: FileDiff, defaultDock: "right" },
   { id: "files", title: "Files", icon: FolderTree, defaultDock: "right" },
   { id: "terminal", title: "Terminal", icon: SquareTerminal, defaultDock: "right" },

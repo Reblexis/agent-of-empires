@@ -1363,7 +1363,7 @@ fn from_instance_reports_managed_worktree_for_workspace_session() {
 #[test]
 fn from_instance_carries_the_effective_priority_live() {
     let mut inst = make_test_instance();
-    inst.set_priority(Some(8));
+    inst.set_priority(Some(8), None);
     assert_eq!(
         SessionResponse::from_instance(&inst, false).priority,
         0,
@@ -1371,8 +1371,22 @@ fn from_instance_carries_the_effective_priority_live() {
     );
     inst.status = Status::Idle;
     assert_eq!(SessionResponse::from_instance(&inst, false).priority, 8);
-    inst.set_priority(None);
+    inst.set_priority(None, None);
     assert_eq!(SessionResponse::from_instance(&inst, false).priority, 3);
+}
+
+#[test]
+fn from_instance_carries_the_current_priority_reason_only() {
+    let mut inst = make_test_instance();
+    inst.status = Status::Idle;
+    inst.set_priority(Some(8), Some("Approve the budget".into()));
+    let reason = |inst: &Instance| SessionResponse::from_instance(inst, false).priority_reason;
+    assert_eq!(reason(&inst).as_deref(), Some("Approve the budget"));
+    inst.status = Status::Running;
+    assert_eq!(reason(&inst), None, "a running session shows no reason");
+    inst.status = Status::Idle;
+    inst.run_started_at = Some(chrono::Utc::now() + chrono::Duration::seconds(5));
+    assert_eq!(reason(&inst), None, "the session ran since the score");
 }
 
 #[test]

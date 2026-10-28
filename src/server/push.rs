@@ -678,16 +678,7 @@ async fn fire_due_pushes(
             continue;
         }
 
-        let (title, body_prefix) = match event {
-            NotificationEvent::Waiting => ("Claude is waiting", "Waiting for input"),
-            NotificationEvent::Idle => ("Session finished", "Agent is idle"),
-            NotificationEvent::Error => ("Session error", "Agent errored"),
-        };
-        let body = if instance_title.is_empty() {
-            body_prefix.to_string()
-        } else {
-            format!("{}: {}", body_prefix, instance_title)
-        };
+        let (title, body) = status_push_text(event, &instance_title, instance.priority_reason());
         let path = format!("/session/{}", instance_id);
         let tag = format!("session-{}", instance_id);
 
@@ -713,6 +704,28 @@ async fn fire_due_pushes(
             });
         }
     }
+}
+
+/// Title and body of a status push. A current priority reason says why the
+/// session needs the user, so it replaces the generic status line
+/// (docs/guides/session-inbox.md).
+fn status_push_text(
+    event: NotificationEvent,
+    session_title: &str,
+    reason: Option<&str>,
+) -> (&'static str, String) {
+    let (title, body_prefix) = match event {
+        NotificationEvent::Waiting => ("Claude is waiting", "Waiting for input"),
+        NotificationEvent::Idle => ("Session finished", "Agent is idle"),
+        NotificationEvent::Error => ("Session error", "Agent errored"),
+    };
+    let body = match (reason, session_title.is_empty()) {
+        (Some(reason), true) => reason.to_string(),
+        (Some(reason), false) => format!("{session_title}: {reason}"),
+        (None, true) => body_prefix.to_string(),
+        (None, false) => format!("{body_prefix}: {session_title}"),
+    };
+    (title, body)
 }
 
 /// Fire a one-shot push notification when a structured view session's pending
@@ -1133,6 +1146,50 @@ pub async fn test(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_status_push_says_why_the_session_needs_you_when_its_agent_said() {
+        use NotificationEvent::*;
+        // (event, session title, reason, expected title, expected body)
+        let cases = [
+            (
+                Waiting,
+                "Ads",
+                Some("Approve the budget"),
+                "Claude is waiting",
+                "Ads: Approve the budget",
+            ),
+            (
+                Idle,
+                "Ads",
+                Some("Report is ready"),
+                "Session finished",
+                "Ads: Report is ready",
+            ),
+            (
+                Error,
+                "",
+                Some("Login expired"),
+                "Session error",
+                "Login expired",
+            ),
+            (
+                Waiting,
+                "Ads",
+                None,
+                "Claude is waiting",
+                "Waiting for input: Ads",
+            ),
+            (Idle, "", None, "Session finished", "Agent is idle"),
+        ];
+        for (event, session, reason, title, body) in cases {
+            assert_eq!(
+                status_push_text(event, session, reason),
+                (title, body.to_string()),
+                "{event:?} {session:?} {reason:?}"
+            );
+        }
+    }
+
     #[test]
     fn publish_status_change_carries_the_profile_and_skips_a_no_op() {
         let (tx, mut rx) = tokio::sync::broadcast::channel(4);

@@ -8,6 +8,7 @@ import { TOUR_ANCHORS, type TourAnchorId } from "../lib/tourSteps";
 import { PluginCards, PluginHomePanes } from "./plugin/PluginSlots";
 import { StatusGlyph } from "./StatusGlyph";
 import { StrokeIcon } from "./icons";
+import { InboxPane } from "./InboxPane";
 
 interface Props {
   sessions: SessionResponse[];
@@ -138,6 +139,20 @@ export function Dashboard({
             {stats.projects !== 1 ? "s" : ""}
           </span>
         </div>
+      )}
+
+      {stats.total > 0 && (
+        <section className="mb-4 w-full max-w-md" aria-labelledby="inbox-heading">
+          <h2
+            id="inbox-heading"
+            className="mb-2 px-1 text-[11px] font-mono uppercase tracking-[0.16em] text-text-muted"
+          >
+            Inbox
+          </h2>
+          <div className="flex overflow-hidden rounded-lg border border-surface-700/40">
+            <InboxPane sessions={sessions} onOpen={onSelectSession} />
+          </div>
+        </section>
       )}
 
       {/* The desktop sidebar is always available, but mobile starts at this dashboard. */}

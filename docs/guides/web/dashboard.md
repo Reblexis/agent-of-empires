@@ -9,9 +9,9 @@ The dashboard is the home screen of the web app: a workspace sidebar on the left
 - **Workspace sidebar** lists every session with a live status glyph, grouped by repo. On phones it collapses behind a top-bar toggle.
 - **Main pane** shows the selected session: the agent terminal or structured view, with the diff and paired terminal reachable from the top bar.
 - **Top bar** carries the command palette, the right-panel picker, and the overflow menu.
-- **Home screen** (no session selected) shows a count of running, waiting, and error sessions.
+- **Home screen** (no session selected) shows a count of running, waiting, and error sessions, and the Inbox.
 
-The dock starts with Context and Timeline. Diff and the starter Terminal tab are
+The dock starts with Context, Timeline and Inbox. Diff and the starter Terminal tab are
 opt-in through the panel picker; existing layouts drop those two starter tabs
 once and disable their auto-open preferences, preserving additional terminals and their running shells. Manually reopened
 tabs stay open. Auto-open preferences still apply to new sessions.
@@ -27,6 +27,12 @@ back to the agent view when that panel is unavailable.
 The **Timeline** tab shows the planner's now marker and upcoming work, read-only.
 It stays available across sessions and reloads. See the [planner contract](../web-dashboard.md#planner-timeline)
 for date precision, refresh, timezone and operator setup.
+
+### Inbox pane
+
+The **Inbox** tab lists the sessions that need you, the one to open first on
+top, each with the one-line reason its agent gave. Clicking an entry opens that
+session, and it leaves the list once read. See [session-inbox.md](../session-inbox.md).
 
 ### Context pane
 

@@ -154,13 +154,13 @@ describe("usePaneLayout migration + persistence", () => {
       JSON.stringify({ diff: { open: true, dock: "right" }, terminal: { open: true, dock: "bottom" } }),
     );
     const { layout: l } = hook().current;
-    expect([dockTabs(l, "right"), dockTabs(l, "bottom")]).toEqual([["context", "timeline"], []]);
+    expect([dockTabs(l, "right"), dockTabs(l, "bottom")]).toEqual([["context", "timeline", "inbox"], []]);
   });
 
   it("migrates the legacy collapsed flag to empty docks except the ensured context tab", () => {
     localStorage.setItem("aoe-right-collapsed", "1");
     const { layout: l } = hook().current;
-    expect([dockTabs(l, "right"), l.bottom]).toEqual([["context", "timeline"], []]);
+    expect([dockTabs(l, "right"), l.bottom]).toEqual([["context", "timeline", "inbox"], []]);
   });
 
   it("ensures the context tab as the active right tab on every session (LOCAL PATCH)", () => {
@@ -171,7 +171,7 @@ describe("usePaneLayout migration + persistence", () => {
 
   it("adds context to a stored layout that predates the pane", () => {
     persistV2([{ tabs: ["diff"], active: "diff" }]);
-    expect(dockTabs(hook().current.layout, "right")).toEqual(["diff", "context", "timeline"]);
+    expect(dockTabs(hook().current.layout, "right")).toEqual(["diff", "context", "timeline", "inbox"]);
   });
 
   it("does not resurrect an explicitly closed context tab, and reopen clears the ledger", () => {
@@ -222,7 +222,10 @@ describe("usePaneLayout migration + persistence", () => {
   it("drops tab ids duplicated across docks or within a group on load", () => {
     persistV2([{ tabs: ["diff", "diff", "terminal:0"], active: "diff" }], [{ tabs: ["diff"], active: "diff" }]);
     const { layout: l } = hook().current;
-    expect([dockTabs(l, "right"), dockTabs(l, "bottom")]).toEqual([["diff", "terminal:0", "context", "timeline"], []]);
+    expect([dockTabs(l, "right"), dockTabs(l, "bottom")]).toEqual([
+      ["diff", "terminal:0", "context", "timeline", "inbox"],
+      [],
+    ]);
   });
 
   it("loads multiple persisted groups per dock without merging them", () => {
@@ -231,7 +234,7 @@ describe("usePaneLayout migration + persistence", () => {
       { tabs: ["terminal:0"], active: "terminal:0" },
     ]);
     expect(groups(hook().current.layout)).toEqual([
-      [["diff", "context", "timeline"], "context"],
+      [["diff", "context", "timeline", "inbox"], "context"],
       [["terminal:0"], "terminal:0"],
     ]);
   });
@@ -240,9 +243,9 @@ describe("usePaneLayout migration + persistence", () => {
     localStorage.setItem("aoe-right-collapsed", "1");
     const result = hook();
     act(() => result.current.toggleKind("terminal", "right"));
-    expect(dockTabs(result.current.layout, "right")).toEqual(["context", "timeline", "terminal:0"]);
+    expect(dockTabs(result.current.layout, "right")).toEqual(["context", "timeline", "inbox", "terminal:0"]);
     act(() => result.current.toggleKind("terminal", "right"));
-    expect(dockTabs(result.current.layout, "right")).toEqual(["context", "timeline"]);
+    expect(dockTabs(result.current.layout, "right")).toEqual(["context", "timeline", "inbox"]);
   });
 });
 
@@ -260,11 +263,11 @@ describe("usePaneLayout outside a repository (#4574)", () => {
 
   it.each([
     // [outside, autoOpenTerminalPane, seeded tabs]; context is ensured on every session (LOCAL PATCH).
-    [false, true, ["diff", "terminal:0", "context", "timeline"]],
+    [false, true, ["diff", "terminal:0", "context", "timeline", "inbox"]],
     // Not yet known: Diff waits for the Session row.
-    [null, true, ["terminal:0", "context", "timeline"]],
-    [true, true, ["terminal:0", "context", "timeline"]],
-    [true, false, ["context", "timeline"]],
+    [null, true, ["terminal:0", "context", "timeline", "inbox"]],
+    [true, true, ["terminal:0", "context", "timeline", "inbox"]],
+    [true, false, ["context", "timeline", "inbox"]],
   ])("outside=%s terminal=%s seeds %o, whatever autoOpenDiffPane says", (outside, terminal, expected) => {
     seededTemplate();
     localStorage.setItem(
