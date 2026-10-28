@@ -86,15 +86,15 @@ test("Cmd/Ctrl+Alt+B toggles the right panel and Shift+D the diff pane on a sess
   const handle = page.locator('[data-testid="content-split-resize-handle"]');
   await expect(handle).toBeVisible();
   // The local build adds a Context tab to every session (docs/guides/web/dashboard.md).
-  await expect.poll(() => rightDockState(page)).toEqual({ tabs: ["context", "timeline"], collapsed: false });
+  await expect.poll(() => rightDockState(page)).toEqual({ tabs: ["context", "timeline", "inbox"], collapsed: false });
 
   await page.keyboard.press("ControlOrMeta+Alt+b");
   await expect(handle).toBeHidden();
-  await expect.poll(() => rightDockState(page)).toEqual({ tabs: ["context", "timeline"], collapsed: true });
+  await expect.poll(() => rightDockState(page)).toEqual({ tabs: ["context", "timeline", "inbox"], collapsed: true });
 
   await page.keyboard.press("ControlOrMeta+Alt+b");
   await expect(handle).toBeVisible();
-  await expect.poll(() => rightDockState(page)).toEqual({ tabs: ["context", "timeline"], collapsed: false });
+  await expect.poll(() => rightDockState(page)).toEqual({ tabs: ["context", "timeline", "inbox"], collapsed: false });
 
   // Shift+D toggles the diff pane specifically (not the whole dock); the
   // activity-bar toggle's pressed state reflects whether diff is open.

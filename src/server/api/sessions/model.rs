@@ -69,7 +69,7 @@ impl SessionResponse {
             color: inst.color.clone(),
             urgent: inst.is_urgent(),
             priority: inst.effective_priority(),
-            priority_reason: inst.priority_reason().map(str::to_string),
+            priority_ask: inst.priority_ask().cloned(),
             pinned_at: timestamp(row.pinned_at),
             archived_at: timestamp(row.archived_at),
             snoozed_until: timestamp(row.active_snoozed_until),

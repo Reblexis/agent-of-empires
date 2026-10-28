@@ -45,7 +45,7 @@ export const docsNav: NavSection[] = [
       { title: "Overview", href: "/guides/web-dashboard/", description: "Remote access to your sessions from any browser." },
       { title: "Dashboard & Workspaces", href: "/guides/web/dashboard/", description: "The dashboard layout, session wizard, triage, settings, and profiles." },
       { title: "Terminal View", href: "/guides/web/terminal/", description: "A real terminal in the browser, backed by your tmux session." },
-      { title: "Inbox", href: "/guides/session-inbox/", description: "The sessions that need you, the next one on top, each saying why." },
+      { title: "Inbox", href: "/guides/session-inbox/", description: "Your prompt queue: what to check, do, evaluate, answer, decide or learn next." },
       { title: "Session Forecast", href: "/guides/session-forecast/", description: "Stop now or continue: the agent's forecast card, pinned on the session." },
     ],
   },

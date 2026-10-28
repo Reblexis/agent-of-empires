@@ -1376,12 +1376,21 @@ fn from_instance_carries_the_effective_priority_live() {
 }
 
 #[test]
-fn from_instance_carries_the_current_priority_reason_only() {
+fn from_instance_carries_the_current_priority_ask_only() {
+    use crate::session::priority::{Ask, AskKind};
     let mut inst = make_test_instance();
     inst.status = Status::Idle;
-    inst.set_priority(Some(8), Some("Approve the budget".into()));
-    let reason = |inst: &Instance| SessionResponse::from_instance(inst, false).priority_reason;
-    assert_eq!(reason(&inst).as_deref(), Some("Approve the budget"));
+    let ask = Ask {
+        kind: Some(AskKind::Decide),
+        text: "Approve the budget".into(),
+        objective: Some("Social media".into()),
+        link: Some("https://example.com".into()),
+    };
+    inst.set_priority(Some(8), Some(ask.clone()));
+    let reason = |inst: &Instance| SessionResponse::from_instance(inst, false).priority_ask;
+    assert_eq!(reason(&inst), Some(ask));
+    let wire = serde_json::to_value(SessionResponse::from_instance(&inst, false)).unwrap();
+    assert_eq!(wire["priority_ask"]["kind"], "decide");
     inst.status = Status::Running;
     assert_eq!(reason(&inst), None, "a running session shows no reason");
     inst.status = Status::Idle;

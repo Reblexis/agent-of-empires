@@ -827,15 +827,21 @@ Remove the session's card (succeeds when it has none)
 
 Score how soon this session needs you, 0 to 10, or `clear`. An agent runs it at the end of its turn; the Attention sort and the TUI and web rows use it. See docs/guides/session-priority.md
 
-**Usage:** `aoe session priority [OPTIONS] <VALUE> [REASON]...`
+**Usage:** `aoe session priority [OPTIONS] <VALUE> [TEXT]...`
 
 ###### **Arguments:**
 
 * `<VALUE>` — An integer 0 to 10 (higher = needs you sooner), or `clear`
-* `<REASON>` — Why the session needs the user, one line of at most 300 characters, shown in the web Inbox and status pushes. Without one, a still-current reason is kept
+* `<TEXT>` — The ask: one line saying exactly what the user should do, at most 300 characters, listed in the web Inbox and carried by status pushes. Without one, a still-current ask is kept. See docs/guides/session-inbox.md
 
 ###### **Options:**
 
+* `--ask <KIND>` — What kind of ask it is
+
+  Possible values: `check`, `do`, `evaluate`, `answer`, `decide`, `learn`
+
+* `--objective <OBJECTIVE>` — The focus objective the ask serves, at most 80 characters
+* `--link <LINK>` — A URL or a command to run, at most 500 characters
 * `--session <SESSION>` — Session ID or title. Defaults to `$AOE_INSTANCE_ID`, which aoe sets inside every session it launches
 
 

@@ -236,11 +236,11 @@ impl Instance {
         )
     }
 
-    /// The current reason the agent gave with its score, for the Inbox and pushes.
-    pub fn priority_reason(&self) -> Option<&str> {
+    /// The current ask the agent posted with its score, for the Inbox and pushes.
+    pub fn priority_ask(&self) -> Option<&crate::session::priority::Ask> {
         let sunk =
             self.is_archived() || self.is_snoozed() || self.is_trashed() || self.pane_dead_observed;
-        crate::session::priority::current_reason(
+        crate::session::priority::current_ask(
             self.status,
             sunk,
             self.priority.as_ref(),
@@ -248,12 +248,12 @@ impl Instance {
         )
     }
 
-    /// Record the agent's score (`None` clears score and reason), stamped now.
-    pub fn set_priority(&mut self, value: Option<u8>, reason: Option<String>) {
+    /// Record the agent's score (`None` clears score and ask), stamped now.
+    pub fn set_priority(&mut self, value: Option<u8>, ask: Option<crate::session::priority::Ask>) {
         self.priority = crate::session::priority::next_score(
             self.priority.as_ref(),
             value,
-            reason,
+            ask,
             self.run_started_at,
             Utc::now(),
         );

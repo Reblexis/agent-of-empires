@@ -9,7 +9,7 @@ const row = (id: string, patch: Partial<SessionResponse> = {}): SessionResponse 
     status: "Idle",
     unread: true,
     priority: 5,
-    priority_reason: null,
+    priority_ask: null,
     idle_entered_at: null,
     ...patch,
   }) as SessionResponse;
@@ -39,16 +39,25 @@ it("the session you are looking at is not listed", () => {
   expect(inboxEntries([row("a"), row("b")], "a").map((e) => e.session.id)).toEqual(["b"]);
 });
 
-it("says why: the agent's reason, else the status", () => {
-  const cases: [Partial<SessionResponse>, string][] = [
-    [{ priority_reason: "Approve the ad budget" }, "Approve the ad budget"],
-    [{ status: "Waiting" }, "Waiting for you"],
-    [{ status: "Idle" }, "Finished"],
-    [{ status: "Error" }, "Error"],
-    [{ status: "Unknown", priority: 1 }, "Finished"],
+it("an entry is the session's ask, or a stand-in ask from its status", () => {
+  const ask = { kind: "learn", text: "Read the pricing note", objective: "Creators product", link: "https://x.test" };
+  const cases: [Partial<SessionResponse>, object][] = [
+    [{ priority_ask: ask as SessionResponse["priority_ask"] }, ask],
+    [
+      { priority_ask: { text: "Approve the budget" } },
+      { kind: null, text: "Approve the budget", objective: null, link: null },
+    ],
+    [{ status: "Waiting" }, { kind: "answer", text: "Reply to it", objective: null, link: null }],
+    [{ status: "Idle" }, { kind: "check", text: "Read what it finished", objective: null, link: null }],
+    [{ status: "Error" }, { kind: "check", text: "It stopped with an error", objective: null, link: null }],
+    [
+      { status: "Unknown", priority: 1 },
+      { kind: "check", text: "Read what it finished", objective: null, link: null },
+    ],
   ];
-  for (const [patch, why] of cases) {
-    expect(inboxEntries([row("s", patch)])[0]?.why, JSON.stringify(patch)).toBe(why);
+  for (const [patch, expected] of cases) {
+    const { session: _session, ...entry } = inboxEntries([row("s", patch)])[0]!;
+    expect(entry, JSON.stringify(patch)).toEqual(expected);
   }
 });
 

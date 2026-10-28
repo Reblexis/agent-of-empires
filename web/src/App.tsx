@@ -1931,7 +1931,14 @@ function AppContent({
       }
       if (id === "timeline") return <TimelinePane />;
       if (id === "inbox")
-        return <InboxPane sessions={sessions} activeSessionId={activeSessionId} onOpen={handleSelectSession} />;
+        return (
+          <InboxPane
+            sessions={sessions}
+            activeSessionId={activeSessionId}
+            onOpen={handleSelectSession}
+            readOnly={!!serverAbout?.read_only}
+          />
+        );
       if (id === "context") {
         // Remount on session switch so the recap and its polling reset.
         return (
@@ -2231,6 +2238,7 @@ function AppContent({
           onOpenSendDialog={() => setSendDialogOpen(true)}
           onCloseSendDialog={() => setSendDialogOpen(false)}
           onClearSelectedFile={() => setSelectedFile(null)}
+          readOnly={!!serverAbout?.read_only}
           onOpenSession={(id) => {
             handleSelectSession(id);
             handlePickView("agent");
