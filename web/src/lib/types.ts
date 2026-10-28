@@ -43,6 +43,9 @@ export interface SessionResponse {
    *  current score. Optional so older payloads read as 0. See
    *  docs/guides/session-priority.md. */
   priority?: number;
+  /** The agent's current one-line reason for `priority`, shown in the Inbox;
+   *  null without one. See docs/guides/session-inbox.md. */
+  priority_reason?: string | null;
   /** The session's forecast card in brief, for the sidebar chip and to tell
    *  the session band when to refetch the full card. Null when the session
    *  has no card. See docs/guides/session-forecast.md. */

@@ -695,6 +695,7 @@ mod workspace_ordering_tests {
             color: None,
             urgent: false,
             priority: 0,
+            priority_reason: None,
             pinned_at: None,
             archived_at: None,
             snoozed_until: None,

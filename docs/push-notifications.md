@@ -4,7 +4,7 @@ The web dashboard can push browser notifications when an agent wants your attent
 
 ## What triggers one
 
-Three status events, each independently toggleable in Settings and overridable per session: **Waiting** (the session holds that status for five seconds), **Idle** (a long job settles), and **Error**. A 60-second per-session cooldown prevents re-buzzing when a session flickers.
+Three status events, each independently toggleable in Settings and overridable per session: **Waiting** (the session holds that status for five seconds), **Idle** (a long job settles), and **Error**. A 60-second per-session cooldown prevents re-buzzing when a session flickers. When the session's agent gave a current reason with its priority score ([Inbox](guides/session-inbox.md)), the body is `<session title>: <reason>` instead of the generic status line.
 
 Two more, **approval** and **question** ([AskUserQuestion](structured-view/controls.md#questions-askuserquestion)), fire immediately and bypass the suppression rules below: with the dashboard or TUI foregrounded you still get an in-app toast, plus the browser chime described in [Sound effects](sounds.md).
 

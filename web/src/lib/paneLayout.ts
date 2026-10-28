@@ -133,7 +133,7 @@ export function removeTab(layout: DockLayout, tabId: TabId): DockLayout {
   // tabs: the auto-add passes (syncPluginTabs, ensureContextTab) must not
   // resurrect an explicitly closed tab on the next render.
   if (
-    (tabId.startsWith("plugin:") || tabId === "context" || tabId === "timeline") &&
+    (tabId.startsWith("plugin:") || tabId === "context" || tabId === "timeline" || tabId === "inbox") &&
     !next.closedPlugins.includes(tabId)
   ) {
     next.closedPlugins.push(tabId);
@@ -146,6 +146,14 @@ function ensureTimelineTab(layout: DockLayout): DockLayout {
   if (layout.closedPlugins.includes("timeline") || findTab(layout, "timeline")) return layout;
   return addTab(layout, "right", "timeline", false);
 }
+
+function ensureInboxTab(layout: DockLayout): DockLayout {
+  if (layout.closedPlugins.includes("inbox") || findTab(layout, "inbox")) return layout;
+  return addTab(layout, "right", "inbox", false);
+}
+
+// Timeline and Inbox are global views, present in every session's dock.
+const ensureAlwaysOnTabs = (layout: DockLayout) => ensureInboxTab(ensureTimelineTab(layout));
 
 /** Add Context to older layouts unless explicitly closed. */
 export function ensureContextTab(layout: DockLayout): DockLayout {
@@ -246,7 +254,9 @@ export function syncPluginTabs(layout: DockLayout, available: { id: TabId; defau
 }
 
 // Sub agents and Files are opt-in, so they never auto-open as empty tabs.
-const AUTO_OPEN_PANES = BUILTIN_PANES.filter((p) => p.id !== "agents" && p.id !== "files" && p.id !== "timeline");
+const AUTO_OPEN_PANES = BUILTIN_PANES.filter(
+  (p) => p.id !== "agents" && p.id !== "files" && p.id !== "timeline" && p.id !== "inbox",
+);
 
 // Panes that existed in the v1 layout schema. Migration must only carry these:
 // a pane that postdates v1 (context) can never have been "open" in a v1
@@ -400,7 +410,7 @@ export interface PaneLayoutApi {
   moveTab: (tabId: TabId, toDock: DockLocation) => void;
   placeTab: (tabId: TabId, target: PlaceTarget) => void;
   toggleKind: (
-    kind: "diff" | "terminal" | "agents" | "files" | "context" | "timeline",
+    kind: "diff" | "terminal" | "agents" | "files" | "context" | "timeline" | "inbox",
     defaultDock: DockLocation,
   ) => void;
   togglePlugin: (id: TabId, defaultDock: DockLocation) => void;
@@ -458,7 +468,7 @@ export function usePaneLayout(sessionId: string | null, outsideRepository: boole
     () =>
       sessionId
         ? preferTab(
-            ensureTimelineTab(
+            ensureAlwaysOnTabs(
               ensureContextTab(
                 store.sessions[sessionId] ??
                   seedLayout(store.template, {
@@ -480,7 +490,7 @@ export function usePaneLayout(sessionId: string | null, outsideRepository: boole
         // Read prefs synchronously: depending on `settings` would rebuild the pane API on any setting change.
         const prefs = getWebSettingsSnapshot();
         const current = preferTab(
-          ensureTimelineTab(
+          ensureAlwaysOnTabs(
             ensureContextTab(
               s.sessions[sessionId] ??
                 seedLayout(s.template, {
@@ -535,11 +545,18 @@ export function usePaneLayout(sessionId: string | null, outsideRepository: boole
     [mutate],
   );
   const toggleKind = useCallback(
-    (kind: "diff" | "terminal" | "agents" | "files" | "context" | "timeline", defaultDock: DockLocation) =>
+    (kind: "diff" | "terminal" | "agents" | "files" | "context" | "timeline" | "inbox", defaultDock: DockLocation) =>
       mutate(
         (l) => {
           // Single-instance panes toggle their tab; terminals toggle the whole group.
-          if (kind === "diff" || kind === "agents" || kind === "files" || kind === "context" || kind === "timeline") {
+          if (
+            kind === "diff" ||
+            kind === "agents" ||
+            kind === "files" ||
+            kind === "context" ||
+            kind === "timeline" ||
+            kind === "inbox"
+          ) {
             const at = findTab(l, kind);
             if (at) return isDockCollapsed(l, at.dock) ? openOrRevealTab(l, kind, defaultDock) : removeTab(l, kind);
             return openOrRevealTab(l, kind, defaultDock);

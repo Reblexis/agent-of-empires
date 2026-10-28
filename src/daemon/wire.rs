@@ -187,6 +187,11 @@ pub struct SessionResponse {
     /// docs/guides/session-priority.md.
     #[serde(default)]
     pub priority: u8,
+    /// The agent's current one-line reason for that priority
+    /// (`Instance::priority_reason`), or `null`; the web Inbox shows it. See
+    /// docs/guides/session-inbox.md.
+    #[serde(default)]
+    pub priority_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pinned_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

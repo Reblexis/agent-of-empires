@@ -144,6 +144,7 @@ import { PaneDndController } from "./components/PaneDndController";
 import { visibleToFullIndex, type DropTarget } from "./components/paneDnd";
 import { BackgroundAgentsPanel } from "./components/acp/BackgroundAgentsPanel";
 import { TimelinePane } from "./components/TimelinePane";
+import { InboxPane } from "./components/InboxPane";
 import { ContextPane } from "./components/ContextPane";
 import { DiffPane } from "./components/DiffPane";
 import { FilesPane } from "./components/FilesPane";
@@ -668,7 +669,8 @@ function AppContent({
   const [serverAbout, setServerAbout] = useState<ServerAbout | null>(null);
   const tabAvailable = useCallback(
     (id: string) =>
-      (id !== "timeline" || !serverAbout?.cityhall_mode) && (!id.startsWith("plugin:") || pluginPaneById.has(id)),
+      ((id !== "timeline" && id !== "inbox") || !serverAbout?.cityhall_mode) &&
+      (!id.startsWith("plugin:") || pluginPaneById.has(id)),
     [pluginPaneById, serverAbout?.cityhall_mode],
   );
   // A dock's groups reduced to what's actually shown: each surviving group keeps
@@ -717,7 +719,7 @@ function AppContent({
       const defaultDock: DockLocation =
         pluginPaneById.get(kind)?.defaultDock ?? BUILTIN_PANES.find((p) => p.id === kind)?.defaultDock ?? "right";
       if (isPluginPaneId(kind)) togglePlugin(kind, defaultDock);
-      else toggleKind(kind as "diff" | "terminal" | "agents" | "files" | "context" | "timeline", defaultDock);
+      else toggleKind(kind as "diff" | "terminal" | "agents" | "files" | "context" | "timeline" | "inbox", defaultDock);
     },
     [toggleKind, togglePlugin, pluginPaneById],
   );
@@ -777,7 +779,8 @@ function AppContent({
   const [rightPanelView, setRightPanelView] = useState<RightPanelView>(() => {
     const saved = safeGetItem("aoe-mobile-panel");
     return saved &&
-      (["agent", "diff", "files", "paired", "agents", "timeline", "context"].includes(saved) || isPluginPaneId(saved))
+      (["agent", "diff", "files", "paired", "agents", "timeline", "inbox", "context"].includes(saved) ||
+        isPluginPaneId(saved))
       ? (saved as RightPanelView)
       : "agent";
   });
@@ -846,7 +849,7 @@ function AppContent({
   }, [workspaces, activeSessionId]);
   const activeSession = activeWorkspace?.sessions.find((s) => s.id === activeSessionId);
   const allPaneIds: string[] = [
-    ...(caps.cityhall ? [] : ["timeline"]),
+    ...(caps.cityhall ? [] : ["timeline", "inbox"]),
     // CityHall client mode hides the code-inspection panes (diff, files) and
     // the terminal (plus plugin panes below) so only the composer + structured
     // view remain. See #7.
@@ -962,6 +965,7 @@ function AppContent({
     rightPanelView === "files" ||
     rightPanelView === "agents" ||
     rightPanelView === "timeline" ||
+    rightPanelView === "inbox" ||
     rightPanelView === "context";
   if (
     sessionsLoaded &&
@@ -1926,6 +1930,8 @@ function AppContent({
         return <FilesPane key={activeSessionId ?? "none"} sessionId={activeSessionId} />;
       }
       if (id === "timeline") return <TimelinePane />;
+      if (id === "inbox")
+        return <InboxPane sessions={sessions} activeSessionId={activeSessionId} onOpen={handleSelectSession} />;
       if (id === "context") {
         // Remount on session switch so the recap and its polling reset.
         return (
@@ -2225,6 +2231,10 @@ function AppContent({
           onOpenSendDialog={() => setSendDialogOpen(true)}
           onCloseSendDialog={() => setSendDialogOpen(false)}
           onClearSelectedFile={() => setSelectedFile(null)}
+          onOpenSession={(id) => {
+            handleSelectSession(id);
+            handlePickView("agent");
+          }}
         />
       );
     }

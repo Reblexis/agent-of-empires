@@ -231,17 +231,32 @@ impl Instance {
             self.status,
             sunk,
             unread,
-            self.priority,
+            self.priority.as_ref(),
             self.run_started_at,
         )
     }
 
-    /// Record the agent's score (`None` clears it), stamped now.
-    pub fn set_priority(&mut self, value: Option<u8>) {
-        self.priority = value.map(|value| crate::session::priority::PriorityScore {
+    /// The current reason the agent gave with its score, for the Inbox and pushes.
+    pub fn priority_reason(&self) -> Option<&str> {
+        let sunk =
+            self.is_archived() || self.is_snoozed() || self.is_trashed() || self.pane_dead_observed;
+        crate::session::priority::current_reason(
+            self.status,
+            sunk,
+            self.priority.as_ref(),
+            self.run_started_at,
+        )
+    }
+
+    /// Record the agent's score (`None` clears score and reason), stamped now.
+    pub fn set_priority(&mut self, value: Option<u8>, reason: Option<String>) {
+        self.priority = crate::session::priority::next_score(
+            self.priority.as_ref(),
             value,
-            set_at: Utc::now(),
-        });
+            reason,
+            self.run_started_at,
+            Utc::now(),
+        );
     }
 
     /// Fold an observed `old -> self.status` change into `run_started_at`.
@@ -370,7 +385,7 @@ mod tests {
     fn replying_to_a_scored_session_makes_its_old_score_stop_counting() {
         let mut inst = Instance::new("scored", "/tmp/scored");
         inst.status = Status::Running;
-        inst.set_priority(Some(9));
+        inst.set_priority(Some(9), None);
         inst.status = Status::Idle;
         inst.note_status_transition(Status::Running, Utc::now());
         assert_eq!(

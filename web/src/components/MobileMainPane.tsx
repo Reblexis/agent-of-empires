@@ -5,6 +5,7 @@ import { ForecastBand } from "./ForecastBand";
 import { PairedShellPane } from "./PairedTerminal";
 import { BackgroundAgentsPanel } from "./acp/BackgroundAgentsPanel";
 import { TimelinePane } from "./TimelinePane";
+import { InboxPane } from "./InboxPane";
 import { ContextPane } from "./ContextPane";
 import { FilesPane } from "./FilesPane";
 import { DiffFileList } from "./diff/DiffFileList";
@@ -51,6 +52,7 @@ interface Props {
   onOpenSendDialog: () => void;
   onCloseSendDialog: () => void;
   onClearSelectedFile: () => void;
+  onOpenSession: (sessionId: string) => void;
 }
 
 function layerClass(active: boolean): string {
@@ -91,6 +93,7 @@ export function MobileMainPane({
   onOpenSendDialog,
   onCloseSendDialog,
   onClearSelectedFile,
+  onOpenSession,
 }: Props) {
   const activePluginPane = isPluginPaneId(view) ? (pluginPanes.find((p) => p.id === view) ?? null) : null;
   const viewLabel =
@@ -104,9 +107,11 @@ export function MobileMainPane({
             ? "Sub agents"
             : view === "timeline"
               ? "Timeline"
-              : view === "context"
-                ? "Context"
-                : (activePluginPane?.title ?? "Plugin");
+              : view === "inbox"
+                ? "Inbox"
+                : view === "context"
+                  ? "Context"
+                  : (activePluginPane?.title ?? "Plugin");
 
   return (
     <div className="flex-1 flex flex-col min-h-0">
@@ -243,6 +248,14 @@ export function MobileMainPane({
             style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
           >
             <TimelinePane />
+          </div>
+        )}
+        {view === "inbox" && (
+          <div
+            className="absolute inset-0 z-10 flex flex-col min-h-0 overflow-hidden bg-surface-900"
+            style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
+          >
+            <InboxPane sessions={sessions} activeSessionId={activeSessionId} onOpen={onOpenSession} />
           </div>
         )}
         {view === "context" && (

@@ -17,6 +17,23 @@
       "notes": "Removes legacy starter tabs once, preserves additional terminals and explicit reopen, and carries the selected desktop/mobile panel across sessions and reload."
     },
     {
+      "id": "sessions.inbox-go-here-next",
+      "kind": "mocked-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/inbox.spec.ts",
+        "src/components/__tests__/InboxPane.test.tsx",
+        "src/lib/__tests__/inbox.test.ts",
+        "src/lib/__tests__/inboxDock.test.ts"
+      ],
+      "components": [
+        "web/src/components/InboxPane.tsx",
+        "web/src/components/Dashboard.tsx",
+        "web/src/components/MobileMainPane.tsx"
+      ],
+      "description": "Unread sessions above priority 0, highest first with the agent's reason, Next on top, click opens the session; home screen, dock tab and mobile pane."
+    },
+    {
       "id": "planner.timeline-read-only",
       "kind": "live-playwright",
       "risk": "high",

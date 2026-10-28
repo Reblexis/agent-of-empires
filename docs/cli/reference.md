@@ -827,11 +827,12 @@ Remove the session's card (succeeds when it has none)
 
 Score how soon this session needs you, 0 to 10, or `clear`. An agent runs it at the end of its turn; the Attention sort and the TUI and web rows use it. See docs/guides/session-priority.md
 
-**Usage:** `aoe session priority [OPTIONS] <VALUE>`
+**Usage:** `aoe session priority [OPTIONS] <VALUE> [REASON]...`
 
 ###### **Arguments:**
 
 * `<VALUE>` — An integer 0 to 10 (higher = needs you sooner), or `clear`
+* `<REASON>` — Why the session needs the user, one line of at most 300 characters, shown in the web Inbox and status pushes. Without one, a still-current reason is kept
 
 ###### **Options:**
 

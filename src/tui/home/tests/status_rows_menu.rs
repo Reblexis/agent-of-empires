@@ -235,7 +235,7 @@ fn a_scored_session_that_starts_running_again_drops_its_old_score() {
     let mut env = create_test_env_with_sessions(1);
     let id = session_id_at(&env.view, 0).expect("a seeded session row");
     env.view
-        .mutate_instance(&id, |inst| inst.set_priority(Some(9)));
+        .mutate_instance(&id, |inst| inst.set_priority(Some(9), None));
     assert_eq!(env.view.get_instance(&id).unwrap().effective_priority(), 9);
 
     std::thread::sleep(std::time::Duration::from_millis(5));

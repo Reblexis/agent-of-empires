@@ -10,7 +10,7 @@ afterEach(() => {
 });
 
 const savedLayout = (active = "context") => ({
-  right: [{ tabs: ["diff", "terminal:0", "context", "timeline"], active }],
+  right: [{ tabs: ["diff", "terminal:0", "context", "timeline", "inbox"], active }],
   bottom: [{ tabs: ["terminal:2"], active: "terminal:2" }],
   nextTerminalIndex: 3,
   closedPlugins: [],
@@ -19,10 +19,10 @@ const savedLayout = (active = "context") => ({
 
 it("Diff and Terminal no longer clutter the default dock, but remain opt-in", () => {
   const { result } = renderHook(() => usePaneLayout("fresh"));
-  expect(dockTabs(result.current.layout, "right")).toEqual(["context", "timeline"]);
+  expect(dockTabs(result.current.layout, "right")).toEqual(["context", "timeline", "inbox"]);
   act(() => result.current.openTab("diff", "right"));
   act(() => result.current.toggleKind("terminal", "right"));
-  expect(dockTabs(result.current.layout, "right")).toEqual(["context", "timeline", "diff", "terminal:0"]);
+  expect(dockTabs(result.current.layout, "right")).toEqual(["context", "timeline", "inbox", "diff", "terminal:0"]);
 });
 
 it("existing starter tabs disappear once, while additional terminals and reopened tabs survive reload", () => {
@@ -38,7 +38,7 @@ it("existing starter tabs disappear once, while additional terminals and reopene
   const first = renderHook(({ id }) => usePaneLayout(id), { initialProps: { id: "a" } });
   for (const id of ["a", "b"]) {
     first.rerender({ id });
-    expect(dockTabs(first.result.current.layout, "right")).toEqual(["context", "timeline"]);
+    expect(dockTabs(first.result.current.layout, "right")).toEqual(["context", "timeline", "inbox"]);
     expect(dockTabs(first.result.current.layout, "bottom")).toEqual(["terminal:2"]);
     expect(first.result.current.layout.collapsed.bottom).toBe(true);
     expect(first.result.current.layout.nextTerminalIndex).toBe(3);
@@ -47,16 +47,22 @@ it("existing starter tabs disappear once, while additional terminals and reopene
   act(() => first.result.current.openTab("terminal:0", "right"));
   first.unmount();
   const second = renderHook(() => usePaneLayout("b"));
-  expect(dockTabs(second.result.current.layout, "right")).toEqual(["context", "timeline", "diff", "terminal:0"]);
+  expect(dockTabs(second.result.current.layout, "right")).toEqual([
+    "context",
+    "timeline",
+    "inbox",
+    "diff",
+    "terminal:0",
+  ]);
   second.unmount();
   const fresh = renderHook(() => usePaneLayout("new"));
-  expect(dockTabs(fresh.result.current.layout, "right")).toEqual(["context", "timeline"]);
+  expect(dockTabs(fresh.result.current.layout, "right")).toEqual(["context", "timeline", "inbox"]);
   expect(JSON.parse(localStorage.getItem("aoe-web-settings")!).desktopFontSize).toBe(17);
   fresh.unmount();
   // A stale server preference snapshot must not restore the old defaults on reload.
   localStorage.setItem("aoe-web-settings", JSON.stringify({ autoOpenDiffPane: true, autoOpenTerminalPane: true }));
   const restored = renderHook(() => usePaneLayout("another"));
-  expect(dockTabs(restored.result.current.layout, "right")).toEqual(["context", "timeline"]);
+  expect(dockTabs(restored.result.current.layout, "right")).toEqual(["context", "timeline", "inbox"]);
   restored.unmount();
   const prefs = renderHook(() => useWebSettings());
   act(() => prefs.result.current.update({ autoOpenDiffPane: true, autoOpenTerminalPane: true }));
@@ -65,6 +71,7 @@ it("existing starter tabs disappear once, while additional terminals and reopene
     "terminal:0",
     "context",
     "timeline",
+    "inbox",
   ]);
 });
 
