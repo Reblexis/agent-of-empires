@@ -30,3 +30,16 @@ for (const [name, viewport] of [
     await expect(page).toHaveURL(/\/session\/ads$/);
   });
 }
+
+test("a long Inbox never pushes the home screen's top out of reach on desktop", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await mockSessionsList(page, () =>
+    Array.from({ length: 12 }, (_, i) => ({ id: `s${i}`, title: `Session ${i}`, unread: true, priority: 5 })),
+  );
+  await page.goto("/");
+  await expect(page.getByTestId("inbox-entry").first()).toBeVisible();
+  const heading = page.getByRole("heading", { name: "empires" });
+  await heading.scrollIntoViewIfNeeded();
+  const box = await heading.boundingBox();
+  expect(box?.y ?? -1).toBeGreaterThanOrEqual(0);
+});

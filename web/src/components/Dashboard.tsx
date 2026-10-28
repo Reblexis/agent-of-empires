@@ -63,7 +63,7 @@ export function Dashboard({
 
   return (
     <div
-      className="flex-1 flex flex-col items-center justify-start overflow-y-auto bg-surface-950 px-4 py-6 md:justify-center md:py-0"
+      className="flex-1 flex flex-col items-center justify-start overflow-y-auto bg-surface-950 px-4 py-6 md:justify-center-safe md:py-0"
       // Bottom home-indicator clearance: the App root no longer reserves it
       // (see index.css .safe-area-inset). Collapses to the base gap off-device.
       style={{ paddingBottom: "max(1.5rem, env(safe-area-inset-bottom))" }}
