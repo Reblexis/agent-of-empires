@@ -87,3 +87,17 @@ test("Done marks an ask done elsewhere as read without opening its session", asy
   expect((await patched).postDataJSON()).toEqual({ unread: false });
   await expect(page).toHaveURL(/\/$/);
 });
+
+test("an ask page opened by its URL, as a push or a shared link does, shows the ask", async ({ page }) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await mockSessionsList(page, () =>
+    sessions().map((s) => (s.id === "ads" ? { ...s, priority_ask: { ...s.priority_ask!, page: true } } : s)),
+  );
+  await page.route("**/api/sessions/ads/ask/page", (r) =>
+    r.fulfill({ contentType: "text/html", body: "<p>40 EUR buys 3k views</p>" }),
+  );
+  await page.goto("/ask/ads");
+  await expect(page.getByTestId("ask-page")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Approve the 40 EUR ad budget" })).toBeVisible();
+  await expect(page.frameLocator('iframe[title="Ask page"]').getByText("40 EUR buys 3k views")).toBeVisible();
+});
