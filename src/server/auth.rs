@@ -23,6 +23,62 @@ pub(crate) fn constant_time_eq(a: &str, b: &str) -> bool {
         == 0
 }
 
+/// What the Inbox key decides for a request (docs/guides/session-inbox.md, "The
+/// Inbox API and its key").
+#[derive(Debug, PartialEq, Eq)]
+enum InboxKeyDecision {
+    /// The request does not carry the key: the usual checks apply.
+    NotTheKey,
+    /// The key, on one of its routes: let through with no other check.
+    Allow,
+    /// The key, anywhere else: refused.
+    Refuse,
+}
+
+/// The routes the Inbox key opens.
+fn inbox_key_route(method: &axum::http::Method, path: &str) -> bool {
+    use axum::http::Method;
+    if method == Method::GET && (path == "/api/inbox/asks" || path == "/api/inbox/log") {
+        return true;
+    }
+    let Some(rest) = path.strip_prefix("/api/sessions/") else {
+        return false;
+    };
+    let mut parts = rest.split('/');
+    let (Some(id), Some("ask"), Some(leaf), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return false;
+    };
+    if crate::session::validate_instance_id(id).is_err() {
+        return false;
+    }
+    match leaf {
+        "page" => method == Method::GET,
+        "refine" | "answer" | "events" => method == Method::POST,
+        _ => false,
+    }
+}
+
+fn inbox_key_decision(
+    bearer: Option<&str>,
+    key: Option<&str>,
+    method: &axum::http::Method,
+    path: &str,
+) -> InboxKeyDecision {
+    let (Some(bearer), Some(key)) = (bearer, key) else {
+        return InboxKeyDecision::NotTheKey;
+    };
+    if !crate::session::inbox::key_matches(bearer, key) {
+        return InboxKeyDecision::NotTheKey;
+    }
+    if inbox_key_route(method, path) {
+        InboxKeyDecision::Allow
+    } else {
+        InboxKeyDecision::Refuse
+    }
+}
+
 /// Resolve the real client IP, trusting X-Forwarded-For only from loopback
 /// (i.e., only when the request came through the cloudflared proxy).
 pub(crate) fn resolve_client_ip(
@@ -545,6 +601,35 @@ pub async fn auth_middleware(
 ) -> Response {
     let client_ip = resolve_client_ip(addr, request.headers());
 
+    // The Inbox key opens its few routes and nothing else, ahead of every other
+    // check (docs/guides/session-inbox.md, "The Inbox API and its key").
+    let bearer = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+        .map(str::to_string);
+    if bearer.is_some() {
+        let key = crate::session::inbox::read_key().ok().flatten();
+        match inbox_key_decision(
+            bearer.as_deref(),
+            key.as_deref(),
+            request.method(),
+            request.uri().path(),
+        ) {
+            InboxKeyDecision::NotTheKey => {}
+            InboxKeyDecision::Allow => return next.run(request).await,
+            InboxKeyDecision::Refuse => {
+                tracing::warn!(target: "auth", ip = %client_ip, path = %request.uri().path(), "Inbox key refused outside its routes");
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    axum::Json(serde_json::json!({"error": "inbox_key_route", "message": "The Inbox key opens only the Inbox API"})),
+                )
+                    .into_response();
+            }
+        }
+    }
+
     // Mark same-host callers before any auth branch so handler-side elevation gates see the
     // #1168 carve-out no matter which path (token, session, passphrase wall, loopback
     // bypass) handled the request.
@@ -842,6 +927,116 @@ async fn handle_session_authenticated(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_inbox_key_opens_only_its_own_routes_and_never_the_rest() {
+        use axum::http::Method;
+        let key = "k".repeat(64);
+        let k = Some(key.as_str());
+        // (bearer, method, path, decision)
+        let cases = [
+            (k, Method::GET, "/api/inbox/asks", InboxKeyDecision::Allow),
+            (k, Method::GET, "/api/inbox/log", InboxKeyDecision::Allow),
+            (
+                k,
+                Method::GET,
+                "/api/sessions/abc123/ask/page",
+                InboxKeyDecision::Allow,
+            ),
+            (
+                k,
+                Method::POST,
+                "/api/sessions/abc123/ask/refine",
+                InboxKeyDecision::Allow,
+            ),
+            (
+                k,
+                Method::POST,
+                "/api/sessions/abc123/ask/answer",
+                InboxKeyDecision::Allow,
+            ),
+            (
+                k,
+                Method::POST,
+                "/api/sessions/abc123/ask/events",
+                InboxKeyDecision::Allow,
+            ),
+            // Everything else carrying the key is refused, never handed on.
+            (k, Method::GET, "/api/sessions", InboxKeyDecision::Refuse),
+            (
+                k,
+                Method::GET,
+                "/api/sessions/abc123",
+                InboxKeyDecision::Refuse,
+            ),
+            (
+                k,
+                Method::POST,
+                "/api/sessions/abc123/send",
+                InboxKeyDecision::Refuse,
+            ),
+            (
+                k,
+                Method::GET,
+                "/api/sessions/abc123/acp/ws",
+                InboxKeyDecision::Refuse,
+            ),
+            (
+                k,
+                Method::GET,
+                "/sessions/abc123/ws",
+                InboxKeyDecision::Refuse,
+            ),
+            (k, Method::GET, "/api/settings", InboxKeyDecision::Refuse),
+            (k, Method::GET, "/", InboxKeyDecision::Refuse),
+            (k, Method::GET, "/session/abc123", InboxKeyDecision::Refuse),
+            (k, Method::POST, "/api/inbox/asks", InboxKeyDecision::Refuse),
+            (
+                k,
+                Method::GET,
+                "/api/sessions/abc123/ask/answer",
+                InboxKeyDecision::Refuse,
+            ),
+            (k, Method::GET, "/api/inbox/askss", InboxKeyDecision::Refuse),
+            (
+                k,
+                Method::GET,
+                "/api/sessions/a/b/ask/page",
+                InboxKeyDecision::Refuse,
+            ),
+            (
+                k,
+                Method::GET,
+                "/api/sessions//ask/page",
+                InboxKeyDecision::Refuse,
+            ),
+            // Another bearer, or none, goes through the usual checks.
+            (
+                Some("not-the-key"),
+                Method::GET,
+                "/api/inbox/asks",
+                InboxKeyDecision::NotTheKey,
+            ),
+            (
+                None,
+                Method::GET,
+                "/api/inbox/asks",
+                InboxKeyDecision::NotTheKey,
+            ),
+        ];
+        for (bearer, method, path, decision) in cases {
+            assert_eq!(
+                inbox_key_decision(bearer, k, &method, path),
+                decision,
+                "{method} {path} {bearer:?}"
+            );
+        }
+        assert_eq!(
+            inbox_key_decision(k, None, &Method::GET, "/api/inbox/asks"),
+            InboxKeyDecision::NotTheKey,
+            "with no key file nothing is the key"
+        );
+    }
 
     // Records (level, target) for every event so the loopback-bypass
     // helpers' log level is assertable without standing up the full

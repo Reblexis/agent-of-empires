@@ -1,0 +1,704 @@
+//! The Inbox API the input/output agent calls with the Inbox key: the queue,
+//! refining an ask, answering it, and the event log. Spec:
+//! docs/guides/session-inbox.md, "The Inbox API and its key".
+
+use super::*;
+
+#[derive(Debug, serde::Deserialize)]
+pub struct RefineRequest {
+    #[serde(rename = "for")]
+    pub posted_at: chrono::DateTime<chrono::Utc>,
+    pub text: Option<String>,
+    pub ask: Option<crate::session::priority::AskKind>,
+    pub objective: Option<String>,
+    pub link: Option<String>,
+    pub value: Option<u8>,
+    pub minutes: Option<u16>,
+    pub due: Option<String>,
+    #[serde(default)]
+    pub options: Vec<String>,
+    pub page_html: Option<String>,
+    pub merge_into: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct AnswerRequest {
+    #[serde(rename = "for")]
+    pub posted_at: chrono::DateTime<chrono::Utc>,
+    pub form: crate::session::inbox_log::Form,
+    pub input: String,
+    #[serde(default)]
+    pub ms_open: Option<u64>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct LogQuery {
+    pub since: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+/// Every current ask in Inbox order, each with `listed` and `has_page`.
+pub async fn get_inbox_asks(State(state): State<Arc<AppState>>) -> axum::response::Response {
+    if let Some(resp) = crate::server::api::cityhall_block(&state) {
+        return resp;
+    }
+    let instances = state.instances.read().await.clone();
+    let rows = tokio::task::spawn_blocking(move || {
+        crate::session::inbox::queue(&instances)
+            .into_iter()
+            .filter_map(|(inst, listed)| {
+                let context = crate::session::ask_page::read_context(&inst.id)
+                    .ok()
+                    .flatten();
+                let mut row = crate::session::inbox::ask_json(inst, context)?;
+                row["listed"] = listed.into();
+                row["has_page"] = inst.priority_ask().is_some_and(|a| a.page).into();
+                Some(row)
+            })
+            .collect::<Vec<_>>()
+    })
+    .await;
+    match rows {
+        Ok(rows) => Json(rows).into_response(),
+        Err(e) => {
+            tracing::warn!(target: "server.inbox", "inbox queue task failed: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+/// The current ask's `posted_at`, or the response refusing the request: `404`
+/// without the session, `409` when `posted_at` is not the current ask's.
+async fn current_ask(
+    state: &AppState,
+    id: &str,
+    posted_at: chrono::DateTime<chrono::Utc>,
+) -> Result<(Instance, Vec<Instance>), axum::response::Response> {
+    let instances = state.instances.read().await;
+    let Some(inst) = instances.iter().find(|i| i.id == id) else {
+        return Err(session_not_found());
+    };
+    if inst.priority_ask().and_then(|a| a.posted_at) != Some(posted_at) {
+        return Err(api_error(
+            StatusCode::CONFLICT,
+            "not_current",
+            "That ask is not the session's current one",
+        ));
+    }
+    Ok((inst.clone(), instances.clone()))
+}
+
+/// Mark a session read, on disk and in memory, as `PATCH .../unread` does.
+async fn mark_read(state: &AppState, id: &str) -> bool {
+    let lock = state.instance_lock(id).await;
+    let _guard = lock.lock().await;
+    let Some(profile) = state
+        .instances
+        .read()
+        .await
+        .iter()
+        .find(|i| i.id == id)
+        .map(|i| i.source_profile.clone())
+    else {
+        return false;
+    };
+    let persist_id = id.to_string();
+    let persisted = persist_session_update(
+        profile,
+        "inbox read",
+        state.file_watch.clone(),
+        move |rows| {
+            if let Some(inst) = rows.iter_mut().find(|i| i.id == persist_id) {
+                inst.mark_read();
+            }
+        },
+    )
+    .await;
+    if persisted.is_err() {
+        return false;
+    }
+    if let Some(inst) = state
+        .instances
+        .write()
+        .await
+        .iter_mut()
+        .find(|i| i.id == id)
+    {
+        inst.mark_read();
+    }
+    true
+}
+
+fn log(
+    id: &str,
+    posted_at: chrono::DateTime<chrono::Utc>,
+    event: crate::session::inbox_log::Event,
+    form: Option<crate::session::inbox_log::Form>,
+    ms_open: Option<u64>,
+) {
+    let entry = crate::session::inbox_log::Entry {
+        at: chrono::Utc::now(),
+        event,
+        session_id: id.to_string(),
+        posted_at,
+        form,
+        ms_open,
+    };
+    if let Err(e) = crate::session::inbox_log::append(&entry) {
+        tracing::warn!(target: "server.inbox", "inbox log not written: {e:#}");
+    }
+}
+
+pub async fn post_ask_refine(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<RefineRequest>,
+) -> axum::response::Response {
+    if let Some(resp) = crate::server::api::read_only_block(&state) {
+        return resp;
+    }
+    if let Some(resp) = crate::server::api::cityhall_block(&state) {
+        return resp;
+    }
+    if req
+        .page_html
+        .as_ref()
+        .is_some_and(|p| p.len() > crate::session::ask_page::MAX_PAGE_BYTES)
+    {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "bad_refine",
+            "An ask page is at most 4 MiB",
+        );
+    }
+    let lock = state.instance_lock(&id).await;
+    let _guard = lock.lock().await;
+    let (inst, instances) = match current_ask(&state, &id, req.posted_at).await {
+        Ok(found) => found,
+        Err(resp) => return resp,
+    };
+    if let Some(into) = req.merge_into.as_deref() {
+        if let Err(e) = crate::session::inbox::check_merge(&instances, &id, into) {
+            return api_error(StatusCode::BAD_REQUEST, "bad_refine", format!("{e:#}"));
+        }
+    }
+    let refined = crate::session::priority::refine_ask(
+        inst.priority.as_ref(),
+        inst.run_started_at,
+        req.posted_at,
+        crate::session::priority::Refine {
+            kind: req.ask,
+            text: req.text.as_deref(),
+            objective: req.objective.as_deref(),
+            link: req.link.as_deref(),
+            value: req.value,
+            minutes: req.minutes,
+            due: req.due.as_deref(),
+            options: &req.options,
+            page: req.page_html.is_some(),
+            merge_into: req.merge_into.as_deref(),
+        },
+        chrono::Utc::now(),
+    );
+    let score = match refined {
+        Ok(score) => score,
+        Err(e) => return api_error(StatusCode::BAD_REQUEST, "bad_refine", format!("{e:#}")),
+    };
+    let posted_at = req.posted_at;
+    let persist_id = id.clone();
+    let persist_score = score.clone();
+    let persisted = persist_session_update(
+        inst.source_profile.clone(),
+        "ask refine",
+        state.file_watch.clone(),
+        move |rows| {
+            if let Some(row) = rows.iter_mut().find(|i| i.id == persist_id) {
+                if row
+                    .priority
+                    .as_ref()
+                    .and_then(|p| p.ask.as_ref())
+                    .and_then(|a| a.posted_at)
+                    == Some(posted_at)
+                {
+                    row.priority = Some(persist_score);
+                }
+            }
+        },
+    )
+    .await;
+    if persisted.is_err() {
+        return persist_failed_response();
+    }
+    if let Some(row) = state
+        .instances
+        .write()
+        .await
+        .iter_mut()
+        .find(|i| i.id == id)
+    {
+        row.priority = Some(score);
+    }
+    if let Some(html) = req.page_html {
+        let page_id = id.clone();
+        match tokio::task::spawn_blocking(move || {
+            crate::session::ask_page::write_page(&page_id, html.as_bytes())
+        })
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::warn!(target: "server.inbox", "ask page not written: {e:#}");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+            Err(e) => {
+                tracing::warn!(target: "server.inbox", "ask page task failed: {e}");
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        }
+    }
+    log(
+        &id,
+        posted_at,
+        crate::session::inbox_log::Event::Refined,
+        None,
+        None,
+    );
+    StatusCode::NO_CONTENT.into_response()
+}
+
+pub async fn post_ask_answer(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<AnswerRequest>,
+) -> axum::response::Response {
+    if let Some(resp) = crate::server::api::read_only_block(&state) {
+        return resp;
+    }
+    if let Some(resp) = crate::server::api::cityhall_block(&state) {
+        return resp;
+    }
+    let input = req.input.trim();
+    if input.is_empty() {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "empty_input",
+            "An answer needs its input",
+        );
+    }
+    let (inst, instances) = match current_ask(&state, &id, req.posted_at).await {
+        Ok(found) => found,
+        Err(resp) => return resp,
+    };
+    let text = inst
+        .priority_ask()
+        .map(|a| a.text.clone())
+        .unwrap_or_default();
+    let message = crate::session::inbox::reply_message(&text, input);
+    let mut answered = Vec::new();
+    for (i, target) in crate::session::inbox::answer_targets(&instances, &id)
+        .into_iter()
+        .enumerate()
+    {
+        // Never revive a pane to deliver an answer: a stopped session gets 502.
+        let sent = send_terminal_message(
+            &state.session_service,
+            &state.status_tx,
+            &target,
+            message.clone(),
+            false,
+        )
+        .await;
+        match sent {
+            Ok(_) => answered.push(target),
+            Err(e) if i == 0 => {
+                return api_error(
+                    StatusCode::BAD_GATEWAY,
+                    "not_delivered",
+                    format!("The session could not take the answer: {}", send_error(&e)),
+                );
+            }
+            Err(e) => {
+                tracing::warn!(target: "server.inbox", session = %target, "merged session missed the answer: {}", send_error(&e))
+            }
+        }
+    }
+    for target in &answered {
+        mark_read(&state, target).await;
+    }
+    log(
+        &id,
+        req.posted_at,
+        crate::session::inbox_log::Event::Answered,
+        Some(req.form),
+        req.ms_open,
+    );
+    Json(serde_json::json!({ "answered": answered })).into_response()
+}
+
+pub async fn get_inbox_log(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(query): axum::extract::Query<LogQuery>,
+) -> axum::response::Response {
+    if let Some(resp) = crate::server::api::cityhall_block(&state) {
+        return resp;
+    }
+    let lines = tokio::task::spawn_blocking(
+        move || -> anyhow::Result<Vec<crate::session::inbox_log::Entry>> {
+            let path = crate::session::inbox_log::log_path()?;
+            let text = match std::fs::read_to_string(&path) {
+                Ok(text) => text,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+                Err(e) => return Err(e.into()),
+            };
+            Ok(text
+                .lines()
+                .filter_map(|l| serde_json::from_str::<crate::session::inbox_log::Entry>(l).ok())
+                .filter(|e| query.since.is_none_or(|since| e.at > since))
+                .collect())
+        },
+    )
+    .await;
+    match lines {
+        Ok(Ok(lines)) => Json(lines).into_response(),
+        Ok(Err(e)) => {
+            tracing::warn!(target: "server.inbox", "inbox log not read: {e:#}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+        Err(e) => {
+            tracing::warn!(target: "server.inbox", "inbox log task failed: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}
+
+fn send_error(e: &SendKeysError) -> &'static str {
+    match e {
+        SendKeysError::NotFound | SendKeysError::Gone => "session not found",
+        SendKeysError::NotRunning => "its pane is not running",
+        SendKeysError::ResumeFailed(_) => "resume failed",
+        SendKeysError::Transient(_) => "it is starting or stopping",
+        SendKeysError::StructuredView => "structured-view sessions take no terminal messages",
+        SendKeysError::Blocked(_) => "it is archived or in the trash",
+        SendKeysError::Tmux(_) | SendKeysError::Internal => "tmux refused the message",
+    }
+}
+
+/// `dismissed` from the Inbox API clears the unread marker too (Done on the list).
+pub(super) async fn clear_on_dismiss(state: &AppState, id: &str) {
+    mark_read(state, id).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::priority::{Ask, AskKind};
+
+    fn asking(id: &str, value: Option<u8>, minutes: Option<u16>) -> Instance {
+        let mut inst = Instance::new(id, "/tmp/inbox-api");
+        inst.id = id.to_string();
+        inst.source_profile = "default".to_string();
+        inst.status = Status::Idle;
+        inst.unread = true;
+        inst.set_priority(
+            Some(5),
+            Some(Ask {
+                kind: Some(AskKind::Answer),
+                text: format!("ask {id}"),
+                value,
+                minutes,
+                ..Ask::default()
+            }),
+        );
+        inst
+    }
+
+    fn seeded(instances: Vec<Instance>) -> Arc<AppState> {
+        Storage::new_unwatched("default")
+            .unwrap()
+            .update(|rows, _| {
+                *rows = instances.clone();
+                Ok(())
+            })
+            .unwrap();
+        crate::server::test_support::build_test_app_state(instances)
+    }
+
+    async fn body(resp: axum::response::Response) -> (StatusCode, serde_json::Value) {
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (
+            status,
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null),
+        )
+    }
+
+    async fn posted(state: &AppState, id: &str) -> chrono::DateTime<chrono::Utc> {
+        state
+            .instances
+            .read()
+            .await
+            .iter()
+            .find(|i| i.id == id)
+            .and_then(|i| i.priority_ask())
+            .and_then(|a| a.posted_at)
+            .unwrap()
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn the_queue_comes_in_inbox_order_with_listed_and_has_page() {
+        let _app = crate::session::test_support::isolate_app_dir();
+        crate::session::set_unread_enabled(true);
+        let mut read = asking("readask", Some(90), Some(1));
+        read.unread = false;
+        let mut paged = asking("quickask", Some(40), Some(2));
+        paged.priority.as_mut().unwrap().ask.as_mut().unwrap().page = true;
+        let state = seeded(vec![asking("slowask", Some(90), Some(30)), read, paged]);
+        let (status, json) = body(get_inbox_asks(State(state)).await).await;
+        assert_eq!(status, StatusCode::OK);
+        let rows = json.as_array().unwrap();
+        let order: Vec<(&str, bool, bool)> = rows
+            .iter()
+            .map(|r| {
+                (
+                    r["session_id"].as_str().unwrap(),
+                    r["listed"].as_bool().unwrap(),
+                    r["has_page"].as_bool().unwrap(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                ("quickask", true, true),
+                ("slowask", true, false),
+                ("readask", false, false)
+            ]
+        );
+        assert_eq!(rows[0]["ask"]["text"], "ask quickask");
+        assert!(rows[0].get("context").is_some());
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn refine_over_http_follows_the_cli_rules() {
+        let _app = crate::session::test_support::isolate_app_dir();
+        let state = seeded(vec![
+            asking("refineme", None, None),
+            asking("target", None, None),
+        ]);
+        let at = posted(&state, "refineme").await;
+        let call = |body: serde_json::Value| {
+            let state = state.clone();
+            async move {
+                let req: RefineRequest = serde_json::from_value(body).unwrap();
+                post_ask_refine(State(state), Path("refineme".into()), Json(req))
+                    .await
+                    .status()
+            }
+        };
+        let ok = serde_json::json!({"for": at, "text": "Approve 40 EUR?", "value": 72, "minutes": 2, "page_html": "<p>x</p>"});
+        assert_eq!(call(ok).await, StatusCode::NO_CONTENT);
+        let stored = Storage::new_unwatched("default").unwrap().load().unwrap();
+        let ask = stored
+            .iter()
+            .find(|i| i.id == "refineme")
+            .unwrap()
+            .priority_ask()
+            .cloned()
+            .unwrap();
+        assert_eq!(
+            (ask.text.as_str(), ask.value, ask.page),
+            ("Approve 40 EUR?", Some(72), true)
+        );
+        assert!(ask.refined_at.is_some());
+        assert_eq!(
+            crate::session::ask_page::read_page("refineme")
+                .unwrap()
+                .as_deref(),
+            Some(&b"<p>x</p>"[..])
+        );
+        let memory = state.instances.read().await;
+        assert_eq!(
+            memory
+                .iter()
+                .find(|i| i.id == "refineme")
+                .unwrap()
+                .priority_ask()
+                .unwrap()
+                .text,
+            "Approve 40 EUR?"
+        );
+        drop(memory);
+        let older = at - chrono::Duration::seconds(5);
+        // (body, status, why)
+        for (b, status, why) in [
+            (
+                serde_json::json!({"for": older, "value": 5}),
+                StatusCode::CONFLICT,
+                "for is not the current ask",
+            ),
+            (
+                serde_json::json!({"for": at, "value": 101}),
+                StatusCode::BAD_REQUEST,
+                "value out of range",
+            ),
+            (
+                serde_json::json!({"for": at}),
+                StatusCode::BAD_REQUEST,
+                "nothing to refine",
+            ),
+            (
+                serde_json::json!({"for": at, "merge_into": "refineme"}),
+                StatusCode::BAD_REQUEST,
+                "merged into itself",
+            ),
+            (
+                serde_json::json!({"for": at, "merge_into": "nosuch"}),
+                StatusCode::BAD_REQUEST,
+                "no such target",
+            ),
+        ] {
+            assert_eq!(call(b).await, status, "{why}");
+        }
+        let req: RefineRequest =
+            serde_json::from_value(serde_json::json!({"for": at, "value": 5})).unwrap();
+        assert_eq!(
+            post_ask_refine(State(state.clone()), Path("nosession".into()), Json(req))
+                .await
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn an_answer_that_cannot_reach_its_session_clears_and_logs_nothing() {
+        let _app = crate::session::test_support::isolate_app_dir();
+        crate::session::set_unread_enabled(true);
+        let state = seeded(vec![asking("answerme", None, None)]);
+        let at = posted(&state, "answerme").await;
+        let call = |body: serde_json::Value| {
+            let state = state.clone();
+            async move {
+                let req: AnswerRequest = serde_json::from_value(body).unwrap();
+                post_ask_answer(State(state), Path("answerme".into()), Json(req))
+                    .await
+                    .status()
+            }
+        };
+        let older = at - chrono::Duration::seconds(5);
+        // (body, status, why)
+        for (b, status, why) in [
+            (
+                serde_json::json!({"for": older, "form": "done", "input": "done"}),
+                StatusCode::CONFLICT,
+                "not the current ask",
+            ),
+            (
+                serde_json::json!({"for": at, "form": "text", "input": "  "}),
+                StatusCode::BAD_REQUEST,
+                "empty input",
+            ),
+            // No tmux pane behind the test session: the message cannot be typed.
+            (
+                serde_json::json!({"for": at, "form": "done", "input": "done"}),
+                StatusCode::BAD_GATEWAY,
+                "unreachable session",
+            ),
+        ] {
+            assert_eq!(call(b).await, status, "{why}");
+        }
+        assert!(
+            state
+                .instances
+                .read()
+                .await
+                .iter()
+                .find(|i| i.id == "answerme")
+                .unwrap()
+                .unread
+        );
+        assert!(
+            !crate::session::inbox_log::log_path().unwrap().exists(),
+            "nothing logged"
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_dismissal_clears_the_unread_marker_without_sending() {
+        let _app = crate::session::test_support::isolate_app_dir();
+        crate::session::set_unread_enabled(true);
+        let state = seeded(vec![asking("dismissme", None, None)]);
+        let at = posted(&state, "dismissme").await;
+        let req: AskEventRequest =
+            serde_json::from_value(serde_json::json!({"event": "dismissed", "posted_at": at}))
+                .unwrap();
+        assert_eq!(
+            post_ask_event(State(state.clone()), Path("dismissme".into()), Json(req))
+                .await
+                .status(),
+            StatusCode::NO_CONTENT
+        );
+        assert!(
+            !state
+                .instances
+                .read()
+                .await
+                .iter()
+                .find(|i| i.id == "dismissme")
+                .unwrap()
+                .unread
+        );
+        let stored = Storage::new_unwatched("default").unwrap().load().unwrap();
+        assert!(
+            !stored.iter().find(|i| i.id == "dismissme").unwrap().unread,
+            "persisted"
+        );
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn the_log_returns_the_lines_after_since() {
+        use crate::session::inbox_log::{append, Entry, Event};
+        let _app = crate::session::test_support::isolate_app_dir();
+        let state = seeded(vec![]);
+        let t = |s: i64| chrono::DateTime::from_timestamp(1_800_000_000 + s, 0).unwrap();
+        for (at, event) in [
+            (t(10), Event::Posted),
+            (t(20), Event::Opened),
+            (t(30), Event::Dismissed),
+        ] {
+            append(&Entry {
+                at,
+                event,
+                session_id: "s".into(),
+                posted_at: t(10),
+                form: None,
+                ms_open: None,
+            })
+            .unwrap();
+        }
+        let get = |since: Option<chrono::DateTime<chrono::Utc>>| {
+            let state = state.clone();
+            async move {
+                body(get_inbox_log(State(state), axum::extract::Query(LogQuery { since })).await)
+                    .await
+            }
+        };
+        let (status, all) = get(None).await;
+        assert_eq!((status, all.as_array().unwrap().len()), (StatusCode::OK, 3));
+        let (_, after) = get(Some(t(15))).await;
+        let events: Vec<&str> = after
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["event"].as_str().unwrap())
+            .collect();
+        assert_eq!(events, vec!["opened", "dismissed"]);
+        let (_, none) = get(Some(t(30))).await;
+        assert_eq!(none.as_array().unwrap().len(), 0, "strictly after");
+    }
+}

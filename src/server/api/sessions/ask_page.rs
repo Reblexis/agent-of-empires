@@ -111,8 +111,15 @@ pub async fn post_ask_event(
         form: req.form,
         ms_open: req.ms_open,
     };
+    let dismissed = entry.event == Event::Dismissed;
+    let session_id = entry.session_id.clone();
     match tokio::task::spawn_blocking(move || inbox_log::append(&entry)).await {
-        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Ok(())) => {
+            if dismissed {
+                super::inbox::clear_on_dismiss(&state, &session_id).await;
+            }
+            StatusCode::NO_CONTENT.into_response()
+        }
         Ok(Err(e)) => api_error(StatusCode::BAD_REQUEST, "bad_event", format!("{e:#}")),
         Err(e) => {
             tracing::warn!(target: "server.inbox", "ask event task failed: {e}");
