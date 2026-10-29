@@ -50,7 +50,7 @@ Opening a session shows a screen at once instead of a "Starting session..." plac
 
 The terminal uses tmux for scrollback and selection, so no modifier keys are involved. Scroll with the wheel or a one-finger swipe. Select by click-dragging; dragging past the top edge scrolls into scrollback and extends the selection, and releasing copies to your system clipboard automatically. While the mouse button is held over the text the view does not follow new output, so the text stays under the pointer.
 
-URLs in the output open in a new tab. A URL styled in several colors, or wrapped by tmux across full-width rows, links every visible part to the whole address; an OSC 8 hyperlink opens the target the program gave it, whatever its visible text.
+URLs in the output open in a new tab. A URL styled in several colors, or wrapped across full-width rows, links every visible part to the whole address; an OSC 8 hyperlink opens the target the program gave it, whatever its visible text. A wrapped URL continues on the next row when that row starts at column 0 (a tmux wrap) or at the text indent of the URL's row (an agent such as Claude Code hard-wrapping its indented reply, list item or tool output), and only with characters a URL can contain.
 
 While a selection touches the terminal the pane stops repainting, so the agent cannot rewrite the text under it mid-gesture, and newly captured history loads in above the held rows. A full-screen mouse agent also gives up its grip on touch gestures while a selection is live, so the handles stay draggable. Such an agent copies through OSC 52 instead, which AoE forwards to the same browser clipboard path.
 

@@ -45,3 +45,14 @@ it("links every row of a URL longer than the rendered width", () => {
   expect(links.every(([, href]) => href === url)).toBe(true);
   expect(links.map(([text]) => text).join("")).toBe(url);
 });
+
+it("links both halves of a URL Claude Code wrapped onto an indented row", () => {
+  // Claude indents its reply and hard-wraps a long URL itself, so the continuation row starts at the indent.
+  const first = "  https://a.io/abcdefghijklm"; // 28 cells
+  const view = renderLiveTerminal({ frame: linesFrame([first, "  nopq", "$ "], { rows: 3, history: 0 }) });
+  observers.settle(150);
+  expect(hrefs(view.content())).toEqual([
+    ["https://a.io/abcdefghijklm", "https://a.io/abcdefghijklmnopq"],
+    ["nopq", "https://a.io/abcdefghijklmnopq"],
+  ]);
+});
