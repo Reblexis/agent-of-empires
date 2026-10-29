@@ -823,7 +823,9 @@ fn perform_deletion_core(
         tracing::warn!(target: "session.delete", session_id = %request.session_id, "forecast card not removed: {error:#}");
     }
     // Stage 8: the session's ask page (docs/guides/session-inbox.md).
-    if let Err(error) = crate::session::ask_page::clear_page(&request.instance.id) {
+    if let Err(error) = crate::session::ask_page::clear_page(&request.instance.id)
+        .and_then(|()| crate::session::ask_page::clear_context(&request.instance.id))
+    {
         tracing::warn!(target: "session.delete", session_id = %request.session_id, "ask page not removed: {error:#}");
     }
 

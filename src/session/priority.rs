@@ -51,6 +51,31 @@ pub struct Ask {
     /// Whether the session posted an ask page (`session::ask_page`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub page: bool,
+    /// When the session posted this ask: the request's identity, which a
+    /// refine must name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub posted_at: Option<DateTime<Utc>>,
+    /// When the input/output agent last refined it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refined_at: Option<DateTime<Utc>>,
+    /// The session whose current ask this one is the same as.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged_into: Option<String>,
+}
+
+/// What `aoe session refine` replaces on a current ask; absent fields stay.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Refine<'a> {
+    pub kind: Option<AskKind>,
+    pub text: Option<&'a str>,
+    pub objective: Option<&'a str>,
+    pub link: Option<&'a str>,
+    pub value: Option<u8>,
+    pub minutes: Option<u16>,
+    pub due: Option<&'a str>,
+    pub options: &'a [String],
+    pub page: bool,
+    pub merge_into: Option<&'a str>,
 }
 
 /// The ask fields as given on the command line, before validation.
@@ -139,6 +164,7 @@ pub fn parse_ask(input: AskInput<'_>) -> Result<Option<Ask>> {
         value: check_value(input.value)?,
         minutes: check_minutes(input.minutes)?,
         due: check_due(input.due)?,
+        ..Ask::default()
     }))
 }
 
@@ -245,11 +271,78 @@ pub fn next_score(
             .filter(|s| is_current(s, run_started_at))
             .and_then(|s| s.ask.clone())
     };
+    let posted = ask.map(|ask| Ask {
+        posted_at: Some(now),
+        ..ask
+    });
     value.map(|value| PriorityScore {
         value,
         set_at: now,
-        ask: ask.or_else(kept),
+        ask: posted.or_else(kept),
     })
+}
+
+/// `aoe session refine`: replace the given fields of the current ask posted at
+/// `posted_at`, stamping `refined_at`. Refuses when there is no current ask,
+/// when it was posted at another time (a newer request replaced it), and on
+/// any field `parse_ask` would refuse. The merge target's validity needs the
+/// other sessions and is checked by the caller.
+pub fn refine_ask(
+    stored: Option<&PriorityScore>,
+    run_started_at: Option<DateTime<Utc>>,
+    posted_at: DateTime<Utc>,
+    refine: Refine<'_>,
+    now: DateTime<Utc>,
+) -> Result<PriorityScore> {
+    let Some(mut score) = stored
+        .filter(|s| is_current(s, run_started_at) && s.ask.is_some())
+        .cloned()
+    else {
+        bail!("no current ask to refine: the session posted none, or ran since");
+    };
+    let ask = score.ask.as_mut().expect("filtered on ask above");
+    if ask.posted_at != Some(posted_at) {
+        bail!(
+            "the session replaced that request: refine the ask posted at {:?}",
+            ask.posted_at
+        );
+    }
+    let nothing = refine.kind.is_none()
+        && refine.text.is_none()
+        && refine.objective.is_none()
+        && refine.link.is_none()
+        && refine.value.is_none()
+        && refine.minutes.is_none()
+        && refine.due.is_none()
+        && refine.options.is_empty()
+        && !refine.page
+        && refine.merge_into.is_none();
+    if nothing {
+        bail!("nothing to refine: give at least one field");
+    }
+    let kind = refine.kind.or(ask.kind);
+    if let Some(text) = one_line(refine.text, "ask", MAX_ASK_TEXT_CHARS)? {
+        ask.text = text;
+    }
+    if let Some(objective) = one_line(refine.objective, "objective", MAX_OBJECTIVE_CHARS)? {
+        ask.objective = Some(objective);
+    }
+    if let Some(link) = one_line(refine.link, "link", MAX_LINK_CHARS)? {
+        ask.link = Some(link);
+    }
+    ask.value = check_value(refine.value)?.or(ask.value);
+    ask.minutes = check_minutes(refine.minutes)?.or(ask.minutes);
+    ask.due = check_due(refine.due)?.or(ask.due.take());
+    if !refine.options.is_empty() {
+        ask.options = parse_options(kind, refine.options)?;
+    }
+    ask.kind = kind;
+    ask.page = ask.page || refine.page;
+    if let Some(into) = refine.merge_into {
+        ask.merged_into = Some(into.to_string());
+    }
+    ask.refined_at = Some(now);
+    Ok(score)
 }
 
 /// The ask the Inbox and pushes show: the current score's, and only while
@@ -348,8 +441,7 @@ mod tests {
             value: None,
             minutes: None,
             due: None,
-            options: Vec::new(),
-            page: false,
+            ..Ask::default()
         }
     }
 
@@ -565,6 +657,156 @@ mod tests {
                 ..AskInput::default()
             })
             .expect_err(needle);
+            assert!(format!("{err:#}").contains(needle), "{needle}: {err:#}");
+        }
+    }
+
+    #[test]
+    fn posting_an_ask_stamps_when_it_was_posted_and_a_rescore_keeps_it() {
+        let posted = next_score(None, Some(8), Some(ask("Pick")), None, t(50)).unwrap();
+        assert_eq!(posted.ask.as_ref().unwrap().posted_at, Some(t(50)));
+        let kept = next_score(Some(&posted), Some(5), None, None, t(60)).unwrap();
+        assert_eq!(
+            kept.ask.unwrap().posted_at,
+            Some(t(50)),
+            "a re-rank is not a new request"
+        );
+        let replaced = next_score(Some(&posted), Some(5), Some(ask("Other")), None, t(70)).unwrap();
+        assert_eq!(replaced.ask.unwrap().posted_at, Some(t(70)));
+    }
+
+    #[test]
+    fn a_refine_replaces_only_the_given_fields_of_the_request_it_was_worked_out_for() {
+        let posted = next_score(
+            None,
+            Some(8),
+            Some(Ask {
+                kind: Some(AskKind::Answer),
+                objective: Some("Social media".into()),
+                ..ask("need a budget number")
+            }),
+            None,
+            t(50),
+        )
+        .unwrap();
+        let options = vec!["40 EUR".to_string(), "20 EUR".to_string()];
+        let refined = refine_ask(
+            Some(&posted),
+            Some(t(10)),
+            t(50),
+            Refine {
+                kind: Some(AskKind::Decide),
+                text: Some(" Approve the  LinkedIn ad budget "),
+                value: Some(72),
+                minutes: Some(2),
+                options: &options,
+                page: true,
+                ..Refine::default()
+            },
+            t(90),
+        )
+        .unwrap();
+        let a = refined.ask.as_ref().unwrap();
+        assert_eq!(a.text, "Approve the LinkedIn ad budget");
+        assert_eq!(
+            (a.kind, a.value, a.minutes, a.page),
+            (Some(AskKind::Decide), Some(72), Some(2), true)
+        );
+        assert_eq!(a.options, options);
+        assert_eq!(
+            a.objective.as_deref(),
+            Some("Social media"),
+            "unnamed fields stay"
+        );
+        assert_eq!((a.posted_at, a.refined_at), (Some(t(50)), Some(t(90))));
+        assert_eq!(
+            (refined.value, refined.set_at),
+            (posted.value, posted.set_at),
+            "score and currency stay"
+        );
+        let merged = refine_ask(
+            Some(&posted),
+            None,
+            t(50),
+            Refine {
+                merge_into: Some("other1"),
+                ..Refine::default()
+            },
+            t(91),
+        )
+        .unwrap();
+        assert_eq!(merged.ask.unwrap().merged_into.as_deref(), Some("other1"));
+        type Refused<'a> = (
+            Option<&'a PriorityScore>,
+            Option<DateTime<Utc>>,
+            DateTime<Utc>,
+            Refine<'a>,
+            &'a str,
+        );
+        // (stored, run_started_at, for, refine, error mentions)
+        let stale_run = Some(t(60));
+        let refused: [Refused; 6] = [
+            (
+                None,
+                None,
+                t(50),
+                Refine {
+                    value: Some(5),
+                    ..Refine::default()
+                },
+                "no current ask",
+            ),
+            (
+                Some(&posted),
+                stale_run,
+                t(50),
+                Refine {
+                    value: Some(5),
+                    ..Refine::default()
+                },
+                "no current ask",
+            ),
+            // Worked out for an older request: the session has since replaced it.
+            (
+                Some(&posted),
+                None,
+                t(40),
+                Refine {
+                    value: Some(5),
+                    ..Refine::default()
+                },
+                "replaced",
+            ),
+            (
+                Some(&posted),
+                None,
+                t(50),
+                Refine::default(),
+                "nothing to refine",
+            ),
+            (
+                Some(&posted),
+                None,
+                t(50),
+                Refine {
+                    value: Some(101),
+                    ..Refine::default()
+                },
+                "0 to 100",
+            ),
+            (
+                Some(&posted),
+                None,
+                t(50),
+                Refine {
+                    options: &options,
+                    ..Refine::default()
+                },
+                "decide",
+            ),
+        ];
+        for (stored, run, at, refine, needle) in refused {
+            let err = refine_ask(stored, run, at, refine, t(99)).expect_err(needle);
             assert!(format!("{err:#}").contains(needle), "{needle}: {err:#}");
         }
     }

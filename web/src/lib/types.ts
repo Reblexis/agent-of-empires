@@ -558,6 +558,11 @@ export interface PriorityAsk {
   options?: string[];
   /** The session posted an ask page (`GET /api/sessions/{id}/ask/page`). */
   page?: boolean;
+  /** When the session posted this request: its identity for refines and events. */
+  posted_at?: string | null;
+  refined_at?: string | null;
+  /** The session whose ask this one is the same as; a merged ask is not listed. */
+  merged_into?: string | null;
 }
 
 /** What `GET /api/sessions` carries per session about its forecast card. */

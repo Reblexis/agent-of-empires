@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { inboxEntries } from "../inbox";
+import { inboxEntries, nextAskId } from "../inbox";
 import type { SessionResponse } from "../types";
 
 const row = (id: string, patch: Partial<SessionResponse> = {}): SessionResponse =>
@@ -102,4 +102,34 @@ it("an entry is the session's ask, or a stand-in ask from its status", () => {
 
 it("a missing priority reads as zero, so an older payload lists nothing", () => {
   expect(inboxEntries([row("old", { priority: undefined })])).toEqual([]);
+});
+
+it("a merged ask is not listed; the one it is merged into is", () => {
+  const sessions = [
+    row("primary", { priority_ask: { text: "Budget?" } }),
+    row("dup", { priority_ask: { text: "Budget too?", merged_into: "primary" } }),
+  ];
+  expect(inboxEntries(sessions).map((e) => e.session.id)).toEqual(["primary"]);
+});
+
+it("after an answer the next posted ask comes up, skipping the answered ones and stand-ins", () => {
+  const ask = (value: number, minutes: number) => ({ priority_ask: { text: "x", value, minutes } });
+  const sessions = [
+    row("first", ask(90, 1)),
+    row("standin", { priority: 9 }),
+    row("second", ask(50, 1)),
+    row("third", ask(10, 1)),
+  ];
+  const done = (...ids: string[]) => new Map(ids.map((id) => [id, null] as [string, string | null]));
+  // (answered in this visit, expected next)
+  const cases: [Map<string, string | null>, string | null][] = [
+    [done("first"), "second"],
+    [done("first", "second"), "third"],
+    [done("first", "second", "third"), null],
+    // A newer ask from an answered session comes up again.
+    [new Map([["first", "2026-10-01T00:00:00Z"]]), "first"],
+  ];
+  for (const [answered, next] of cases) {
+    expect(nextAskId(sessions, answered), [...answered.keys()].join()).toBe(next);
+  }
 });

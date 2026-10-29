@@ -63,7 +63,21 @@ function compare(a: SessionResponse, b: SessionResponse): number {
 
 export function inboxEntries(sessions: readonly SessionResponse[], activeSessionId?: string | null): InboxEntry[] {
   return sessions
-    .filter((s) => s.unread && (s.priority ?? 0) > 0 && s.id !== activeSessionId)
+    .filter((s) => s.unread && (s.priority ?? 0) > 0 && s.id !== activeSessionId && !s.priority_ask?.merged_into)
     .sort(compare)
     .map((session) => ({ session, ...ask(session) }));
+}
+
+/** The session of the next posted ask in Inbox order, leaving out the asks
+ *  answered in this visit (session id to the answered ask's `posted_at`; the
+ *  polled list may still show them) but not a newer ask from the same
+ *  session; null when none. */
+export function nextAskId(
+  sessions: readonly SessionResponse[],
+  answered: ReadonlyMap<string, string | null>,
+): string | null {
+  const left = sessions.filter(
+    (s) => !answered.has(s.id) || answered.get(s.id) !== (s.priority_ask?.posted_at ?? null),
+  );
+  return inboxEntries(left).find((e) => e.posted)?.session.id ?? null;
 }

@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { setSessionUnread } from "../lib/api";
+import { postAskEvent, setSessionUnread } from "../lib/api";
 import { inboxEntries, type InboxEntry } from "../lib/inbox";
 import type { SessionResponse } from "../lib/types";
 
@@ -65,7 +65,11 @@ function Entry({
         {!readOnly && (
           <button
             type="button"
-            onClick={() => void setSessionUnread(session.id, false)}
+            onClick={() => {
+              const postedAt = session.priority_ask?.posted_at;
+              if (entry.posted && postedAt) void postAskEvent(session.id, { event: "dismissed", posted_at: postedAt });
+              void setSessionUnread(session.id, false);
+            }}
             className="ml-auto shrink-0 cursor-pointer rounded px-2 py-0.5 text-[11px] text-text-secondary hover:bg-surface-800 hover:text-text-primary"
           >
             Done

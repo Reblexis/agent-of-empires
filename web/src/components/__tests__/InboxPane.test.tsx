@@ -5,7 +5,11 @@ import { InboxPane } from "../InboxPane";
 import type { SessionResponse } from "../../lib/types";
 
 const setSessionUnread = vi.fn((_id: string, _unread: boolean) => Promise.resolve(null));
-vi.mock("../../lib/api", () => ({ setSessionUnread: (id: string, unread: boolean) => setSessionUnread(id, unread) }));
+const postAskEvent = vi.fn((_id: string, _event: object) => Promise.resolve());
+vi.mock("../../lib/api", () => ({
+  setSessionUnread: (id: string, unread: boolean) => setSessionUnread(id, unread),
+  postAskEvent: (id: string, event: object) => postAskEvent(id, event),
+}));
 
 afterEach(() => {
   cleanup();
@@ -30,6 +34,7 @@ const decide = {
   link: "https://telarchy.test/ads",
   value: 72,
   minutes: 2,
+  posted_at: "2026-10-28T20:00:00Z",
 };
 
 it("puts the ask to do next on top, each with its kind, line, objective and session", () => {
@@ -65,6 +70,7 @@ it("Done marks an ask done elsewhere as read without opening its session", () =>
   render(<InboxPane sessions={[row("a", 8, decide)]} onOpen={onOpen} onOpenAsk={() => {}} />);
   fireEvent.click(screen.getByRole("button", { name: "Done" }));
   expect(setSessionUnread).toHaveBeenCalledWith("a", false);
+  expect(postAskEvent).toHaveBeenCalledWith("a", { event: "dismissed", posted_at: "2026-10-28T20:00:00Z" });
   expect(onOpen).not.toHaveBeenCalled();
 });
 

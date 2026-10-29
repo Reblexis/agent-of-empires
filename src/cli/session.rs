@@ -126,6 +126,13 @@ pub enum SessionCommands {
     /// estimate. See docs/guides/session-inbox.md.
     Rank(super::session_priority::RankArgs),
 
+    /// For the input/output agent: replace fields of a session's current
+    /// Inbox ask, or merge it into another's. See docs/guides/session-inbox.md.
+    Refine(super::session_priority::RefineArgs),
+
+    /// Print every current Inbox ask as JSON, with its request context.
+    Asks,
+
     /// List the sessions currently in the trash.
     ListTrash,
 
@@ -446,6 +453,8 @@ pub async fn run(profile: &str, command: SessionCommands) -> Result<()> {
         SessionCommands::Forecast(command) => super::session_forecast::run(profile, command).await,
         SessionCommands::Priority(args) => super::session_priority::run(profile, args).await,
         SessionCommands::Rank(args) => super::session_priority::run_rank(profile, args).await,
+        SessionCommands::Refine(args) => super::session_priority::run_refine(profile, args).await,
+        SessionCommands::Asks => super::session_priority::run_asks().await,
         SessionCommands::ListTrash => list_trash(profile).await,
         SessionCommands::EmptyTrash => empty_trash(profile).await,
     }

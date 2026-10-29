@@ -145,6 +145,7 @@ import { visibleToFullIndex, type DropTarget } from "./components/paneDnd";
 import { BackgroundAgentsPanel } from "./components/acp/BackgroundAgentsPanel";
 import { TimelinePane } from "./components/TimelinePane";
 import { InboxPane } from "./components/InboxPane";
+import { nextAskId } from "./lib/inbox";
 import { AskPage } from "./components/AskPage";
 import { ContextPane } from "./components/ContextPane";
 import { DiffPane } from "./components/DiffPane";
@@ -1030,6 +1031,17 @@ function AppContent({
     [isCoarse],
   );
 
+  // Asks answered in this visit, by session, until the polled list drops them.
+  const answeredAsks = useRef(new Map<string, string | null>());
+  const handleAskDone = useCallback(
+    (answered: string[]) => {
+      for (const id of answered)
+        answeredAsks.current.set(id, sessions.find((s) => s.id === id)?.priority_ask?.posted_at ?? null);
+      const next = nextAskId(sessions, answeredAsks.current);
+      navigate(next ? `/ask/${encodeURIComponent(next)}` : "/");
+    },
+    [sessions, navigate],
+  );
   const handleOpenAsk = useCallback(
     (sessionId: string) => navigate(`/ask/${encodeURIComponent(sessionId)}`),
     [navigate],
@@ -2196,8 +2208,9 @@ function AppContent({
         <AskPage
           key={askSession.id}
           session={askSession}
+          followers={sessions.filter((s) => s.priority_ask?.merged_into === askSession.id)}
           onOpenSession={handleSelectSession}
-          onDone={() => navigate("/")}
+          onDone={handleAskDone}
           readOnly={!!serverAbout?.read_only}
         />
       );
