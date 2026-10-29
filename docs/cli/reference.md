@@ -47,6 +47,9 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe session rank`↴](#aoe-session-rank)
 * [`aoe session refine`↴](#aoe-session-refine)
 * [`aoe session asks`↴](#aoe-session-asks)
+* [`aoe session inbox-key`↴](#aoe-session-inbox-key)
+* [`aoe session inbox-key rotate`↴](#aoe-session-inbox-key-rotate)
+* [`aoe session inbox-key show`↴](#aoe-session-inbox-key-show)
 * [`aoe session list-trash`↴](#aoe-session-list-trash)
 * [`aoe session empty-trash`↴](#aoe-session-empty-trash)
 * [`aoe group`↴](#aoe-group)
@@ -448,6 +451,7 @@ Manage session lifecycle (start, stop, attach, etc.)
 * `rank` — Override the value, minutes or due of the session's current Inbox ask, so the queue reflects the whole picture rather than the session's own estimate. See docs/guides/session-inbox.md
 * `refine` — For the input/output agent: replace fields of a session's current Inbox ask, or merge it into another's. See docs/guides/session-inbox.md
 * `asks` — Print every current Inbox ask as JSON, with its request context
+* `inbox-key` — The Inbox key: the bearer the input/output agent uses on the Inbox API, and nothing else. See docs/guides/session-inbox.md
 * `list-trash` — List the sessions currently in the trash
 * `empty-trash` — Permanently purge every trashed session in the profile (irreversible)
 
@@ -904,6 +908,35 @@ For the input/output agent: replace fields of a session's current Inbox ask, or 
 Print every current Inbox ask as JSON, with its request context
 
 **Usage:** `aoe session asks`
+
+
+
+## `aoe session inbox-key`
+
+The Inbox key: the bearer the input/output agent uses on the Inbox API, and nothing else. See docs/guides/session-inbox.md
+
+**Usage:** `aoe session inbox-key <COMMAND>`
+
+###### **Subcommands:**
+
+* `rotate` — Write a new key and print it; the old one stops working at once
+* `show` — Print the current key
+
+
+
+## `aoe session inbox-key rotate`
+
+Write a new key and print it; the old one stops working at once
+
+**Usage:** `aoe session inbox-key rotate`
+
+
+
+## `aoe session inbox-key show`
+
+Print the current key
+
+**Usage:** `aoe session inbox-key show`
 
 
 

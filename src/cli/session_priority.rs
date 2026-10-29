@@ -205,7 +205,7 @@ fn refine(
     refine: priority::Refine<'_>,
     page: Option<&[u8]>,
 ) -> Result<String> {
-    use anyhow::{bail, Context};
+    use anyhow::Context;
     let refine = priority::Refine {
         page: refine.page || page.is_some(),
         ..refine
@@ -216,17 +216,7 @@ fn refine(
     let (home, id) = resolve_home(profile, Some(session), None)?;
     let title = Storage::new_unwatched(&home)?.update(|instances, _groups| {
         if let Some(into) = refine.merge_into {
-            if into == id {
-                bail!("an ask cannot be merged into itself");
-            }
-            let target = instances.iter().find(|i| i.id == into);
-            match target.and_then(|t| t.priority_ask()) {
-                Some(ask) if ask.merged_into.is_none() => {}
-                Some(_) => {
-                    bail!("session {into}'s ask is itself merged; merge into the one it names")
-                }
-                None => bail!("session {into} has no current ask to merge into"),
-            }
+            crate::session::inbox::check_merge(instances, &id, into)?;
         }
         super::patch_instance(instances, &id, |inst| {
             inst.priority = Some(priority::refine_ask(
@@ -253,18 +243,7 @@ fn asks_json(
 ) -> Vec<serde_json::Value> {
     instances
         .iter()
-        .filter_map(|inst| {
-            let ask = inst.priority_ask()?;
-            Some(serde_json::json!({
-                "session_id": inst.id,
-                "title": inst.title,
-                "profile": inst.source_profile,
-                "status": inst.status.as_str(),
-                "priority": inst.effective_priority(),
-                "ask": ask,
-                "context": context(&inst.id),
-            }))
-        })
+        .filter_map(|inst| crate::session::inbox::ask_json(inst, context(&inst.id)))
         .collect()
 }
 
@@ -365,6 +344,25 @@ pub async fn run_asks() -> Result<()> {
         }));
     }
     println!("{}", serde_json::to_string_pretty(&asks)?);
+    Ok(())
+}
+
+#[derive(clap::Subcommand)]
+pub enum InboxKeyCommands {
+    /// Write a new key and print it; the old one stops working at once.
+    Rotate,
+    /// Print the current key.
+    Show,
+}
+
+pub fn run_inbox_key(command: InboxKeyCommands) -> Result<()> {
+    let key = match command {
+        InboxKeyCommands::Rotate => crate::session::inbox::rotate_key()?,
+        InboxKeyCommands::Show => crate::session::inbox::read_key()?.ok_or_else(|| {
+            anyhow::anyhow!("no Inbox key yet: run `aoe session inbox-key rotate`")
+        })?,
+    };
+    println!("{key}");
     Ok(())
 }
 

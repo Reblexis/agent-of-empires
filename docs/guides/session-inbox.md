@@ -156,6 +156,49 @@ milliseconds. The dashboard reports page events with
 `POST /api/sessions/{id}/ask/events` (`{event, posted_at, form?, ms_open?}`,
 refused in read-only mode and for an ask that is not current).
 
+### The Inbox API and its key
+
+The input/output agent may run on another machine and its user-facing queue on
+another site (on Viktor's machine, io-agent in a fleet body, the queue at
+vcihal.com/io). It reaches the daemon over HTTPS with the **Inbox key**: a
+bearer token of its own, separate from the login, the passphrase and
+`serve.token`.
+
+- `aoe session inbox-key rotate` writes a new random key to
+  `<app_dir>/inbox.key` (mode 0600) and prints it; the old key stops working at
+  once. `aoe session inbox-key show` prints the current one. With no key file,
+  no request is treated as carrying the key.
+- A request whose `Authorization: Bearer` is the Inbox key is let through on
+  exactly the routes below and refused with `401` on every other, before any
+  other check: no session reads, no terminal, no websockets, no settings, and it
+  never passes the passphrase wall for anything else. Any other bearer goes on
+  through the usual checks. The dashboard's own sign-in reaches the same routes.
+- `GET /api/inbox/asks`: the JSON of `aoe session asks`, each object also
+  carrying `listed` (it passes "What is listed" below) and `has_page`, in Inbox
+  order: listed asks first by the Order rules, then the rest in the same order.
+- `GET /api/sessions/{id}/ask/page`: the ask page (above).
+- `POST /api/sessions/{id}/ask/refine`: `{for, text?, ask?, objective?, link?,
+  value?, minutes?, due?, options?, page_html?, merge_into?}`, the same rules
+  and refusals as `aoe session refine` (`for` is the ask's `posted_at`;
+  `page_html` the page itself). `409` when `for` is not the current ask's,
+  `400` for a refused field, `404` without the session; `204` on success.
+- `POST /api/sessions/{id}/ask/answer`: `{for, form, input, ms_open}`, `form`
+  one of `option`, `text`, `done`. Exactly what the dashboard's ask page does:
+  types `Inbox reply to "<ask text>": <input>` into the session and into every
+  session whose current ask is merged into it, clears their unread markers, and
+  logs `answered`. `409` when the ask is no longer current, `400` for an empty
+  input or an unknown form, `502` when the session itself could not take the
+  message (nothing is cleared or logged then); `200` with
+  `{"answered": [<session ids>]}`, which leaves out a merged session that could
+  not take it.
+- `POST /api/sessions/{id}/ask/events` (Measuring, above). `dismissed` also
+  clears the unread marker, without sending anything, like Done on the list.
+- `GET /api/inbox/log?since=<rfc3339>`: the lines of `inbox-log.jsonl` stamped
+  after `since` (all of them without it), as a JSON array.
+
+All of these are refused in read-only and CityHall mode, except the two reads in
+read-only mode.
+
 ## What is listed
 
 A session is in the Inbox while all hold:

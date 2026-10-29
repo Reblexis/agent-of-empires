@@ -138,6 +138,10 @@ pub(super) fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/api/sessions/{id}/ask/page", get(api::get_ask_page))
         .route("/api/sessions/{id}/ask/events", post(api::post_ask_event))
+        .route("/api/sessions/{id}/ask/refine", post(api::post_ask_refine))
+        .route("/api/sessions/{id}/ask/answer", post(api::post_ask_answer))
+        .route("/api/inbox/asks", get(api::get_inbox_asks))
+        .route("/api/inbox/log", get(api::get_inbox_log))
         .route(
             "/api/sessions/{id}/forecast",
             get(api::get_session_forecast),

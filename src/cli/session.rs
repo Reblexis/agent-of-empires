@@ -133,6 +133,11 @@ pub enum SessionCommands {
     /// Print every current Inbox ask as JSON, with its request context.
     Asks,
 
+    /// The Inbox key: the bearer the input/output agent uses on the Inbox API,
+    /// and nothing else. See docs/guides/session-inbox.md.
+    #[command(subcommand)]
+    InboxKey(super::session_priority::InboxKeyCommands),
+
     /// List the sessions currently in the trash.
     ListTrash,
 
@@ -455,6 +460,7 @@ pub async fn run(profile: &str, command: SessionCommands) -> Result<()> {
         SessionCommands::Rank(args) => super::session_priority::run_rank(profile, args).await,
         SessionCommands::Refine(args) => super::session_priority::run_refine(profile, args).await,
         SessionCommands::Asks => super::session_priority::run_asks().await,
+        SessionCommands::InboxKey(command) => super::session_priority::run_inbox_key(command),
         SessionCommands::ListTrash => list_trash(profile).await,
         SessionCommands::EmptyTrash => empty_trash(profile).await,
     }

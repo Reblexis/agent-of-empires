@@ -24,6 +24,7 @@ pub(crate) mod handoff;
 pub mod hibernate;
 pub mod idle_reap;
 pub mod import;
+pub mod inbox;
 pub mod inbox_log;
 mod instance;
 pub mod mcp;
