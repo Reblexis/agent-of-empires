@@ -122,6 +122,10 @@ export const NO_LINKS: LinkSpan[] = [];
 
 /** How many extra rows a wrapped URL may continue across; bounds the join walk. */
 const MAX_URL_CONTINUATION_ROWS = 8;
+/** A row's text column: its indent plus a list or tool-output marker, where an agent's hard wrap resumes. */
+const TEXT_COLUMN_RE = /^\s*(?:(?:[-*+•⎿]|\d+[.)])\s+)?/;
+/** A continuation row: indent, then the run of characters a URL can contain. */
+const URL_CONTINUATION_RE = /^(\s*)([A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]+)/;
 
 interface RowMatch {
   index: number;
@@ -192,17 +196,21 @@ export function computeRowLinks(
       if (explicit.some((s) => s.start < m.index + m.raw.length && s.end > m.index)) continue;
       let raw = m.raw;
       let end = m.index + raw.length;
-      // A match running to the end of a full-width row continues with the next row's leading non-space run, for as
-      // long as the wrap keeps filling the width.
-      const contSpans: { row: number; end: number }[] = [];
+      // A match running to the end of a full-width row continues with the next row's leading URL run, for as long as
+      // the wrap keeps filling the width. tmux wraps to column 0; an agent that hard-wraps its own indented output
+      // (Claude Code) resumes at the row's text column.
+      const contSpans: { row: number; start: number; end: number }[] = [];
       if (end === text.length && textWidth(text) === cols) {
+        const textColumn = TEXT_COLUMN_RE.exec(text)![0].length;
         let j = i + 1;
         while (j < rows.length && j - i <= MAX_URL_CONTINUATION_ROWS) {
           const next = texts[j]!;
-          const frag = /^\S+/.exec(next);
+          const frag = URL_CONTINUATION_RE.exec(next);
           if (!frag) break;
-          raw += frag[0];
-          contSpans.push({ row: j, end: frag[0].length });
+          const indent = frag[1]!.length;
+          if (indent !== 0 && indent !== textColumn) break;
+          raw += frag[2]!;
+          contSpans.push({ row: j, start: indent, end: frag[0].length });
           if (frag[0].length === next.length && textWidth(next) === cols) {
             j++;
             continue;
@@ -217,14 +225,14 @@ export function computeRowLinks(
       if (contSpans.length > 0) {
         const last = contSpans[contSpans.length - 1]!;
         last.end -= cut;
-        if (last.end <= 0) contSpans.pop();
+        if (last.end <= last.start) contSpans.pop();
       } else {
         end -= cut;
       }
       if (end > m.index) spans.push({ start: m.index, end, href });
       for (const c of contSpans) {
         const rowSpans = result[c.row] === NO_LINKS ? [] : [...result[c.row]!];
-        rowSpans.push({ start: 0, end: c.end, href });
+        rowSpans.push({ start: c.start, end: c.end, href });
         result[c.row] = rowSpans;
         resumeAt[c.row] = Math.max(resumeAt[c.row]!, c.end);
       }

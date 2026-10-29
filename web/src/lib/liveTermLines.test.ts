@@ -343,6 +343,74 @@ describe("computeRowLinks", () => {
     expect(links[1]).toBe(NO_LINKS);
   });
 
+  it("links the whole door URL when Claude Code wraps it onto an indented row", () => {
+    // The 2026-10-29 Mercury door links: a 103-col pane, Claude indents its reply by 2 and hard-wraps the URL itself,
+    // so the second row carries the indent too. Clicking either row must open the full link.
+    const href =
+      "https://twin.94-130-70-182.nip.io/__door/k/1793251147.7ec8a92042c80b46c81872f4.C7GUrgCh4CuDAnZvLeZKtYyj4JZqmL2-AzRfuesjYc4?screen=2";
+    const links = computeRowLinks([row("  " + href.slice(0, 101)), row("  " + href.slice(101)), row("")], 103);
+    expect(links[0]).toEqual([{ start: 2, end: 103, href }]);
+    expect(links[1]).toEqual([{ start: 2, end: 2 + href.length - 101, href }]);
+  });
+
+  it("joins a continuation indented to the URL row's text column", () => {
+    const cases: [string, AnsiSegment[][], number, LinkSpan[][]][] = [
+      [
+        "list item with a hanging indent",
+        [row("  - go https://a.io/ab"), row("    cdef next")],
+        22,
+        [[{ start: 7, end: 22, href: "https://a.io/abcdef" }], [{ start: 4, end: 8, href: "https://a.io/abcdef" }]],
+      ],
+      [
+        "numbered list item",
+        [row("  1. https://a.io/abc"), row("     def")],
+        21,
+        [[{ start: 5, end: 21, href: "https://a.io/abcdef" }], [{ start: 5, end: 8, href: "https://a.io/abcdef" }]],
+      ],
+      [
+        "Claude Code tool output",
+        [row("  ⎿  https://a.io/abc"), row("     def")],
+        21,
+        [[{ start: 5, end: 21, href: "https://a.io/abcdef" }], [{ start: 5, end: 8, href: "https://a.io/abcdef" }]],
+      ],
+      [
+        "several indented rows",
+        [row("  https://a.io/0"), row("  1234567890abcd"), row("  ef end")],
+        16,
+        [
+          [{ start: 2, end: 16, href: "https://a.io/01234567890abcdef" }],
+          [{ start: 2, end: 16, href: "https://a.io/01234567890abcdef" }],
+          [{ start: 2, end: 4, href: "https://a.io/01234567890abcdef" }],
+        ],
+      ],
+      [
+        // tmux soft-wraps a long raw line to column 0 whatever the first row's indent.
+        "tmux wrap of an indented line",
+        [row("  see https://a.io/a"), row("bcd done")],
+        20,
+        [[{ start: 6, end: 20, href: "https://a.io/abcd" }], [{ start: 0, end: 3, href: "https://a.io/abcd" }]],
+      ],
+    ];
+    for (const [name, rows, cols, expected] of cases) {
+      expect(computeRowLinks(rows, cols), name).toEqual(expected);
+    }
+  });
+
+  it("does not join a continuation that is not a URL wrap", () => {
+    const cases: [string, AnsiSegment[][], number][] = [
+      // Indent is neither 0 nor the URL row's text column.
+      ["deeper indent", [row("  https://a.io/abc"), row("      unrelated")], 18],
+      ["indent under an unindented row", [row("https://a.io/abcd"), row("  next")], 17],
+      // Claude's truncated tool output: the ellipsis row is not part of the URL.
+      ["non-URL characters", [row("     https://a.io/a"), row("     … +7 lines")], 19],
+    ];
+    for (const [name, rows, cols] of cases) {
+      const links = computeRowLinks(rows, cols);
+      expect(links[1], name).toBe(NO_LINKS);
+      expect(links[0]![0]!.end, name).toBe(cols);
+    }
+  });
+
   it("does not join when the row is not full width", () => {
     // 40-col pane: the URL ends mid-row, so the newline is a real break.
     const links = computeRowLinks([row("see https://a.io/abc"), row("next line")], 40);
