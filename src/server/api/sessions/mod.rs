@@ -31,6 +31,7 @@ use super::AppState;
 use super::{api_error, bare_not_found, find_instance, session_not_found, validate_display_label};
 
 mod artifacts;
+mod ask_page;
 mod create;
 mod delete;
 mod diff;
@@ -45,6 +46,7 @@ mod send;
 mod update;
 
 pub use artifacts::*;
+pub use ask_page::*;
 pub use create::*;
 pub use delete::*;
 pub use diff::*;

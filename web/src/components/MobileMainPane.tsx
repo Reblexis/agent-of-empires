@@ -53,6 +53,7 @@ interface Props {
   onCloseSendDialog: () => void;
   onClearSelectedFile: () => void;
   onOpenSession: (sessionId: string) => void;
+  onOpenAsk: (sessionId: string) => void;
   readOnly: boolean;
 }
 
@@ -95,6 +96,7 @@ export function MobileMainPane({
   onCloseSendDialog,
   onClearSelectedFile,
   onOpenSession,
+  onOpenAsk,
   readOnly,
 }: Props) {
   const activePluginPane = isPluginPaneId(view) ? (pluginPanes.find((p) => p.id === view) ?? null) : null;
@@ -261,6 +263,7 @@ export function MobileMainPane({
               sessions={sessions}
               activeSessionId={activeSessionId}
               onOpen={onOpenSession}
+              onOpenAsk={onOpenAsk}
               readOnly={readOnly}
             />
           </div>

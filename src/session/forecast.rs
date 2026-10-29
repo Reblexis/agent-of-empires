@@ -302,7 +302,7 @@ pub fn summaries() -> HashMap<String, ForecastSummary> {
 
 /// Every session id in every profile, trashed ones included. Fails when any
 /// profile cannot be read, so a partial view never judges a card an orphan.
-fn all_session_ids() -> Result<HashSet<String>> {
+pub(crate) fn all_session_ids() -> Result<HashSet<String>> {
     let mut ids = HashSet::new();
     for profile in super::list_profiles()? {
         let instances = super::Storage::open_unwatched(&profile)?

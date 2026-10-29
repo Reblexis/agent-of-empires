@@ -24,7 +24,7 @@ pub struct PriorityScore {
 }
 
 /// One concrete ask of the user.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Ask {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kind: Option<AskKind>,
@@ -35,6 +35,44 @@ pub struct Ask {
     /// A URL or a command to run.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<String>,
+    /// How much doing it moves the objective times the objective's
+    /// importance, 0 to 100.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<u8>,
+    /// Estimated minutes of the user's attention, 1 to 480.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minutes: Option<u16>,
+    /// When doing it stops being worth as much: `YYYY-MM-DD` or RFC 3339.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub due: Option<String>,
+    /// The choices of a `decide` ask; empty means Yes and No.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
+    /// Whether the session posted an ask page (`session::ask_page`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub page: bool,
+}
+
+/// The ask fields as given on the command line, before validation.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct AskInput<'a> {
+    pub kind: Option<AskKind>,
+    pub text: Option<&'a str>,
+    pub objective: Option<&'a str>,
+    pub link: Option<&'a str>,
+    pub value: Option<u8>,
+    pub minutes: Option<u16>,
+    pub due: Option<&'a str>,
+    pub options: &'a [String],
+    pub page: bool,
+}
+
+/// What `aoe session rank` sets on a current ask; absent fields stay.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Rank<'a> {
+    pub value: Option<u8>,
+    pub minutes: Option<u16>,
+    pub due: Option<&'a str>,
 }
 
 #[derive(
@@ -67,30 +105,115 @@ impl AskKind {
 pub const MAX_ASK_TEXT_CHARS: usize = 300;
 pub const MAX_OBJECTIVE_CHARS: usize = 80;
 pub const MAX_LINK_CHARS: usize = 500;
+pub const MAX_OPTIONS: usize = 6;
+pub const MAX_OPTION_CHARS: usize = 40;
 
-/// Build the ask from the CLI parts: each is trimmed with whitespace runs
-/// collapsed, an empty part is absent, an over-long one is refused, and kind,
-/// objective or link without text is refused. Nothing given is no ask.
-pub fn parse_ask(
-    kind: Option<AskKind>,
-    text: Option<&str>,
-    objective: Option<&str>,
-    link: Option<&str>,
-) -> Result<Option<Ask>> {
-    let objective = one_line(objective, "objective", MAX_OBJECTIVE_CHARS)?;
-    let link = one_line(link, "link", MAX_LINK_CHARS)?;
-    let Some(text) = one_line(text, "ask", MAX_ASK_TEXT_CHARS)? else {
-        if kind.is_some() || objective.is_some() || link.is_some() {
+/// Build the ask from the CLI parts: each text part is trimmed with
+/// whitespace runs collapsed, an empty part is absent, an over-long or
+/// out-of-range one is refused, and any field without text is refused.
+/// Nothing given is no ask.
+pub fn parse_ask(input: AskInput<'_>) -> Result<Option<Ask>> {
+    let objective = one_line(input.objective, "objective", MAX_OBJECTIVE_CHARS)?;
+    let link = one_line(input.link, "link", MAX_LINK_CHARS)?;
+    let Some(text) = one_line(input.text, "ask", MAX_ASK_TEXT_CHARS)? else {
+        if input.kind.is_some()
+            || objective.is_some()
+            || link.is_some()
+            || input.value.is_some()
+            || input.minutes.is_some()
+            || input.due.is_some()
+            || !input.options.is_empty()
+            || input.page
+        {
             bail!("an ask needs its one line saying what to do");
         }
         return Ok(None);
     };
     Ok(Some(Ask {
-        kind,
+        kind: input.kind,
         text,
         objective,
         link,
+        options: parse_options(input.kind, input.options)?,
+        page: input.page,
+        value: check_value(input.value)?,
+        minutes: check_minutes(input.minutes)?,
+        due: check_due(input.due)?,
     }))
+}
+
+fn check_value(value: Option<u8>) -> Result<Option<u8>> {
+    if let Some(v) = value.filter(|v| *v > 100) {
+        bail!("value must be 0 to 100, got {v}");
+    }
+    Ok(value)
+}
+
+fn check_minutes(minutes: Option<u16>) -> Result<Option<u16>> {
+    if let Some(m) = minutes.filter(|m| !(1..=480).contains(m)) {
+        bail!("minutes must be 1 to 480, got {m}");
+    }
+    Ok(minutes)
+}
+
+fn check_due(due: Option<&str>) -> Result<Option<String>> {
+    let Some(due) = due.map(str::trim).filter(|d| !d.is_empty()) else {
+        return Ok(None);
+    };
+    let parses = chrono::NaiveDate::parse_from_str(due, "%Y-%m-%d").is_ok()
+        || DateTime::parse_from_rfc3339(due).is_ok();
+    if !parses {
+        bail!("due must be YYYY-MM-DD or an RFC 3339 time, got {due:?}");
+    }
+    Ok(Some(due.to_string()))
+}
+
+fn parse_options(kind: Option<AskKind>, raw: &[String]) -> Result<Vec<String>> {
+    if raw.is_empty() {
+        return Ok(Vec::new());
+    }
+    if kind != Some(AskKind::Decide) {
+        bail!("options belong to a decide ask");
+    }
+    if raw.len() > MAX_OPTIONS {
+        bail!(
+            "a decide ask has at most {MAX_OPTIONS} options, got {}",
+            raw.len()
+        );
+    }
+    raw.iter()
+        .map(|o| match one_line(Some(o), "option", MAX_OPTION_CHARS)? {
+            Some(o) => Ok(o),
+            None => bail!("an option must not be empty"),
+        })
+        .collect()
+}
+
+/// `aoe session rank`: set the given estimates on the current ask, leaving the
+/// rest and the score's stamp alone. Refuses when nothing is given, when a
+/// field is out of range, or when there is no current ask.
+pub fn rank_ask(
+    stored: Option<&PriorityScore>,
+    run_started_at: Option<DateTime<Utc>>,
+    rank: Rank<'_>,
+) -> Result<PriorityScore> {
+    if rank.value.is_none() && rank.minutes.is_none() && rank.due.is_none() {
+        bail!("give at least one of --value, --minutes, --due");
+    }
+    let value = check_value(rank.value)?;
+    let minutes = check_minutes(rank.minutes)?;
+    let due = check_due(rank.due)?;
+    let Some(mut score) = stored
+        .filter(|s| is_current(s, run_started_at) && s.ask.is_some())
+        .cloned()
+    else {
+        bail!("no current ask to rank: the session posted none, or ran since");
+    };
+    let ask = score.ask.as_mut().expect("filtered on ask above");
+    ask.value = value.or(ask.value);
+    ask.minutes = minutes.or(ask.minutes);
+    ask.due = due.or(ask.due.take());
+    Ok(score)
 }
 
 /// Trim and collapse whitespace; empty is none, over `max` characters refused.
@@ -222,6 +345,11 @@ mod tests {
             text: text.to_string(),
             objective: None,
             link: None,
+            value: None,
+            minutes: None,
+            due: None,
+            options: Vec::new(),
+            page: false,
         }
     }
 
@@ -238,101 +366,300 @@ mod tests {
     }
 
     #[test]
-    fn an_ask_is_one_concrete_line_with_an_optional_kind_objective_and_link() {
+    fn an_ask_is_one_concrete_line_with_optional_kind_objective_link_value_minutes_and_due() {
         use AskKind::*;
-        let full = Ask {
-            kind: Some(Learn),
-            text: "Read the creator pricing note".into(),
-            objective: Some("YouTube creators product".into()),
-            link: Some("https://example.com/note".into()),
+        let input = |text: &'static str| AskInput {
+            text: Some(text),
+            ..AskInput::default()
         };
-        type Accepted<'a> = (
-            Option<AskKind>,
-            Option<&'a str>,
-            Option<&'a str>,
-            Option<&'a str>,
-            Option<Ask>,
-        );
-        // (kind, text, objective, link, expected)
-        let cases: [Accepted; 6] = [
-            (None, None, None, None, None),
-            (None, Some("  \n "), None, None, None),
+        let umlauts: &'static str = Box::leak("ü".repeat(MAX_ASK_TEXT_CHARS).into_boxed_str());
+        let cases: [(AskInput, Option<Ask>); 8] = [
+            (AskInput::default(), None),
+            (input("  \n "), None),
             (
-                None,
-                Some("  Approve the\n\n ad   budget "),
-                None,
-                None,
+                input("  Approve the\n\n ad   budget "),
                 Some(ask("Approve the ad budget")),
             ),
             (
-                Some(Learn),
-                Some("Read the creator pricing note"),
-                Some(" YouTube  creators product "),
-                Some("https://example.com/note "),
-                Some(full),
+                AskInput {
+                    kind: Some(Learn),
+                    objective: Some(" YouTube  creators product "),
+                    link: Some("https://example.com/note "),
+                    value: Some(72),
+                    minutes: Some(5),
+                    due: Some("2026-10-29"),
+                    ..input("Read the creator pricing note")
+                },
+                Some(Ask {
+                    kind: Some(Learn),
+                    objective: Some("YouTube creators product".into()),
+                    link: Some("https://example.com/note".into()),
+                    value: Some(72),
+                    minutes: Some(5),
+                    due: Some("2026-10-29".into()),
+                    ..ask("Read the creator pricing note")
+                }),
             ),
             (
-                Some(Decide),
-                Some("Pick a date"),
-                Some(""),
-                Some(""),
+                AskInput {
+                    kind: Some(Decide),
+                    objective: Some(""),
+                    link: Some(""),
+                    ..input("Pick a date")
+                },
                 Some(Ask {
                     kind: Some(Decide),
                     ..ask("Pick a date")
                 }),
             ),
+            (input(umlauts), Some(ask(umlauts))),
+            // The range ends are accepted.
             (
-                None,
-                Some(&"ü".repeat(MAX_ASK_TEXT_CHARS)),
-                None,
-                None,
-                Some(ask(&"ü".repeat(MAX_ASK_TEXT_CHARS))),
+                AskInput {
+                    value: Some(0),
+                    minutes: Some(480),
+                    due: Some("2026-10-29T17:00:00-07:00"),
+                    ..input("Edges")
+                },
+                Some(Ask {
+                    value: Some(0),
+                    minutes: Some(480),
+                    due: Some("2026-10-29T17:00:00-07:00".into()),
+                    ..ask("Edges")
+                }),
+            ),
+            (
+                AskInput {
+                    value: Some(100),
+                    minutes: Some(1),
+                    ..input("Top")
+                },
+                Some(Ask {
+                    value: Some(100),
+                    minutes: Some(1),
+                    ..ask("Top")
+                }),
             ),
         ];
-        for (kind, text, objective, link, expected) in cases {
-            assert_eq!(
-                parse_ask(kind, text, objective, link).unwrap(),
-                expected,
-                "{text:?}"
-            );
+        for (given, expected) in cases {
+            assert_eq!(parse_ask(given).unwrap(), expected, "{given:?}");
         }
-        let long = |n: usize| "x".repeat(n + 1);
-        type Refused<'a> = (
-            Option<AskKind>,
-            Option<String>,
-            Option<String>,
-            Option<String>,
-            &'a str,
-        );
-        // (kind, text, objective, link, error mentions)
-        let refused: [Refused; 5] = [
-            (None, Some(long(MAX_ASK_TEXT_CHARS)), None, None, "300"),
+        let long = |n: usize| -> &'static str { Box::leak("x".repeat(n + 1).into_boxed_str()) };
+        let refused: [(AskInput, &str); 10] = [
+            (input(long(MAX_ASK_TEXT_CHARS)), "300"),
             (
-                None,
-                Some("ok".into()),
-                Some(long(MAX_OBJECTIVE_CHARS)),
-                None,
+                AskInput {
+                    objective: Some(long(MAX_OBJECTIVE_CHARS)),
+                    ..input("ok")
+                },
                 "80",
             ),
             (
-                None,
-                Some("ok".into()),
-                None,
-                Some(long(MAX_LINK_CHARS)),
+                AskInput {
+                    link: Some(long(MAX_LINK_CHARS)),
+                    ..input("ok")
+                },
                 "500",
             ),
-            (Some(Check), None, None, None, "one line"),
             (
-                None,
-                None,
-                Some("Objective".into()),
-                Some("https://x".into()),
+                AskInput {
+                    value: Some(101),
+                    ..input("ok")
+                },
+                "0 to 100",
+            ),
+            (
+                AskInput {
+                    minutes: Some(0),
+                    ..input("ok")
+                },
+                "1 to 480",
+            ),
+            (
+                AskInput {
+                    minutes: Some(481),
+                    ..input("ok")
+                },
+                "1 to 480",
+            ),
+            (
+                AskInput {
+                    due: Some("tomorrow"),
+                    ..input("ok")
+                },
+                "due",
+            ),
+            (
+                AskInput {
+                    kind: Some(Check),
+                    ..AskInput::default()
+                },
+                "one line",
+            ),
+            (
+                AskInput {
+                    objective: Some("Objective"),
+                    link: Some("https://x"),
+                    ..AskInput::default()
+                },
+                "one line",
+            ),
+            (
+                AskInput {
+                    value: Some(50),
+                    minutes: Some(5),
+                    ..AskInput::default()
+                },
                 "one line",
             ),
         ];
-        for (kind, text, objective, link, needle) in refused {
-            let err = parse_ask(kind, text.as_deref(), objective.as_deref(), link.as_deref())
-                .expect_err(needle);
+        for (given, needle) in refused {
+            let err = parse_ask(given).expect_err(needle);
+            assert!(format!("{err:#}").contains(needle), "{needle}: {err:#}");
+        }
+    }
+
+    #[test]
+    fn a_decide_ask_offers_its_options_and_an_ask_may_carry_a_page() {
+        let opts = |v: &[&str]| v.iter().map(|o| o.to_string()).collect::<Vec<_>>();
+        let three = opts(&["Approve 40 EUR", " Approve  20 EUR ", "No"]);
+        let decided = parse_ask(AskInput {
+            kind: Some(AskKind::Decide),
+            text: Some("Approve the budget"),
+            options: &three,
+            page: true,
+            ..AskInput::default()
+        })
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            decided.options,
+            opts(&["Approve 40 EUR", "Approve 20 EUR", "No"])
+        );
+        assert!(decided.page);
+        let seven = opts(&["a", "b", "c", "d", "e", "f", "g"]);
+        let long = opts(&[&"x".repeat(MAX_OPTION_CHARS + 1)]);
+        let blank = opts(&["Yes", "  "]);
+        let yes = opts(&["Yes"]);
+        // (kind, options, page, text, error mentions)
+        let refused: [(Option<AskKind>, &[String], bool, Option<&str>, &str); 6] = [
+            (
+                Some(AskKind::Decide),
+                &seven,
+                false,
+                Some("Pick"),
+                "at most 6",
+            ),
+            (Some(AskKind::Decide), &long, false, Some("Pick"), "40"),
+            (Some(AskKind::Decide), &blank, false, Some("Pick"), "empty"),
+            (Some(AskKind::Answer), &yes, false, Some("Say"), "decide"),
+            (None, &yes, false, Some("Say"), "decide"),
+            (Some(AskKind::Check), &[], true, None, "one line"),
+        ];
+        for (kind, options, page, text, needle) in refused {
+            let err = parse_ask(AskInput {
+                kind,
+                options,
+                page,
+                text,
+                ..AskInput::default()
+            })
+            .expect_err(needle);
+            assert!(format!("{err:#}").contains(needle), "{needle}: {err:#}");
+        }
+    }
+
+    #[test]
+    fn the_coordinator_overrides_a_sessions_own_estimates_on_its_current_ask_only() {
+        let posted = PriorityScore {
+            ask: Some(Ask {
+                kind: Some(AskKind::Decide),
+                value: Some(30),
+                minutes: Some(20),
+                due: Some("2026-10-30".into()),
+                ..ask("Approve the budget")
+            }),
+            ..owned(8, 20, None)
+        };
+        let ranked = rank_ask(
+            Some(&posted),
+            Some(t(10)),
+            Rank {
+                value: Some(81),
+                minutes: Some(5),
+                due: None,
+            },
+        )
+        .unwrap();
+        let after = ranked.ask.as_ref().unwrap();
+        assert_eq!(
+            (after.value, after.minutes, after.due.as_deref()),
+            (Some(81), Some(5), Some("2026-10-30"))
+        );
+        assert_eq!(
+            (after.text.as_str(), after.kind),
+            ("Approve the budget", Some(AskKind::Decide))
+        );
+        assert_eq!(
+            (ranked.value, ranked.set_at),
+            (8, t(20)),
+            "the score and its currency stay"
+        );
+        let due_only = rank_ask(
+            Some(&posted),
+            None,
+            Rank {
+                due: Some("2026-10-29"),
+                ..Rank::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(due_only.ask.unwrap().due.as_deref(), Some("2026-10-29"));
+        // (stored, run_started_at, rank, error mentions)
+        let stale = owned(8, 20, Some("Old ask"));
+        let unasked = owned(8, 20, None);
+        let refused: [(Option<&PriorityScore>, Option<DateTime<Utc>>, Rank, &str); 5] = [
+            (Some(&posted), None, Rank::default(), "--value"),
+            (
+                None,
+                None,
+                Rank {
+                    value: Some(50),
+                    ..Rank::default()
+                },
+                "no current ask",
+            ),
+            (
+                Some(&unasked),
+                None,
+                Rank {
+                    value: Some(50),
+                    ..Rank::default()
+                },
+                "no current ask",
+            ),
+            // The session ran since: its ask was answered.
+            (
+                Some(&stale),
+                Some(t(30)),
+                Rank {
+                    value: Some(50),
+                    ..Rank::default()
+                },
+                "no current ask",
+            ),
+            (
+                Some(&posted),
+                None,
+                Rank {
+                    value: Some(101),
+                    ..Rank::default()
+                },
+                "0 to 100",
+            ),
+        ];
+        for (stored, run, rank, needle) in refused {
+            let err = rank_ask(stored, run, rank).expect_err(needle);
             assert!(format!("{err:#}").contains(needle), "{needle}: {err:#}");
         }
     }

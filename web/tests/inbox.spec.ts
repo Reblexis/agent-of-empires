@@ -13,6 +13,9 @@ const sessions = () => [
       text: "Approve the 40 EUR ad budget",
       objective: "Telarchy social media",
       link: "https://telarchy.test/ads",
+      value: 72,
+      minutes: 2,
+      options: ["Approve 40 EUR", "No"],
     },
   },
   { id: "report", title: "Weekly report", unread: true, priority: 3 },
@@ -24,7 +27,7 @@ for (const [name, viewport] of [
   ["desktop", { width: 1280, height: 800 }],
   ["mobile", iPhone13.viewport],
 ] as const) {
-  test(`${name} home screen queues the asks, the one to do next on top, and a tap opens that session`, async ({
+  test(`${name} home screen queues the asks, and a tap on the top one opens its ask page whose pick goes back to the session`, async ({
     page,
   }) => {
     await page.setViewportSize(viewport);
@@ -36,15 +39,28 @@ for (const [name, viewport] of [
     await expect(next).toContainText("decide");
     await expect(next).toContainText("Approve the 40 EUR ad budget");
     await expect(next).toContainText("Telarchy social media");
-    await expect(next.getByRole("link", { name: "https://telarchy.test/ads" })).toBeVisible();
+    await expect(next).toContainText("2 min");
     const rest = page.getByTestId("inbox-entry");
     await expect(rest).toHaveCount(1);
     await expect(rest).toContainText("Weekly report");
     await expect(rest).toContainText("Read what it finished");
     await expect(page.getByTestId("inbox")).not.toContainText("Already read");
     await expect(page.getByTestId("inbox")).not.toContainText("Still working");
-    await next.getByText("Approve the 40 EUR ad budget").click();
-    await expect(page).toHaveURL(/\/session\/ads$/);
+    const sent = page.waitForRequest((r) => r.method() === "POST" && r.url().endsWith("/api/sessions/ads/send"));
+    const read = page.waitForRequest((r) => r.method() === "PATCH" && r.url().endsWith("/api/sessions/ads/unread"));
+    await page.route("**/api/sessions/ads/send", (r) => r.fulfill({ json: { sent: true } }));
+    await page.route("**/api/sessions/ads/unread", (r) => r.fulfill({ json: { id: "ads" } }));
+    await next.getByRole("button", { name: "Go" }).click();
+    await expect(page).toHaveURL(/\/ask\/ads$/);
+    const ask = page.getByTestId("ask-page");
+    await expect(ask.getByRole("heading", { name: "Approve the 40 EUR ad budget" })).toBeVisible();
+    await expect(ask.getByRole("link", { name: "https://telarchy.test/ads" })).toBeVisible();
+    await ask.getByRole("button", { name: "Approve 40 EUR" }).click();
+    expect((await sent).postDataJSON()).toEqual({
+      message: 'Inbox reply to "Approve the 40 EUR ad budget": Approve 40 EUR',
+    });
+    expect((await read).postDataJSON()).toEqual({ unread: false });
+    await expect(page).toHaveURL(/\/$/);
   });
 }
 

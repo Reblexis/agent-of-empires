@@ -544,12 +544,20 @@ export type ForecastVerdict = "continue" | "stop" | "unpriced";
 
 export type AskKind = "check" | "do" | "evaluate" | "answer" | "decide" | "learn";
 
-/** One concrete ask of the user; `link` is a URL or a command. */
+/** One concrete ask of the user; `link` is a URL or a command. `value` (0 to
+ *  100) per `minutes` orders the Inbox. */
 export interface PriorityAsk {
   kind?: AskKind | null;
   text: string;
   objective?: string | null;
   link?: string | null;
+  value?: number | null;
+  minutes?: number | null;
+  due?: string | null;
+  /** The choices of a decide ask; none means Yes and No. */
+  options?: string[];
+  /** The session posted an ask page (`GET /api/sessions/{id}/ask/page`). */
+  page?: boolean;
 }
 
 /** What `GET /api/sessions` carries per session about its forecast card. */

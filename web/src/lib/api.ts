@@ -2230,3 +2230,23 @@ export function syncSkills(options?: {
 export function getPlannerTimeline(signal?: AbortSignal): Promise<import("./plannerTimeline").PlannerSnapshot | null> {
   return fetchJson("/api/planner/timeline", { signal, cache: "no-store" });
 }
+
+/** The HTML of a session's current ask page, or null without one. */
+export async function getAskPage(id: string): Promise<string | null> {
+  try {
+    const res = await fetch(`/api/sessions/${encodeURIComponent(id)}/ask/page`, { cache: "no-store" });
+    return res.ok ? await res.text() : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Type one message into a terminal session. Null on success, else the error. */
+export async function sendSessionMessage(id: string, message: string): Promise<string | null> {
+  try {
+    const reply = await send(`/api/sessions/${encodeURIComponent(id)}/send`, jsonInit("POST", { message }));
+    return reply.ok ? null : (stringField(reply.payload, "error") ?? `HTTP ${reply.status}`);
+  } catch {
+    return "network_error";
+  }
+}

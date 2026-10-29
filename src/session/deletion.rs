@@ -822,6 +822,10 @@ fn perform_deletion_core(
     if let Err(error) = crate::session::forecast::clear_card(&request.instance.id) {
         tracing::warn!(target: "session.delete", session_id = %request.session_id, "forecast card not removed: {error:#}");
     }
+    // Stage 8: the session's ask page (docs/guides/session-inbox.md).
+    if let Err(error) = crate::session::ask_page::clear_page(&request.instance.id) {
+        tracing::warn!(target: "session.delete", session_id = %request.session_id, "ask page not removed: {error:#}");
+    }
 
     if !errors.is_empty() {
         tracing::debug!(target: "session.delete",
@@ -1585,13 +1589,15 @@ mod tests {
 
     #[test]
     #[serial]
-    fn deleting_a_session_removes_its_forecast_card() {
+    fn deleting_a_session_removes_its_forecast_card_and_ask_page() {
         let _guard = isolate_app_dir();
         let instance = Instance::new("Test Session", "/tmp/test-project");
         let other = Instance::new("Other Session", "/tmp/test-project");
         let card = br#"{"verdict":"stop","headline":"-20 EUR"}"#;
         crate::session::forecast::write_card(&instance.id, card).unwrap();
         crate::session::forecast::write_card(&other.id, card).unwrap();
+        crate::session::ask_page::write_page(&instance.id, b"<p>x</p>").unwrap();
+        crate::session::ask_page::write_page(&other.id, b"<p>y</p>").unwrap();
         let request = request(instance);
 
         let result = perform_deletion(&request);
@@ -1605,6 +1611,16 @@ mod tests {
                 .unwrap()
                 .is_some(),
             "only the deleted session's card goes"
+        );
+        assert_eq!(
+            crate::session::ask_page::read_page(&request.session_id).unwrap(),
+            None
+        );
+        assert!(
+            crate::session::ask_page::read_page(&other.id)
+                .unwrap()
+                .is_some(),
+            "only the deleted session's page goes"
         );
     }
 

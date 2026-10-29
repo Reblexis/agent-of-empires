@@ -1385,6 +1385,7 @@ fn from_instance_carries_the_current_priority_ask_only() {
         text: "Approve the budget".into(),
         objective: Some("Social media".into()),
         link: Some("https://example.com".into()),
+        ..Ask::default()
     };
     inst.set_priority(Some(8), Some(ask.clone()));
     let reason = |inst: &Instance| SessionResponse::from_instance(inst, false).priority_ask;
@@ -5352,4 +5353,65 @@ async fn forecast_api_serves_the_card_and_the_list_summary() {
         plain.as_object().unwrap().contains_key("forecast") && plain["forecast"].is_null(),
         "null when there is no card"
     );
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn the_ask_page_is_served_only_for_a_current_ask_that_has_one() {
+    use crate::session::priority::Ask;
+    let _app = crate::session::test_support::isolate_app_dir();
+    let posted = |id: &str, page: bool| {
+        let mut inst = Instance::new(id, "/tmp/ask-page-api");
+        inst.id = id.to_string();
+        inst.status = Status::Idle;
+        inst.set_priority(
+            Some(8),
+            Some(Ask {
+                text: "Pick".into(),
+                page,
+                ..Ask::default()
+            }),
+        );
+        inst
+    };
+    let mut stale = posted("askpagestale", true);
+    stale.run_started_at = Some(chrono::Utc::now() + chrono::Duration::seconds(5));
+    for id in ["askpageok", "askpagestale", "askpageflagless"] {
+        crate::session::ask_page::write_page(id, b"<p>40 EUR</p>").unwrap();
+    }
+    let state = crate::server::test_support::build_test_app_state(vec![
+        posted("askpageok", true),
+        stale,
+        posted("askpageflagless", false),
+        posted("askpagenofile", true),
+    ]);
+    let get = |id: &str| {
+        let state = state.clone();
+        let id = id.to_string();
+        async move {
+            get_ask_page(axum::extract::State(state), axum::extract::Path(id))
+                .await
+                .into_response()
+        }
+    };
+    let ok = get("askpageok").await;
+    assert_eq!(ok.status(), StatusCode::OK);
+    assert_eq!(ok.headers()["content-type"], "text/html; charset=utf-8");
+    assert_eq!(ok.headers()["cache-control"], "no-store");
+    let body = axum::body::to_bytes(ok.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    assert_eq!(&body[..], b"<p>40 EUR</p>");
+    // (session, why it is absent)
+    for (id, why) in [
+        (
+            "askpagestale",
+            "the session ran since: the ask was answered",
+        ),
+        ("askpageflagless", "the current ask has no page"),
+        ("askpagenofile", "the page file is missing"),
+        ("nosuchsession", "no session"),
+    ] {
+        assert_eq!(get(id).await.status(), StatusCode::NOT_FOUND, "{why}");
+    }
 }

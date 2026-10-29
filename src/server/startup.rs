@@ -824,6 +824,14 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
             tracing::warn!(target: "server.forecast", "forecast orphan cleanup skipped: {e:#}")
         }
     });
+    // Ask pages likewise (docs/guides/session-inbox.md).
+    tokio::task::spawn_blocking(|| match crate::session::ask_page::prune_orphans() {
+        Ok(0) => {}
+        Ok(removed) => {
+            tracing::info!(target: "server.inbox", removed, "removed orphaned ask pages")
+        }
+        Err(e) => tracing::warn!(target: "server.inbox", "ask page orphan cleanup skipped: {e:#}"),
+    });
 
     // Trash retention sweep.
     if !state.read_only {
