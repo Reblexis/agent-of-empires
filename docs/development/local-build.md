@@ -24,7 +24,7 @@ wrong conversation. Both branches were merged into `local-defaults` on
 Check that every branch that was ever deployed is contained in what you build:
 
     git fetch origin
-    for b in port-context port-session port-handoff port-forecast-priority port-misc port-terminal port-terminal-input local-scroll-codex feature/planner-timeline fix/remember-dock-tabs feature/session-inbox feature/inbox-value-per-minute feature/io-agent-hooks; do
+    for b in port-context port-session port-handoff port-forecast-priority port-misc port-terminal port-terminal-input local-scroll-codex feature/planner-timeline fix/remember-dock-tabs feature/session-inbox feature/inbox-value-per-minute feature/io-agent-hooks feature/inbox-key; do
       git merge-base --is-ancestor "origin/$b" HEAD || echo "MISSING: $b"
     done
 
