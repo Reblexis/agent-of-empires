@@ -132,7 +132,8 @@ button straight to its ask page (**Go**).
 
 ## The ask page
 
-At `/ask/<session id>` in the dashboard, built for a phone:
+At `/ask/<session id>` in the dashboard, built for a phone; the URL loads like a
+`/session/` one, so a push or a shared link opens it directly:
 
 1. The kind, the one line and the minutes, at the top.
 2. What the user needs to know: the agent's page, or without one the objective
