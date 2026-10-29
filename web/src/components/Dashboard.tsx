@@ -13,6 +13,8 @@ import { InboxPane } from "./InboxPane";
 interface Props {
   sessions: SessionResponse[];
   onSelectSession: (sessionId: string) => void;
+  /** Opens a posted ask's page (docs/guides/session-inbox.md). */
+  onOpenAsk: (sessionId: string) => void;
   onNewSession: () => void;
   onCloneFromUrl: () => void;
   /** When false (CityHall client mode), the "Clone URL" action is hidden;
@@ -25,6 +27,7 @@ interface Props {
 export function Dashboard({
   sessions,
   onSelectSession,
+  onOpenAsk,
   onNewSession,
   onCloneFromUrl,
   onToggleSidebar,
@@ -150,7 +153,7 @@ export function Dashboard({
             Inbox
           </h2>
           <div className="flex overflow-hidden rounded-lg border border-surface-700/40">
-            <InboxPane sessions={sessions} onOpen={onSelectSession} readOnly={readOnly} />
+            <InboxPane sessions={sessions} onOpen={onSelectSession} onOpenAsk={onOpenAsk} readOnly={readOnly} />
           </div>
         </section>
       )}

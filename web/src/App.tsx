@@ -145,6 +145,7 @@ import { visibleToFullIndex, type DropTarget } from "./components/paneDnd";
 import { BackgroundAgentsPanel } from "./components/acp/BackgroundAgentsPanel";
 import { TimelinePane } from "./components/TimelinePane";
 import { InboxPane } from "./components/InboxPane";
+import { AskPage } from "./components/AskPage";
 import { ContextPane } from "./components/ContextPane";
 import { DiffPane } from "./components/DiffPane";
 import { FilesPane } from "./components/FilesPane";
@@ -361,6 +362,7 @@ function AppContent({
   const [searchParams, setSearchParams] = useSearchParams();
   const { settings: webSettings } = useWebSettings();
   const sessionMatch = useMatch("/session/:sessionId");
+  const askMatch = useMatch("/ask/:sessionId");
   const settingsRootMatch = useMatch("/settings");
   const settingsTabMatch = useMatch("/settings/:tab");
   const profilesMatch = useMatch("/profiles");
@@ -1028,6 +1030,10 @@ function AppContent({
     [isCoarse],
   );
 
+  const handleOpenAsk = useCallback(
+    (sessionId: string) => navigate(`/ask/${encodeURIComponent(sessionId)}`),
+    [navigate],
+  );
   const handleSelectSession = useCallback(
     (sessionId: string, path?: string) => {
       const ws = workspaces.find((w) => w.sessions.some((s) => s.id === sessionId));
@@ -1936,6 +1942,7 @@ function AppContent({
             sessions={sessions}
             activeSessionId={activeSessionId}
             onOpen={handleSelectSession}
+            onOpenAsk={handleOpenAsk}
             readOnly={!!serverAbout?.read_only}
           />
         );
@@ -2183,11 +2190,25 @@ function AppContent({
       return <MainPaneSkeleton />;
     }
 
+    const askSession = askMatch ? sessions.find((s) => s.id === askMatch.params.sessionId) : undefined;
+    if (askSession?.priority_ask) {
+      return (
+        <AskPage
+          key={askSession.id}
+          session={askSession}
+          onOpenSession={handleSelectSession}
+          onDone={() => navigate("/")}
+          readOnly={!!serverAbout?.read_only}
+        />
+      );
+    }
+
     if (!activeWorkspace || !activeSession) {
       return (
         <Dashboard
           sessions={sessions}
           onSelectSession={handleSelectSession}
+          onOpenAsk={handleOpenAsk}
           onNewSession={handleNewSession}
           onCloneFromUrl={handleCloneFromUrl}
           onToggleSidebar={handleToggleSidebar}
@@ -2239,6 +2260,7 @@ function AppContent({
           onCloseSendDialog={() => setSendDialogOpen(false)}
           onClearSelectedFile={() => setSelectedFile(null)}
           readOnly={!!serverAbout?.read_only}
+          onOpenAsk={handleOpenAsk}
           onOpenSession={(id) => {
             handleSelectSession(id);
             handlePickView("agent");

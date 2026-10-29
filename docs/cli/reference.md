@@ -44,6 +44,7 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe session forecast show`↴](#aoe-session-forecast-show)
 * [`aoe session forecast clear`↴](#aoe-session-forecast-clear)
 * [`aoe session priority`↴](#aoe-session-priority)
+* [`aoe session rank`↴](#aoe-session-rank)
 * [`aoe session list-trash`↴](#aoe-session-list-trash)
 * [`aoe session empty-trash`↴](#aoe-session-empty-trash)
 * [`aoe group`↴](#aoe-group)
@@ -442,6 +443,7 @@ Manage session lifecycle (start, stop, attach, etc.)
 * `import` — Import existing Claude Code sessions from disk. Scans the given path(s) (default: current directory) for Claude Code conversations whose working directory is at or under a path, and creates an AoE session for each: a terminal/tmux session that resumes the conversation with `claude --resume <id>` (default), or a structured-view session with `--structured`
 * `forecast` — Write, print, or remove the session's forecast card: what happens to the numbers it works on if it stops now versus if it continues. The web dashboard pins the card on the session. See docs/guides/session-forecast.md
 * `priority` — Score how soon this session needs you, 0 to 10, or `clear`. An agent runs it at the end of its turn; the Attention sort and the TUI and web rows use it. See docs/guides/session-priority.md
+* `rank` — Override the value, minutes or due of the session's current Inbox ask, so the queue reflects the whole picture rather than the session's own estimate. See docs/guides/session-inbox.md
 * `list-trash` — List the sessions currently in the trash
 * `empty-trash` — Permanently purge every trashed session in the profile (irreversible)
 
@@ -842,7 +844,27 @@ Score how soon this session needs you, 0 to 10, or `clear`. An agent runs it at 
 
 * `--objective <OBJECTIVE>` — The focus objective the ask serves, at most 80 characters
 * `--link <LINK>` — A URL or a command to run, at most 500 characters
+* `--value <ASK_VALUE>` — How much doing the ask moves its objective times the objective's importance, 0 to 100. The Inbox orders by value per minute
+* `--minutes <MINUTES>` — Estimated minutes of the user's attention, 1 to 480
+* `--due <DUE>` — When doing it stops being worth as much: YYYY-MM-DD or RFC 3339
+* `--option <OPTIONS>` — A choice of a `decide` ask (repeat, at most 6); none means Yes and No
+* `--page <PAGE>` — HTML file for the ask page, at most 4 MiB: only what the user needs to know for the ask, inline only (no scripts, no network)
 * `--session <SESSION>` — Session ID or title. Defaults to `$AOE_INSTANCE_ID`, which aoe sets inside every session it launches
+
+
+
+## `aoe session rank`
+
+Override the value, minutes or due of the session's current Inbox ask, so the queue reflects the whole picture rather than the session's own estimate. See docs/guides/session-inbox.md
+
+**Usage:** `aoe session rank [OPTIONS]`
+
+###### **Options:**
+
+* `--value <VALUE>` — Value toward the objective times its importance, 0 to 100
+* `--minutes <MINUTES>` — Estimated minutes of the user's attention, 1 to 480
+* `--due <DUE>` — When doing it stops being worth as much: YYYY-MM-DD or RFC 3339
+* `--session <SESSION>` — Session ID or title. Defaults to `$AOE_INSTANCE_ID`
 
 
 

@@ -121,6 +121,11 @@ pub enum SessionCommands {
     /// rows use it. See docs/guides/session-priority.md.
     Priority(super::session_priority::PriorityArgs),
 
+    /// Override the value, minutes or due of the session's current Inbox ask,
+    /// so the queue reflects the whole picture rather than the session's own
+    /// estimate. See docs/guides/session-inbox.md.
+    Rank(super::session_priority::RankArgs),
+
     /// List the sessions currently in the trash.
     ListTrash,
 
@@ -440,6 +445,7 @@ pub async fn run(profile: &str, command: SessionCommands) -> Result<()> {
         SessionCommands::Import(args) => import_sessions(profile, args).await,
         SessionCommands::Forecast(command) => super::session_forecast::run(profile, command).await,
         SessionCommands::Priority(args) => super::session_priority::run(profile, args).await,
+        SessionCommands::Rank(args) => super::session_priority::run_rank(profile, args).await,
         SessionCommands::ListTrash => list_trash(profile).await,
         SessionCommands::EmptyTrash => empty_trash(profile).await,
     }

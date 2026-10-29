@@ -10,6 +10,7 @@ pub mod civilizations;
 pub(crate) mod claim;
 // Discovery of on-disk Claude Code sessions. Lives here rather than under
 // `acp` because terminal/tmux import via the CLI does not involve ACP.
+pub mod ask_page;
 pub mod claude_import;
 pub mod config;
 pub mod conversation_carry;

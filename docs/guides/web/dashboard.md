@@ -32,8 +32,9 @@ for date precision, refresh, timezone and operator setup.
 
 The **Inbox** tab is your prompt queue: one ask per session that needs you
 (check, do, evaluate, answer, decide or learn), the one to do next on top, each
-naming the focus objective it serves. Clicking an entry opens that session;
-it leaves the list once read or marked Done. See [session-inbox.md](../session-inbox.md).
+naming the focus objective it serves, ordered by value per minute of your
+attention. Clicking an entry opens its ask page: what you need to know, then
+the input it needs, sent straight back to the session. See [session-inbox.md](../session-inbox.md).
 
 ### Context pane
 

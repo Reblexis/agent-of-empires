@@ -679,7 +679,7 @@ async fn fire_due_pushes(
         }
 
         let (title, body) = status_push_text(event, &instance_title, instance.priority_ask());
-        let path = format!("/session/{}", instance_id);
+        let path = status_push_path(&instance_id, instance.priority_ask().is_some());
         let tag = format!("session-{}", instance_id);
 
         for sub in subs {
@@ -703,6 +703,16 @@ async fn fire_due_pushes(
                 deliver(&push, &client, &sub, &payload_clone, PUSH_TTL_SECS).await;
             });
         }
+    }
+}
+
+/// Where tapping a status push lands: the ask page while the session has a
+/// current ask, otherwise the session (docs/guides/session-inbox.md).
+fn status_push_path(session_id: &str, has_ask: bool) -> String {
+    if has_ask {
+        format!("/ask/{session_id}")
+    } else {
+        format!("/session/{session_id}")
     }
 }
 
@@ -1152,6 +1162,12 @@ pub async fn test(
 #[cfg(test)]
 mod tests {
     #[test]
+    fn tapping_a_status_push_opens_the_ask_page_while_there_is_an_ask() {
+        assert_eq!(status_push_path("abc123", true), "/ask/abc123");
+        assert_eq!(status_push_path("abc123", false), "/session/abc123");
+    }
+
+    #[test]
     fn a_status_push_carries_the_ask_when_its_agent_posted_one() {
         use crate::session::priority::{Ask, AskKind};
         use NotificationEvent::*;
@@ -1161,6 +1177,7 @@ mod tests {
                 text: text.to_string(),
                 objective: Some("Social media".into()),
                 link: None,
+                ..Ask::default()
             })
         };
         // (event, session title, ask, expected title, expected body)
