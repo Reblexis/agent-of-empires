@@ -143,6 +143,11 @@ pub(super) fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/inbox/asks", get(api::get_inbox_asks))
         .route("/api/inbox/log", get(api::get_inbox_log))
         .route(
+            "/api/inbox/message",
+            post(api::post_inbox_message)
+                .layer(axum::extract::DefaultBodyLimit::max(72 * 1024 * 1024)),
+        )
+        .route(
             "/api/sessions/{id}/forecast",
             get(api::get_session_forecast),
         )

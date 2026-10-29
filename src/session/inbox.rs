@@ -11,6 +11,8 @@ use anyhow::{bail, Result};
 use super::Instance;
 
 const KEY_FILE: &str = "inbox.key";
+/// One line: the id of the session the queue's input box writes to.
+pub const ROUTER_FILE: &str = "inbox-router";
 
 /// Whether the session passes "What is listed": unread, effective priority above
 /// 0, and its ask not merged into another's.
@@ -136,6 +138,31 @@ pub fn reply_message(ask_text: &str, input: &str) -> String {
     format!("Inbox reply to \"{ask_text}\": {input}")
 }
 
+/// What the queue's input box types into the router: the text, then each
+/// image path the way the dashboard terminal pastes one.
+pub fn message_text(text: &str, paths: &[String]) -> String {
+    let mut parts = vec!["Message from Viktor via vcihal.com/io:".to_string()];
+    let text = text.trim();
+    if !text.is_empty() {
+        parts.push(text.to_string());
+    }
+    parts.extend(paths.iter().map(|p| p.replace(' ', "\\ ")));
+    parts.join(" ")
+}
+
+/// The router session's id, or `None` when no router is set.
+pub fn read_router_in(dir: &Path) -> Result<Option<String>> {
+    match std::fs::read_to_string(dir.join(ROUTER_FILE)) {
+        Ok(id) => Ok(Some(id.trim().to_string()).filter(|i| !i.is_empty())),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => bail!("read the Inbox router: {e}"),
+    }
+}
+
+pub fn read_router() -> Result<Option<String>> {
+    read_router_in(&super::get_app_dir()?)
+}
+
 /// Write a new random key, owner-only, replacing the old one. Returns it.
 pub fn rotate_key_in(dir: &Path) -> Result<String> {
     let mut bytes = [0u8; 32];
@@ -193,6 +220,36 @@ mod tests {
     use super::*;
     use crate::session::priority::Ask;
     use crate::session::Status;
+
+    #[test]
+    fn a_message_names_its_source_then_the_text_then_each_image_path() {
+        assert_eq!(
+            message_text("call Max at 5", &["/w/.aoe-pasted-images/a.png".into()]),
+            "Message from Viktor via vcihal.com/io: call Max at 5 /w/.aoe-pasted-images/a.png"
+        );
+        assert_eq!(
+            message_text("  ", &["/w/a.png".into(), "/w/b.jpg".into()]),
+            "Message from Viktor via vcihal.com/io: /w/a.png /w/b.jpg"
+        );
+        assert_eq!(
+            message_text("x", &["/my dir/a.png".into()]),
+            "Message from Viktor via vcihal.com/io: x /my\\ dir/a.png",
+            "a space in a path is escaped as the dashboard paste does"
+        );
+    }
+
+    #[test]
+    fn the_router_is_the_one_line_of_its_file_and_none_without_it() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(read_router_in(dir.path()).unwrap(), None);
+        std::fs::write(dir.path().join(ROUTER_FILE), "  \n").unwrap();
+        assert_eq!(read_router_in(dir.path()).unwrap(), None);
+        std::fs::write(dir.path().join(ROUTER_FILE), "9c9fc9e9bdc5479c\n").unwrap();
+        assert_eq!(
+            read_router_in(dir.path()).unwrap(),
+            Some("9c9fc9e9bdc5479c".to_string())
+        );
+    }
 
     fn asking(id: &str, value: Option<u8>, minutes: Option<u16>, priority: u8) -> Instance {
         let mut inst = Instance::new(id, "/tmp/inbox");

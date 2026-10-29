@@ -41,6 +41,9 @@ fn inbox_key_route(method: &axum::http::Method, path: &str) -> bool {
     if method == Method::GET && (path == "/api/inbox/asks" || path == "/api/inbox/log") {
         return true;
     }
+    if method == Method::POST && path == "/api/inbox/message" {
+        return true;
+    }
     let Some(rest) = path.strip_prefix("/api/sessions/") else {
         return false;
     };
@@ -961,7 +964,25 @@ mod tests {
                 "/api/sessions/abc123/ask/events",
                 InboxKeyDecision::Allow,
             ),
+            (
+                k,
+                Method::POST,
+                "/api/inbox/message",
+                InboxKeyDecision::Allow,
+            ),
             // Everything else carrying the key is refused, never handed on.
+            (
+                k,
+                Method::GET,
+                "/api/inbox/message",
+                InboxKeyDecision::Refuse,
+            ),
+            (
+                k,
+                Method::POST,
+                "/api/inbox/message/abc123",
+                InboxKeyDecision::Refuse,
+            ),
             (k, Method::GET, "/api/sessions", InboxKeyDecision::Refuse),
             (
                 k,

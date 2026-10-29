@@ -322,7 +322,7 @@ pub async fn send_message(
 
 /// Max decoded size of a pasted image (5 MiB), matching Claude Code's
 /// attachment cap. The route body limit leaves headroom for base64 overhead.
-const MAX_PASTE_IMAGE_BYTES: usize = 5 * 1024 * 1024;
+pub(super) const MAX_PASTE_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 
 /// Directory, relative to the session worktree, holding images pasted into the
 /// live terminal. Inside the worktree so a Docker-sandboxed pane, which cannot
@@ -340,7 +340,7 @@ pub struct PasteImageRequest {
     pub data: String,
 }
 
-fn paste_image_extension(mime: &str) -> &'static str {
+pub(super) fn paste_image_extension(mime: &str) -> &'static str {
     match mime {
         "image/png" => "png",
         "image/jpeg" => "jpg",
@@ -352,7 +352,7 @@ fn paste_image_extension(mime: &str) -> &'static str {
 
 /// Write the decoded blob into the worktree's paste-image dir and return the
 /// host path plus the generated file name. Sync I/O; call from a blocking pool.
-fn write_paste_image(
+pub(super) fn write_paste_image(
     project_path: &str,
     bytes: &[u8],
     ext: &str,
@@ -379,7 +379,11 @@ fn write_paste_image(
 /// Map the host paste-image file to the path the tmux pane reads. A sandboxed
 /// pane mounts the worktree under a container path, so `compute_volume_paths`
 /// is reused to match that mount.
-fn pane_visible_paste_path(project_path: &str, is_sandboxed: bool, file_name: &str) -> String {
+pub(super) fn pane_visible_paste_path(
+    project_path: &str,
+    is_sandboxed: bool,
+    file_name: &str,
+) -> String {
     if is_sandboxed {
         if let Ok((_, working_dir)) = crate::session::config::container_config::compute_volume_paths(
             std::path::Path::new(project_path),

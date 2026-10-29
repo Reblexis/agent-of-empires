@@ -32,6 +32,24 @@ pub struct AnswerRequest {
 }
 
 #[derive(Debug, serde::Deserialize)]
+pub struct MessageRequest {
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub images: Vec<MessageImage>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+pub struct MessageImage {
+    pub data: String,
+}
+
+const MAX_MESSAGE_IMAGES: usize = 10;
+/// Images from the input box outlive the one-hour paste TTL: the router may be
+/// mid-turn for a while before it reads them.
+const MESSAGE_IMAGE_TTL: std::time::Duration = std::time::Duration::from_secs(24 * 3600);
+
+#[derive(Debug, serde::Deserialize)]
 pub struct LogQuery {
     pub since: Option<chrono::DateTime<chrono::Utc>>,
 }
@@ -334,6 +352,140 @@ pub async fn post_ask_answer(
     Json(serde_json::json!({ "answered": answered })).into_response()
 }
 
+/// The queue's input box: text and images, typed into the router session only.
+pub async fn post_inbox_message(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<MessageRequest>,
+) -> axum::response::Response {
+    use base64::Engine as _;
+    if let Some(resp) = crate::server::api::read_only_block(&state) {
+        return resp;
+    }
+    if let Some(resp) = crate::server::api::cityhall_block(&state) {
+        return resp;
+    }
+    if req.text.trim().is_empty() && req.images.is_empty() {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "empty_message",
+            "A message needs text or an image",
+        );
+    }
+    if req.images.len() > MAX_MESSAGE_IMAGES {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "too_many_images",
+            "At most 10 images",
+        );
+    }
+    let mut images = Vec::new();
+    for img in &req.images {
+        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(img.data.as_bytes())
+        else {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "invalid_base64",
+                "An image is not base64",
+            );
+        };
+        if bytes.is_empty() || bytes.len() > super::send::MAX_PASTE_IMAGE_BYTES {
+            return api_error(
+                StatusCode::BAD_REQUEST,
+                "image_size",
+                "An image is empty or over 5 MB",
+            );
+        }
+        let Some(mime) = crate::server::api::acp::sniff_image_mime(&bytes) else {
+            return api_error(StatusCode::BAD_REQUEST, "not_an_image", "Not an image");
+        };
+        images.push((bytes, super::send::paste_image_extension(mime)));
+    }
+    let router = match crate::session::inbox::read_router() {
+        Ok(Some(id)) => id,
+        Ok(None) => {
+            return api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "no_router",
+                "No Inbox router is set",
+            )
+        }
+        Err(e) => {
+            tracing::warn!(target: "server.inbox", "inbox router not read: {e:#}");
+            return api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "no_router",
+                "No Inbox router is set",
+            );
+        }
+    };
+    let Some(inst) = state
+        .instances
+        .read()
+        .await
+        .iter()
+        .find(|i| i.id == router)
+        .cloned()
+    else {
+        return api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no_router",
+            "The Inbox router is not a session",
+        );
+    };
+    let project = inst.project_path.clone();
+    let sandboxed = inst.is_sandboxed();
+    let written = tokio::task::spawn_blocking(move || {
+        images
+            .iter()
+            .map(|(bytes, ext)| super::send::write_paste_image(&project, bytes, ext))
+            .collect::<std::io::Result<Vec<_>>>()
+    })
+    .await;
+    let written = match written {
+        Ok(Ok(w)) => w,
+        _ => {
+            return api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "write_failed",
+                "An image could not be saved",
+            )
+        }
+    };
+    let paths: Vec<String> = written
+        .iter()
+        .map(|(_, name)| super::send::pane_visible_paste_path(&inst.project_path, sandboxed, name))
+        .collect();
+    let message = crate::session::inbox::message_text(&req.text, &paths);
+    let host_paths: Vec<_> = written.into_iter().map(|(p, _)| p).collect();
+    // Never revive a pane to deliver a message, like an answer.
+    if let Err(e) = send_terminal_message(
+        &state.session_service,
+        &state.status_tx,
+        &router,
+        message,
+        false,
+    )
+    .await
+    {
+        for p in &host_paths {
+            let _ = std::fs::remove_file(p);
+        }
+        return api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "not_delivered",
+            format!("The router could not take the message: {}", send_error(&e)),
+        );
+    }
+    let n = host_paths.len();
+    tokio::spawn(async move {
+        tokio::time::sleep(MESSAGE_IMAGE_TTL).await;
+        for p in host_paths {
+            let _ = tokio::fs::remove_file(&p).await;
+        }
+    });
+    Json(serde_json::json!({ "delivered_to": router, "images": n })).into_response()
+}
+
 pub async fn get_inbox_log(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(query): axum::extract::Query<LogQuery>,
@@ -624,6 +776,88 @@ mod tests {
             !crate::session::inbox_log::log_path().unwrap().exists(),
             "nothing logged"
         );
+    }
+
+    const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+
+    async fn message(state: &Arc<AppState>, body: serde_json::Value) -> StatusCode {
+        let req: MessageRequest = serde_json::from_value(body).unwrap();
+        post_inbox_message(State(state.clone()), Json(req))
+            .await
+            .status()
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn a_message_goes_only_to_the_router_and_is_refused_without_one() {
+        let app = crate::session::test_support::isolate_app_dir();
+        let project = tempfile::tempdir().unwrap();
+        let mut router = Instance::new("router", &project.path().to_string_lossy());
+        router.id = "routerid".to_string();
+        let state = seeded(vec![router]);
+        let hi = serde_json::json!({"text": "hi", "images": []});
+        assert_eq!(
+            message(&state, hi.clone()).await,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "no router file"
+        );
+        let dir = crate::session::get_app_dir().unwrap();
+        std::fs::write(
+            dir.join(crate::session::inbox::ROUTER_FILE),
+            "nosuchsession\n",
+        )
+        .unwrap();
+        assert_eq!(
+            message(&state, hi.clone()).await,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "unknown router"
+        );
+        std::fs::write(dir.join(crate::session::inbox::ROUTER_FILE), "routerid\n").unwrap();
+        // (body, status, why)
+        for (b, status, why) in [
+            (
+                serde_json::json!({"text": "  ", "images": []}),
+                StatusCode::BAD_REQUEST,
+                "no text and no image",
+            ),
+            (
+                serde_json::json!({"text": "x", "images": [{"data": "%%%"}]}),
+                StatusCode::BAD_REQUEST,
+                "not base64",
+            ),
+            (
+                serde_json::json!({"text": "x", "images": [{"data": "aGVsbG8="}]}),
+                StatusCode::BAD_REQUEST,
+                "not an image",
+            ),
+            (
+                serde_json::json!({"text": "x", "images": vec![serde_json::json!({"data": PNG}); 11]}),
+                StatusCode::BAD_REQUEST,
+                "more than 10 images",
+            ),
+            // No tmux pane behind the test router: nothing can be typed.
+            (
+                serde_json::json!({"text": "look", "images": [{"data": PNG}]}),
+                StatusCode::SERVICE_UNAVAILABLE,
+                "router cannot take it",
+            ),
+        ] {
+            assert_eq!(message(&state, b).await, status, "{why}");
+        }
+        let pasted = project.path().join(".aoe-pasted-images");
+        let left: Vec<_> = std::fs::read_dir(&pasted)
+            .map(|d| {
+                d.filter_map(|e| e.ok())
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+                    .filter(|n| n != ".gitignore")
+                    .collect()
+            })
+            .unwrap_or_default();
+        assert!(
+            left.is_empty(),
+            "an undelivered message leaves no image behind: {left:?}"
+        );
+        drop(app);
     }
 
     #[tokio::test]

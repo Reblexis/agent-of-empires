@@ -327,6 +327,7 @@ pub(super) const CITYHALL_MUTATION_DENY: &[(&str, &str)] = &[
     ("POST", "/api/sessions/{id}/ask/events"),
     ("POST", "/api/sessions/{id}/ask/refine"),
     ("POST", "/api/sessions/{id}/ask/answer"),
+    ("POST", "/api/inbox/message"),
     ("POST", "/api/sessions/{id}/terminal"),
     ("DELETE", "/api/sessions/{id}/terminal"),
     ("POST", "/api/sessions/{id}/container-terminal"),

@@ -195,6 +195,21 @@ bearer token of its own, separate from the login, the passphrase and
   clears the unread marker, without sending anything, like Done on the list.
 - `GET /api/inbox/log?since=<rfc3339>`: the lines of `inbox-log.jsonl` stamped
   after `since` (all of them without it), as a JSON array.
+- `POST /api/inbox/message`: `{text, images}`, the user's free input from the
+  queue's input box (Viktor, 2026-10-29: "i would also like an input field
+  there where i can tell it anything at any time.. thats the input.. pasting
+  of pccitures shouold work just like it works int erminal claude session
+  etc."). It goes only to the **router session**, whose id is the one line of
+  `<app_dir>/inbox-router`, never to a session the caller names. Each of
+  `images` (`{data}`, base64, at most 10) is checked and saved exactly like a
+  dashboard paste (`POST /api/sessions/{id}/paste-image`: an image, at most
+  5 MB, into the router's gitignored `.aoe-pasted-images/`), kept 24 hours
+  rather than one, and typed as its path the way the dashboard terminal pastes
+  one, so the agent reads it as an image. One message is typed into the router:
+  `Message from Viktor via vcihal.com/io: <text> <path> <path>`. `400` for no
+  text and no image, a bad image or too many; `503` with no router file, an
+  unknown router, or a router that could not take the message (its images are
+  deleted then); `200` with `{"delivered_to": <id>, "images": <n>}`.
 
 All of these are refused in read-only and CityHall mode, except the two reads in
 read-only mode.
