@@ -172,6 +172,7 @@ fn is_login_session_exempt(path: &str) -> bool {
     path == "/"
         || path == "/login"
         || path.starts_with("/session/")
+        || path.starts_with("/ask/")
         || path.starts_with("/plugins/")
         || path == "/api/login"
         || path == "/api/login/status"
@@ -1161,6 +1162,8 @@ mod tests {
             "/login",
             "/session/abc",
             "/session/2626c6af68754732",
+            // An ask page opened by its URL (a push, a shared link) loads like a session.
+            "/ask/2626c6af68754732",
             "/plugins/github/prs",
             "/api/login",
             "/api/login/status",
@@ -1197,6 +1200,8 @@ mod tests {
             "/api/login/elevate",
             "/sessions/abc/ws",
             "/api/sessions/abc/ws",
+            "/api/sessions/abc/ask/page",
+            "/askx",
             "/api/login/foo",
             "/api/login/passkey",
             "/api/passkeys",
