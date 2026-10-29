@@ -368,6 +368,12 @@ describe("computeRowLinks", () => {
         [[{ start: 5, end: 21, href: "https://a.io/abcdef" }], [{ start: 5, end: 8, href: "https://a.io/abcdef" }]],
       ],
       [
+        "first line of a Claude Code reply",
+        [row("● see https://a.io/ab"), row("  cdef")],
+        21,
+        [[{ start: 6, end: 21, href: "https://a.io/abcdef" }], [{ start: 2, end: 6, href: "https://a.io/abcdef" }]],
+      ],
+      [
         "Claude Code tool output",
         [row("  ⎿  https://a.io/abc"), row("     def")],
         21,
