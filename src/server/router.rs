@@ -137,6 +137,7 @@ pub(super) fn build_router(state: Arc<AppState>) -> Router {
             get(api::get_terminal_context).post(api::refresh_terminal_context),
         )
         .route("/api/sessions/{id}/ask/page", get(api::get_ask_page))
+        .route("/api/sessions/{id}/ask/events", post(api::post_ask_event))
         .route(
             "/api/sessions/{id}/forecast",
             get(api::get_session_forecast),

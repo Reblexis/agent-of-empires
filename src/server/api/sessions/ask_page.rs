@@ -51,3 +51,72 @@ pub async fn get_ask_page(
         }
     }
 }
+
+/// One ask page event from the dashboard (docs/guides/session-inbox.md,
+/// "Measuring").
+#[derive(Debug, serde::Deserialize)]
+pub struct AskEventRequest {
+    pub event: crate::session::inbox_log::Event,
+    pub posted_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default)]
+    pub form: Option<crate::session::inbox_log::Form>,
+    #[serde(default)]
+    pub ms_open: Option<u64>,
+}
+
+/// Append an `opened`, `answered` or `dismissed` line for the session's
+/// current ask. `400` for another event or a malformed one, `404` without the
+/// session, `409` when `posted_at` is not the current ask's, `403` read-only.
+pub async fn post_ask_event(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<AskEventRequest>,
+) -> axum::response::Response {
+    use crate::session::inbox_log::{self, Entry, Event};
+    if let Some(resp) = crate::server::api::read_only_block(&state) {
+        return resp;
+    }
+    if let Some(resp) = crate::server::api::cityhall_block(&state) {
+        return resp;
+    }
+    if !matches!(
+        req.event,
+        Event::Opened | Event::Answered | Event::Dismissed
+    ) {
+        return api_error(
+            StatusCode::BAD_REQUEST,
+            "bad_event",
+            "Only opened, answered and dismissed come from the dashboard",
+        );
+    }
+    let current = {
+        let instances = state.instances.read().await;
+        match instances.iter().find(|i| i.id == id) {
+            None => return session_not_found(),
+            Some(inst) => inst.priority_ask().and_then(|a| a.posted_at),
+        }
+    };
+    if current != Some(req.posted_at) {
+        return api_error(
+            StatusCode::CONFLICT,
+            "not_current",
+            "That ask is not the session's current one",
+        );
+    }
+    let entry = Entry {
+        at: chrono::Utc::now(),
+        event: req.event,
+        session_id: id,
+        posted_at: req.posted_at,
+        form: req.form,
+        ms_open: req.ms_open,
+    };
+    match tokio::task::spawn_blocking(move || inbox_log::append(&entry)).await {
+        Ok(Ok(())) => StatusCode::NO_CONTENT.into_response(),
+        Ok(Err(e)) => api_error(StatusCode::BAD_REQUEST, "bad_event", format!("{e:#}")),
+        Err(e) => {
+            tracing::warn!(target: "server.inbox", "ask event task failed: {e}");
+            StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        }
+    }
+}

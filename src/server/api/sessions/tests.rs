@@ -1389,7 +1389,15 @@ fn from_instance_carries_the_current_priority_ask_only() {
     };
     inst.set_priority(Some(8), Some(ask.clone()));
     let reason = |inst: &Instance| SessionResponse::from_instance(inst, false).priority_ask;
-    assert_eq!(reason(&inst), Some(ask));
+    let posted = reason(&inst).unwrap();
+    assert!(posted.posted_at.is_some(), "posting stamps the request");
+    assert_eq!(
+        Ask {
+            posted_at: None,
+            ..posted
+        },
+        ask
+    );
     let wire = serde_json::to_value(SessionResponse::from_instance(&inst, false)).unwrap();
     assert_eq!(wire["priority_ask"]["kind"], "decide");
     inst.status = Status::Running;
@@ -5414,4 +5422,92 @@ async fn the_ask_page_is_served_only_for_a_current_ask_that_has_one() {
     ] {
         assert_eq!(get(id).await.status(), StatusCode::NOT_FOUND, "{why}");
     }
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn the_dashboard_logs_page_events_for_the_current_ask_only() {
+    use crate::session::inbox_log::{Entry, Event, Form};
+    use crate::session::priority::Ask;
+    let _app = crate::session::test_support::isolate_app_dir();
+    let mut inst = Instance::new("asker", "/tmp/ask-events");
+    inst.id = "askevents1".to_string();
+    inst.status = Status::Idle;
+    inst.set_priority(
+        Some(8),
+        Some(Ask {
+            text: "Pick".into(),
+            ..Ask::default()
+        }),
+    );
+    let posted_at = inst.priority_ask().unwrap().posted_at.unwrap();
+    let state = crate::server::test_support::build_test_app_state(vec![inst]);
+    let send = |id: &str, body: serde_json::Value| {
+        let state = state.clone();
+        let id = id.to_string();
+        async move {
+            let req: AskEventRequest = serde_json::from_value(body).unwrap();
+            post_ask_event(
+                axum::extract::State(state),
+                axum::extract::Path(id),
+                Json(req),
+            )
+            .await
+            .into_response()
+            .status()
+        }
+    };
+    let at = posted_at.to_rfc3339();
+    assert_eq!(
+        send(
+            "askevents1",
+            serde_json::json!({"event": "opened", "posted_at": at})
+        )
+        .await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        send("askevents1", serde_json::json!({"event": "answered", "posted_at": at, "form": "option", "ms_open": 8400})).await,
+        StatusCode::NO_CONTENT
+    );
+    // (session, body, expected, why)
+    let older = (posted_at - chrono::Duration::seconds(5)).to_rfc3339();
+    for (id, body, status, why) in [
+        (
+            "askevents1",
+            serde_json::json!({"event": "posted", "posted_at": at}),
+            StatusCode::BAD_REQUEST,
+            "posted comes from the CLI",
+        ),
+        (
+            "askevents1",
+            serde_json::json!({"event": "answered", "posted_at": at}),
+            StatusCode::BAD_REQUEST,
+            "an answer needs its form",
+        ),
+        (
+            "askevents1",
+            serde_json::json!({"event": "opened", "posted_at": older}),
+            StatusCode::CONFLICT,
+            "not the current ask",
+        ),
+        (
+            "nosuchsession",
+            serde_json::json!({"event": "opened", "posted_at": at}),
+            StatusCode::NOT_FOUND,
+            "no session",
+        ),
+    ] {
+        assert_eq!(send(id, body).await, status, "{why}");
+    }
+    let log = std::fs::read_to_string(crate::session::inbox_log::log_path().unwrap()).unwrap();
+    let lines: Vec<Entry> = log
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 2, "refused events write nothing");
+    assert_eq!(
+        (lines[1].event, lines[1].form, lines[1].ms_open),
+        (Event::Answered, Some(Form::Option), Some(8400))
+    );
 }

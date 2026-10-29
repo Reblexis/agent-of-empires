@@ -8,6 +8,7 @@ const api = vi.hoisted(() => ({
   getAskPage: vi.fn((_id: string) => Promise.resolve<string | null>(null)),
   sendSessionMessage: vi.fn((_id: string, _message: string) => Promise.resolve<string | null>(null)),
   setSessionUnread: vi.fn((_id: string, _unread: boolean) => Promise.resolve(null)),
+  postAskEvent: vi.fn((_id: string, _event: object) => Promise.resolve()),
 }));
 vi.mock("../../lib/api", () => api);
 
@@ -16,6 +17,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+const POSTED = "2026-10-28T20:00:00Z";
 const session = (ask: PriorityAsk, patch: Partial<SessionResponse> = {}): SessionResponse =>
   ({
     id: "s1",
@@ -23,14 +25,22 @@ const session = (ask: PriorityAsk, patch: Partial<SessionResponse> = {}): Sessio
     status: "Idle",
     unread: true,
     priority: 8,
-    priority_ask: ask,
+    priority_ask: { posted_at: POSTED, ...ask },
     ...patch,
   }) as SessionResponse;
 
-const renderPage = (s: SessionResponse, extra: { readOnly?: boolean } = {}) => {
+const renderPage = (s: SessionResponse, extra: { readOnly?: boolean; followers?: SessionResponse[] } = {}) => {
   const onOpenSession = vi.fn();
   const onDone = vi.fn();
-  render(<AskPage session={s} onOpenSession={onOpenSession} onDone={onDone} readOnly={extra.readOnly} />);
+  render(
+    <AskPage
+      session={s}
+      followers={extra.followers ?? []}
+      onOpenSession={onOpenSession}
+      onDone={onDone}
+      readOnly={extra.readOnly}
+    />,
+  );
   return { onOpenSession, onDone };
 };
 
@@ -127,4 +137,41 @@ it("Open session stays available; read-only and structured sessions take no inpu
   renderPage(session({ kind: "check", text: "Look" }, { view: "structured" } as Partial<SessionResponse>));
   expect(screen.queryByRole("button", { name: "Done" })).toBeNull();
   expect(screen.getByRole("button", { name: "Open session" })).toBeTruthy();
+});
+
+it("one answer reaches every session whose ask is merged into this one, and their asks close", async () => {
+  const follower = session({ text: "Budget too?", merged_into: "s1" }, { id: "s2" });
+  const { onDone } = renderPage(session({ kind: "decide", text: "Budget?" }), { followers: [follower] });
+  fireEvent.click(screen.getByRole("button", { name: "Yes" }));
+  await waitFor(() => expect(onDone).toHaveBeenCalledWith(["s1", "s2"]));
+  expect(api.sendSessionMessage).toHaveBeenCalledWith("s1", 'Inbox reply to "Budget?": Yes');
+  expect(api.sendSessionMessage).toHaveBeenCalledWith("s2", 'Inbox reply to "Budget?": Yes');
+  expect(api.setSessionUnread).toHaveBeenCalledWith("s2", false);
+});
+
+it("the page reports when it was opened and how the answer was given, for the speed metric", async () => {
+  renderPage(session({ kind: "answer", text: "Which city?" }));
+  await waitFor(() => expect(api.postAskEvent).toHaveBeenCalledWith("s1", { event: "opened", posted_at: POSTED }));
+  fireEvent.change(screen.getByRole("textbox"), { target: { value: "Prague" } });
+  fireEvent.click(screen.getByRole("button", { name: "Send" }));
+  await waitFor(() =>
+    expect(api.postAskEvent).toHaveBeenCalledWith(
+      "s1",
+      expect.objectContaining({ event: "answered", posted_at: POSTED, form: "text", ms_open: expect.any(Number) }),
+    ),
+  );
+  // (kind, button, form)
+  const cases: [PriorityAsk["kind"], string, string][] = [
+    ["decide", "Yes", "option"],
+    ["check", "Done", "done"],
+  ];
+  for (const [kind, button, form] of cases) {
+    cleanup();
+    vi.clearAllMocks();
+    renderPage(session({ kind, text: "Ask" }));
+    fireEvent.click(screen.getByRole("button", { name: button }));
+    await waitFor(() =>
+      expect(api.postAskEvent).toHaveBeenCalledWith("s1", expect.objectContaining({ event: "answered", form })),
+    );
+  }
 });

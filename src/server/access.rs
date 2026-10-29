@@ -323,6 +323,8 @@ pub(super) const CITYHALL_MUTATION_DENY: &[(&str, &str)] = &[
     ("POST", "/api/sessions/{id}/terminal-context"),
     ("POST", "/api/sessions/{id}/ensure"),
     ("POST", "/api/sessions/{id}/send"),
+    // The Inbox's page events; CityHall has no Inbox (docs/guides/session-inbox.md).
+    ("POST", "/api/sessions/{id}/ask/events"),
     ("POST", "/api/sessions/{id}/terminal"),
     ("DELETE", "/api/sessions/{id}/terminal"),
     ("POST", "/api/sessions/{id}/container-terminal"),

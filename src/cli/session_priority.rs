@@ -42,10 +42,47 @@ pub struct PriorityArgs {
     /// know for the ask, inline only (no scripts, no network).
     #[arg(long)]
     pub page: Option<std::path::PathBuf>,
+    /// Text or Markdown file with the material behind the request, at most
+    /// 256 KiB, for the input/output agent to write the page from.
+    #[arg(long)]
+    pub context: Option<std::path::PathBuf>,
     /// Session ID or title. Defaults to `$AOE_INSTANCE_ID`, which aoe sets
     /// inside every session it launches.
     #[arg(long)]
     pub session: Option<String>,
+}
+
+#[derive(Args)]
+pub struct RefineArgs {
+    /// Session ID or title whose current ask to refine.
+    #[arg(long)]
+    pub session: String,
+    /// The ask's `posted_at` (RFC 3339, as `aoe session asks` prints it): the
+    /// request this refine was worked out for.
+    #[arg(long = "for")]
+    pub posted_at: String,
+    #[arg(long)]
+    pub text: Option<String>,
+    #[arg(long = "ask", value_enum)]
+    pub kind: Option<priority::AskKind>,
+    #[arg(long)]
+    pub objective: Option<String>,
+    #[arg(long)]
+    pub link: Option<String>,
+    #[arg(long)]
+    pub value: Option<u8>,
+    #[arg(long)]
+    pub minutes: Option<u16>,
+    #[arg(long)]
+    pub due: Option<String>,
+    /// Replaces the options as a set.
+    #[arg(long = "option")]
+    pub options: Vec<String>,
+    #[arg(long)]
+    pub page: Option<std::path::PathBuf>,
+    /// The session whose current ask this one is the same as.
+    #[arg(long = "merge-into")]
+    pub merge_into: Option<String>,
 }
 
 #[derive(Args)]
@@ -96,28 +133,139 @@ fn set_priority(
     value: &str,
     ask: priority::AskInput<'_>,
     page: Option<&[u8]>,
+    context: Option<&str>,
     session: Option<&str>,
     env_id: Option<&str>,
 ) -> Result<(String, Option<u8>)> {
+    use crate::session::{ask_page, inbox_log};
     let value = priority::parse_priority_arg(value)?;
     let ask = priority::parse_ask(priority::AskInput {
         page: page.is_some(),
         ..ask
     })?;
+    if context.is_some() && ask.is_none() {
+        anyhow::bail!("an ask needs its one line saying what to do");
+    }
     let replaces = ask.is_some() || value.is_none();
     let (home, id) = resolve_home(profile, session, env_id)?;
-    let title = Storage::new_unwatched(&home)?.update(|instances, _groups| {
+    let (title, posted_at) = Storage::new_unwatched(&home)?.update(|instances, _groups| {
         super::patch_instance(instances, &id, |inst| {
+            let new = ask.is_some();
             inst.set_priority(value, ask);
-            Ok(inst.title.clone())
+            let posted_at = inst
+                .priority
+                .as_ref()
+                .and_then(|p| p.ask.as_ref())
+                .filter(|_| new)
+                .and_then(|a| a.posted_at);
+            Ok((inst.title.clone(), posted_at))
         })
     })?;
     match page {
-        Some(html) => crate::session::ask_page::write_page(&id, html)?,
-        None if replaces => crate::session::ask_page::clear_page(&id)?,
+        Some(html) => ask_page::write_page(&id, html)?,
+        None if replaces => ask_page::clear_page(&id)?,
         None => {}
     }
+    match context {
+        Some(text) => ask_page::write_context(&id, text)?,
+        None if replaces => ask_page::clear_context(&id)?,
+        None => {}
+    }
+    if let Some(posted_at) = posted_at {
+        log_event(&id, posted_at, inbox_log::Event::Posted);
+    }
     Ok((title, value))
+}
+
+/// The log is for measuring; a failed append never fails the command.
+fn log_event(
+    id: &str,
+    posted_at: chrono::DateTime<chrono::Utc>,
+    event: crate::session::inbox_log::Event,
+) {
+    let entry = crate::session::inbox_log::Entry {
+        at: chrono::Utc::now(),
+        event,
+        session_id: id.to_string(),
+        posted_at,
+        form: None,
+        ms_open: None,
+    };
+    if let Err(e) = crate::session::inbox_log::append(&entry) {
+        tracing::warn!(target: "session.inbox", "inbox log not written: {e:#}");
+    }
+}
+
+/// Replace fields of the session's current ask for the input/output agent.
+/// Returns the session's title.
+fn refine(
+    profile: &str,
+    session: &str,
+    posted_at: &str,
+    refine: priority::Refine<'_>,
+    page: Option<&[u8]>,
+) -> Result<String> {
+    use anyhow::{bail, Context};
+    let refine = priority::Refine {
+        page: refine.page || page.is_some(),
+        ..refine
+    };
+    let posted_at = chrono::DateTime::parse_from_rfc3339(posted_at)
+        .with_context(|| format!("--for must be the ask's posted_at, got {posted_at:?}"))?
+        .with_timezone(&chrono::Utc);
+    let (home, id) = resolve_home(profile, Some(session), None)?;
+    let title = Storage::new_unwatched(&home)?.update(|instances, _groups| {
+        if let Some(into) = refine.merge_into {
+            if into == id {
+                bail!("an ask cannot be merged into itself");
+            }
+            let target = instances.iter().find(|i| i.id == into);
+            match target.and_then(|t| t.priority_ask()) {
+                Some(ask) if ask.merged_into.is_none() => {}
+                Some(_) => {
+                    bail!("session {into}'s ask is itself merged; merge into the one it names")
+                }
+                None => bail!("session {into} has no current ask to merge into"),
+            }
+        }
+        super::patch_instance(instances, &id, |inst| {
+            inst.priority = Some(priority::refine_ask(
+                inst.priority.as_ref(),
+                inst.run_started_at,
+                posted_at,
+                refine,
+                chrono::Utc::now(),
+            )?);
+            Ok(inst.title.clone())
+        })
+    })?;
+    if let Some(html) = page {
+        crate::session::ask_page::write_page(&id, html)?;
+    }
+    log_event(&id, posted_at, crate::session::inbox_log::Event::Refined);
+    Ok(title)
+}
+
+/// Every current ask, as `aoe session asks` prints it.
+fn asks_json(
+    instances: &[crate::session::Instance],
+    context: impl Fn(&str) -> Option<String>,
+) -> Vec<serde_json::Value> {
+    instances
+        .iter()
+        .filter_map(|inst| {
+            let ask = inst.priority_ask()?;
+            Some(serde_json::json!({
+                "session_id": inst.id,
+                "title": inst.title,
+                "profile": inst.source_profile,
+                "status": inst.status.as_str(),
+                "priority": inst.effective_priority(),
+                "ask": ask,
+                "context": context(&inst.id),
+            }))
+        })
+        .collect()
 }
 
 /// Override the estimates on the session's current ask. Returns its title.
@@ -159,11 +307,17 @@ pub async fn run(profile: &str, args: PriorityArgs) -> Result<()> {
         options: &args.options,
         page: false,
     };
+    let context = args
+        .context
+        .as_deref()
+        .map(crate::session::ask_page::read_context_source)
+        .transpose()?;
     let (title, value) = set_priority(
         profile,
         &args.value,
         ask,
         page.as_deref(),
+        context.as_deref(),
         args.session.as_deref(),
         env_id.as_deref(),
     )?;
@@ -171,6 +325,46 @@ pub async fn run(profile: &str, args: PriorityArgs) -> Result<()> {
         Some(v) => println!("✓ Set priority for '{title}': {v}"),
         None => println!("✓ Cleared priority for '{title}'"),
     }
+    Ok(())
+}
+
+pub async fn run_refine(profile: &str, args: RefineArgs) -> Result<()> {
+    let page = args
+        .page
+        .as_deref()
+        .map(crate::session::ask_page::read_source)
+        .transpose()?;
+    let title = refine(
+        profile,
+        &args.session,
+        &args.posted_at,
+        priority::Refine {
+            kind: args.kind,
+            text: args.text.as_deref(),
+            objective: args.objective.as_deref(),
+            link: args.link.as_deref(),
+            value: args.value,
+            minutes: args.minutes,
+            due: args.due.as_deref(),
+            options: &args.options,
+            page: page.is_some(),
+            merge_into: args.merge_into.as_deref(),
+        },
+        page.as_deref(),
+    )?;
+    println!("✓ Refined the ask of '{title}'");
+    Ok(())
+}
+
+pub async fn run_asks() -> Result<()> {
+    let mut asks = Vec::new();
+    for profile in crate::session::list_profiles()? {
+        let instances = Storage::open_unwatched(&profile)?.load()?;
+        asks.extend(asks_json(&instances, |id| {
+            crate::session::ask_page::read_context(id).ok().flatten()
+        }));
+    }
+    println!("{}", serde_json::to_string_pretty(&asks)?);
     Ok(())
 }
 
@@ -229,6 +423,7 @@ mod tests {
             priority::AskInput::default(),
             None,
             None,
+            None,
             Some("aaaa1111"),
         )
         .unwrap();
@@ -248,6 +443,7 @@ mod tests {
             "default",
             "9",
             priority::AskInput::default(),
+            None,
             None,
             None,
             Some("bbbb2222"),
@@ -271,6 +467,7 @@ mod tests {
             "7",
             priority::AskInput::default(),
             None,
+            None,
             Some("pricing work"),
             Some("cccc3333"),
         )
@@ -284,6 +481,7 @@ mod tests {
             "default",
             "clear",
             priority::AskInput::default(),
+            None,
             None,
             Some("pricing work"),
             None,
@@ -304,6 +502,7 @@ mod tests {
             priority::AskInput::default(),
             None,
             None,
+            None,
             Some("aaaa1111"),
         )
         .unwrap();
@@ -314,6 +513,7 @@ mod tests {
                     "default",
                     bad,
                     priority::AskInput::default(),
+                    None,
                     None,
                     None,
                     Some("aaaa1111")
@@ -340,7 +540,7 @@ mod tests {
             link: Some("https://example.com"),
             ..priority::AskInput::default()
         };
-        set_priority("default", "8", decide, None, None, Some("aaaa1111")).unwrap();
+        set_priority("default", "8", decide, None, None, None, Some("aaaa1111")).unwrap();
         let text = |inst: Instance| inst.priority.and_then(|p| p.ask).map(|a| a.text);
         let inst = stored("default", "aaaa1111");
         let ask = inst.priority_ask().cloned().unwrap();
@@ -353,6 +553,7 @@ mod tests {
             "default",
             "5",
             priority::AskInput::default(),
+            None,
             None,
             Some("pricing work"),
             None,
@@ -373,7 +574,7 @@ mod tests {
                 ..priority::AskInput::default()
             },
         ] {
-            set_priority("default", "9", bad, None, None, Some("aaaa1111")).unwrap_err();
+            set_priority("default", "9", bad, None, None, None, Some("aaaa1111")).unwrap_err();
         }
         let inst = stored("default", "aaaa1111");
         assert_eq!(inst.priority.as_ref().map(|p| p.value), Some(5));
@@ -397,6 +598,7 @@ mod tests {
             page("Pick"),
             Some(b"<p>40 EUR</p>"),
             None,
+            None,
             Some("aaaa1111"),
         )
         .unwrap();
@@ -409,12 +611,22 @@ mod tests {
             priority::AskInput::default(),
             None,
             None,
+            None,
             Some("aaaa1111"),
         )
         .unwrap();
         assert!(stored_page().is_some());
         // A new ask without a page drops the old page.
-        set_priority("default", "6", page("Other"), None, None, Some("aaaa1111")).unwrap();
+        set_priority(
+            "default",
+            "6",
+            page("Other"),
+            None,
+            None,
+            None,
+            Some("aaaa1111"),
+        )
+        .unwrap();
         assert_eq!(stored_page(), None);
         assert!(!stored("default", "aaaa1111").priority_ask().unwrap().page);
         set_priority(
@@ -423,6 +635,7 @@ mod tests {
             page("Pick"),
             Some(b"<p>x</p>"),
             None,
+            None,
             Some("aaaa1111"),
         )
         .unwrap();
@@ -430,6 +643,7 @@ mod tests {
             "default",
             "clear",
             priority::AskInput::default(),
+            None,
             None,
             None,
             Some("aaaa1111"),
@@ -463,7 +677,7 @@ mod tests {
             minutes: Some(20),
             ..priority::AskInput::default()
         };
-        set_priority("default", "8", posted, None, None, Some("aaaa1111")).unwrap();
+        set_priority("default", "8", posted, None, None, None, Some("aaaa1111")).unwrap();
         let before = stored("default", "aaaa1111").priority.unwrap();
         let title = rank(
             "default",
@@ -486,6 +700,231 @@ mod tests {
         assert_eq!((after.value, after.set_at), (before.value, before.set_at));
     }
 
+    fn post(id: &str, text: &str) -> chrono::DateTime<chrono::Utc> {
+        let ask = priority::AskInput {
+            kind: Some(priority::AskKind::Answer),
+            text: Some(text),
+            ..priority::AskInput::default()
+        };
+        set_priority("default", "8", ask, None, Some("the notes"), None, Some(id)).unwrap();
+        stored("default", id)
+            .priority_ask()
+            .unwrap()
+            .posted_at
+            .unwrap()
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn a_request_carries_its_context_logs_that_it_was_posted_and_a_new_ask_drops_old_context() {
+        let _app = crate::session::test_support::isolate_app_dir();
+        seed("default", "aaaa1111", "pricing work");
+        let posted_at = post("aaaa1111", "need a number");
+        assert_eq!(
+            crate::session::ask_page::read_context("aaaa1111")
+                .unwrap()
+                .as_deref(),
+            Some("the notes")
+        );
+        let log = std::fs::read_to_string(crate::session::inbox_log::log_path().unwrap()).unwrap();
+        let entry: crate::session::inbox_log::Entry =
+            serde_json::from_str(log.lines().last().unwrap()).unwrap();
+        assert_eq!(
+            (entry.event, entry.session_id.as_str(), entry.posted_at),
+            (
+                crate::session::inbox_log::Event::Posted,
+                "aaaa1111",
+                posted_at
+            )
+        );
+        // A re-rank is not a new request: no context change, no posted line.
+        set_priority(
+            "default",
+            "5",
+            priority::AskInput::default(),
+            None,
+            None,
+            None,
+            Some("aaaa1111"),
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(crate::session::inbox_log::log_path().unwrap())
+                .unwrap()
+                .lines()
+                .count(),
+            1
+        );
+        assert!(crate::session::ask_page::read_context("aaaa1111")
+            .unwrap()
+            .is_some());
+        let plain = priority::AskInput {
+            text: Some("other"),
+            ..priority::AskInput::default()
+        };
+        set_priority("default", "6", plain, None, None, None, Some("aaaa1111")).unwrap();
+        assert_eq!(
+            crate::session::ask_page::read_context("aaaa1111").unwrap(),
+            None
+        );
+        let bare = set_priority(
+            "default",
+            "6",
+            priority::AskInput::default(),
+            None,
+            Some("x"),
+            None,
+            Some("aaaa1111"),
+        );
+        assert!(
+            format!("{:#}", bare.unwrap_err()).contains("one line"),
+            "context needs an ask"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn a_refine_lands_only_on_the_request_it_was_worked_out_for() {
+        let _app = crate::session::test_support::isolate_app_dir();
+        seed("default", "aaaa1111", "pricing work");
+        let first = post("aaaa1111", "need a number");
+        let fields = priority::Refine {
+            text: Some("Approve 40 EUR?"),
+            value: Some(70),
+            minutes: Some(2),
+            ..priority::Refine::default()
+        };
+        refine(
+            "default",
+            "aaaa1111",
+            &first.to_rfc3339(),
+            fields,
+            Some(b"<p>page</p>"),
+        )
+        .unwrap();
+        let ask = stored("default", "aaaa1111")
+            .priority_ask()
+            .cloned()
+            .unwrap();
+        assert_eq!(
+            (ask.text.as_str(), ask.value, ask.page),
+            ("Approve 40 EUR?", Some(70), true)
+        );
+        assert!(ask.refined_at.is_some());
+        assert_eq!(
+            crate::session::ask_page::read_page("aaaa1111")
+                .unwrap()
+                .as_deref(),
+            Some(&b"<p>page</p>"[..])
+        );
+        let log = std::fs::read_to_string(crate::session::inbox_log::log_path().unwrap()).unwrap();
+        assert!(log.lines().last().unwrap().contains(r#""event":"refined""#));
+        // The session posts a newer request; a refine for the first is refused.
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        post("aaaa1111", "newer request");
+        let late = refine("default", "aaaa1111", &first.to_rfc3339(), fields, None).unwrap_err();
+        assert!(format!("{late:#}").contains("replaced"), "{late:#}");
+        assert_eq!(
+            stored("default", "aaaa1111").priority_ask().unwrap().text,
+            "newer request"
+        );
+        assert!(refine("default", "aaaa1111", "not a time", fields, None).is_err());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn a_merge_needs_another_session_with_a_current_unmerged_ask() {
+        let _app = crate::session::test_support::isolate_app_dir();
+        for (id, title) in [
+            ("aaaa1111", "a"),
+            ("bbbb2222", "b"),
+            ("cccc3333", "c"),
+            ("dddd4444", "d"),
+        ] {
+            seed("default", id, title);
+        }
+        let a = post("aaaa1111", "budget?");
+        let b = post("bbbb2222", "budget too?");
+        let c = post("cccc3333", "budget three?");
+        let merge = |into| priority::Refine {
+            merge_into: Some(into),
+            ..priority::Refine::default()
+        };
+        refine(
+            "default",
+            "bbbb2222",
+            &b.to_rfc3339(),
+            merge("aaaa1111"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            stored("default", "bbbb2222")
+                .priority_ask()
+                .unwrap()
+                .merged_into
+                .as_deref(),
+            Some("aaaa1111")
+        );
+        // (session, its posted_at, target, why refused)
+        for (id, at, into, why) in [
+            ("aaaa1111", a, "aaaa1111", "itself"),
+            ("cccc3333", c, "dddd4444", "the target has no ask"),
+            ("cccc3333", c, "bbbb2222", "the target is itself merged"),
+            ("cccc3333", c, "zzzz9999", "no such session"),
+        ] {
+            assert!(
+                refine("default", id, &at.to_rfc3339(), merge(into), None).is_err(),
+                "{why}"
+            );
+        }
+        assert_eq!(
+            stored("default", "cccc3333")
+                .priority_ask()
+                .unwrap()
+                .merged_into,
+            None
+        );
+    }
+
+    #[test]
+    fn asks_lists_every_current_ask_with_its_context() {
+        let mut asking = Instance::new("pricing work", "/tmp/asks");
+        asking.id = "aaaa1111".into();
+        asking.status = Status::Idle;
+        asking.set_priority(
+            Some(8),
+            Some(priority::Ask {
+                text: "Pick".into(),
+                ..priority::Ask::default()
+            }),
+        );
+        let mut running = Instance::new("busy", "/tmp/asks");
+        running.id = "bbbb2222".into();
+        running.status = Status::Running;
+        running.set_priority(
+            Some(8),
+            Some(priority::Ask {
+                text: "stale".into(),
+                ..priority::Ask::default()
+            }),
+        );
+        let silent = Instance::new("quiet", "/tmp/asks");
+        let asks = asks_json(&[asking, running, silent], |id| {
+            (id == "aaaa1111").then(|| "notes".to_string())
+        });
+        assert_eq!(asks.len(), 1, "{asks:?}");
+        let a = &asks[0];
+        assert_eq!(a["session_id"], "aaaa1111");
+        assert_eq!(a["title"], "pricing work");
+        assert_eq!(a["status"], "idle");
+        assert_eq!(a["priority"], 8);
+        assert_eq!(a["ask"]["text"], "Pick");
+        assert!(a["ask"]["posted_at"].is_string());
+        assert_eq!(a["context"], "notes");
+        assert!(a.get("profile").is_some());
+    }
+
     #[test]
     #[serial_test::serial]
     fn without_a_target_it_refuses() {
@@ -496,6 +935,7 @@ mod tests {
                 "default",
                 "5",
                 priority::AskInput::default(),
+                None,
                 None,
                 None,
                 None

@@ -45,6 +45,8 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe session forecast clear`↴](#aoe-session-forecast-clear)
 * [`aoe session priority`↴](#aoe-session-priority)
 * [`aoe session rank`↴](#aoe-session-rank)
+* [`aoe session refine`↴](#aoe-session-refine)
+* [`aoe session asks`↴](#aoe-session-asks)
 * [`aoe session list-trash`↴](#aoe-session-list-trash)
 * [`aoe session empty-trash`↴](#aoe-session-empty-trash)
 * [`aoe group`↴](#aoe-group)
@@ -444,6 +446,8 @@ Manage session lifecycle (start, stop, attach, etc.)
 * `forecast` — Write, print, or remove the session's forecast card: what happens to the numbers it works on if it stops now versus if it continues. The web dashboard pins the card on the session. See docs/guides/session-forecast.md
 * `priority` — Score how soon this session needs you, 0 to 10, or `clear`. An agent runs it at the end of its turn; the Attention sort and the TUI and web rows use it. See docs/guides/session-priority.md
 * `rank` — Override the value, minutes or due of the session's current Inbox ask, so the queue reflects the whole picture rather than the session's own estimate. See docs/guides/session-inbox.md
+* `refine` — For the input/output agent: replace fields of a session's current Inbox ask, or merge it into another's. See docs/guides/session-inbox.md
+* `asks` — Print every current Inbox ask as JSON, with its request context
 * `list-trash` — List the sessions currently in the trash
 * `empty-trash` — Permanently purge every trashed session in the profile (irreversible)
 
@@ -849,6 +853,7 @@ Score how soon this session needs you, 0 to 10, or `clear`. An agent runs it at 
 * `--due <DUE>` — When doing it stops being worth as much: YYYY-MM-DD or RFC 3339
 * `--option <OPTIONS>` — A choice of a `decide` ask (repeat, at most 6); none means Yes and No
 * `--page <PAGE>` — HTML file for the ask page, at most 4 MiB: only what the user needs to know for the ask, inline only (no scripts, no network)
+* `--context <CONTEXT>` — Text or Markdown file with the material behind the request, at most 256 KiB, for the input/output agent to write the page from
 * `--session <SESSION>` — Session ID or title. Defaults to `$AOE_INSTANCE_ID`, which aoe sets inside every session it launches
 
 
@@ -865,6 +870,40 @@ Override the value, minutes or due of the session's current Inbox ask, so the qu
 * `--minutes <MINUTES>` — Estimated minutes of the user's attention, 1 to 480
 * `--due <DUE>` — When doing it stops being worth as much: YYYY-MM-DD or RFC 3339
 * `--session <SESSION>` — Session ID or title. Defaults to `$AOE_INSTANCE_ID`
+
+
+
+## `aoe session refine`
+
+For the input/output agent: replace fields of a session's current Inbox ask, or merge it into another's. See docs/guides/session-inbox.md
+
+**Usage:** `aoe session refine [OPTIONS] --session <SESSION> --for <POSTED_AT>`
+
+###### **Options:**
+
+* `--session <SESSION>` — Session ID or title whose current ask to refine
+* `--for <POSTED_AT>` — The ask's `posted_at` (RFC 3339, as `aoe session asks` prints it): the request this refine was worked out for
+* `--text <TEXT>`
+* `--ask <KIND>`
+
+  Possible values: `check`, `do`, `evaluate`, `answer`, `decide`, `learn`
+
+* `--objective <OBJECTIVE>`
+* `--link <LINK>`
+* `--value <VALUE>`
+* `--minutes <MINUTES>`
+* `--due <DUE>`
+* `--option <OPTIONS>` — Replaces the options as a set
+* `--page <PAGE>`
+* `--merge-into <MERGE_INTO>` — The session whose current ask this one is the same as
+
+
+
+## `aoe session asks`
+
+Print every current Inbox ask as JSON, with its request context
+
+**Usage:** `aoe session asks`
 
 
 

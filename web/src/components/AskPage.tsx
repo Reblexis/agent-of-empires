@@ -1,12 +1,14 @@
-import { useEffect, useState } from "react";
-import { getAskPage, sendSessionMessage, setSessionUnread } from "../lib/api";
+import { useEffect, useRef, useState } from "react";
+import { getAskPage, postAskEvent, sendSessionMessage, setSessionUnread } from "../lib/api";
 import type { SessionResponse } from "../lib/types";
 
 interface Props {
   session: SessionResponse;
+  /** Sessions whose current ask is merged into this one: the reply reaches them too. */
+  followers: readonly SessionResponse[];
   onOpenSession: (sessionId: string) => void;
-  /** The reply went through and the ask closed. */
-  onDone: () => void;
+  /** The reply went through and these sessions' asks closed. */
+  onDone: (answered: string[]) => void;
   readOnly?: boolean;
 }
 
@@ -17,12 +19,21 @@ const PAGE_BASE = "body{margin:0;padding:12px;font:14px/1.5 system-ui,sans-serif
 
 const isUrl = (link: string) => /^https?:\/\//i.test(link);
 
+const now = () => Date.now();
+
+/** The page was shown: the start of the user's attention on this ask. */
+function reportOpened(id: string, postedAt: string | null, readOnly: boolean | undefined) {
+  if (postedAt && !readOnly) void postAskEvent(id, { event: "opened", posted_at: postedAt });
+}
+
 function framed(html: string): string {
   return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${PAGE_POLICY}"><meta name="viewport" content="width=device-width,initial-scale=1"><style>${PAGE_BASE}</style></head><body>${html}</body></html>`;
 }
 
-export function AskPage({ session, onOpenSession, onDone, readOnly }: Props) {
+export function AskPage({ session, followers, onOpenSession, onDone, readOnly }: Props) {
   const ask = session.priority_ask;
+  const postedAt = ask?.posted_at ?? null;
+  const openedAt = useRef(0);
   const [page, setPage] = useState<string | null>(null);
   const [answer, setAnswer] = useState("");
   const [sending, setSending] = useState(false);
@@ -37,20 +48,37 @@ export function AskPage({ session, onOpenSession, onDone, readOnly }: Props) {
     };
   }, [session.id, ask?.page]);
 
+  useEffect(() => {
+    openedAt.current = now();
+    reportOpened(session.id, postedAt, readOnly);
+  }, [session.id, postedAt, readOnly]);
+
   if (!ask) return null;
   const takesInput = !readOnly && session.view !== "structured";
 
-  const reply = async (input: string) => {
+  const reply = async (input: string, form: "option" | "text" | "done") => {
     setSending(true);
     setError(null);
-    const failed = await sendSessionMessage(session.id, `Inbox reply to "${ask.text}": ${input}`);
+    const message = `Inbox reply to "${ask.text}": ${input}`;
+    const failed = await sendSessionMessage(session.id, message);
     if (failed) {
       setError(`Not sent: ${failed}`);
       setSending(false);
       return;
     }
-    await setSessionUnread(session.id, false);
-    onDone();
+    if (postedAt)
+      void postAskEvent(session.id, {
+        event: "answered",
+        posted_at: postedAt,
+        form,
+        ms_open: now() - openedAt.current,
+      });
+    const answered = [session.id];
+    for (const follower of followers) {
+      if (!(await sendSessionMessage(follower.id, message))) answered.push(follower.id);
+    }
+    await Promise.all(answered.map((id) => setSessionUnread(id, false)));
+    onDone(answered);
   };
 
   const choices = ask.options?.length ? ask.options : ["Yes", "No"];
@@ -111,7 +139,7 @@ export function AskPage({ session, onOpenSession, onDone, readOnly }: Props) {
                 key={choice}
                 type="button"
                 disabled={sending}
-                onClick={() => void reply(choice)}
+                onClick={() => void reply(choice, "option")}
                 className={`${button} bg-brand-600 text-surface-950 hover:bg-brand-500`}
               >
                 {choice}
@@ -124,7 +152,7 @@ export function AskPage({ session, onOpenSession, onDone, readOnly }: Props) {
             className="flex gap-2"
             onSubmit={(e) => {
               e.preventDefault();
-              if (answer.trim()) void reply(answer.trim());
+              if (answer.trim()) void reply(answer.trim(), "text");
             }}
           >
             <textarea
@@ -146,7 +174,7 @@ export function AskPage({ session, onOpenSession, onDone, readOnly }: Props) {
           <button
             type="button"
             disabled={sending}
-            onClick={() => void reply("done")}
+            onClick={() => void reply("done", "done")}
             className={`${button} bg-brand-600 text-surface-950 hover:bg-brand-500`}
           >
             Done

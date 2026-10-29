@@ -101,3 +101,31 @@ test("an ask page opened by its URL, as a push or a shared link does, shows the 
   await expect(page.getByRole("heading", { name: "Approve the 40 EUR ad budget" })).toBeVisible();
   await expect(page.frameLocator('iframe[title="Ask page"]').getByText("40 EUR buys 3k views")).toBeVisible();
 });
+
+test("after an answer the next ask's page opens straight away, the pages coming one after another", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1280, height: 720 });
+  const ask = (text: string, value: number) => ({
+    kind: "check",
+    text,
+    value,
+    minutes: 1,
+    posted_at: "2026-10-28T20:00:00Z",
+  });
+  await mockSessionsList(page, () => [
+    { id: "first", title: "First", unread: true, priority: 5, priority_ask: ask("Look at the chart", 90) },
+    { id: "second", title: "Second", unread: true, priority: 5, priority_ask: ask("Read the note", 40) },
+  ]);
+  for (const id of ["first", "second"]) {
+    await page.route(`**/api/sessions/${id}/send`, (r) => r.fulfill({ json: { sent: true } }));
+    await page.route(`**/api/sessions/${id}/unread`, (r) => r.fulfill({ json: { id } }));
+    await page.route(`**/api/sessions/${id}/ask/events`, (r) => r.fulfill({ status: 204 }));
+  }
+  await page.goto("/ask/first");
+  await page.getByTestId("ask-page").getByRole("button", { name: "Done" }).click();
+  await expect(page).toHaveURL(/\/ask\/second$/);
+  await expect(page.getByRole("heading", { name: "Read the note" })).toBeVisible();
+  await page.getByTestId("ask-page").getByRole("button", { name: "Done" }).click();
+  await expect(page).toHaveURL(/\/$/);
+});

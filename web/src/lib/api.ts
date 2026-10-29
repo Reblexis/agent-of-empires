@@ -2250,3 +2250,16 @@ export async function sendSessionMessage(id: string, message: string): Promise<s
     return "network_error";
   }
 }
+
+/** Report an ask page event for the Inbox speed metric; failures are ignored. */
+export async function postAskEvent(
+  id: string,
+  event: {
+    event: "opened" | "answered" | "dismissed";
+    posted_at: string;
+    form?: "option" | "text" | "done";
+    ms_open?: number;
+  },
+): Promise<void> {
+  await fetchOk(`/api/sessions/${encodeURIComponent(id)}/ask/events`, jsonInit("POST", event));
+}

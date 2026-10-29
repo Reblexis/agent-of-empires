@@ -22,6 +22,18 @@ And: "yes but i think it should not lead to like inidvidual sessions but instead
 mayb elike html pages hyper optimized to commmunicate necessary information and
 get the necessary output yk?"
 
+And, naming who owns the queue: "also i would like the queue of inbox/pages made
+by agent (it should be made by one agent which is being sent request on what
+needs to be figured out... lets call this agent input/output agent its  role is
+to maximize input output speed between me and my agents communciation)", and,
+approving it: "okay build it.. i guess all that thisagent should be responsible
+for is just as efficient communication between my brain and the reset of the
+world in general.. i think this general mission it should have but starting only
+with my communication with the coding sessions or whatever.. through the html
+pages that just come one after another.. it should also preferably measure speed
+and learn over time how to maximize input output speed and give suggestions that
+would increase it.."
+
 Earlier the same day: "I would prefer if this system just knew me and would be,
 like, able to tell, okay, this session needs your attention, this session needs
 your attention, go here, go here, go here now", and "once I go to a session and
@@ -29,7 +41,10 @@ I read it already, it should obviously disappear automatically."
 
 ## An ask
 
-A session posts its ask with its priority score, at the end of its turn:
+A session posts its ask with its priority score, at the end of its turn. With an
+[input/output agent](#the-inputoutput-agent) running, the session sends only the
+request (kind, one line, objective, `--context`) and the agent writes the rest;
+any field works either way:
 
 ```sh
 aoe session priority 8 --ask decide --objective "Telarchy social media support" \
@@ -59,20 +74,26 @@ aoe session priority 8 --ask decide --objective "Telarchy social media support" 
   Options on any other kind are refused.
 - **Page** (`--page <file>`): the ask page's HTML, at most 4 MiB. Without one the
   dashboard builds the page from the ask's own fields.
+- **Context** (`--context <file>`): the material behind the request, plain text
+  or Markdown, at most 256 KiB: what the input/output agent writes the page
+  from. It is never shown to the user as is.
 
 Text, objective, link and options are trimmed and their whitespace runs collapse
 to one space. A field over its limit or out of its range, an unknown kind, an
-unparseable due or an unreadable page exits non-zero and changes nothing.
+unparseable due or an unreadable page or context exits non-zero and changes
+nothing. Posting stamps the ask's `posted_at`, the request's identity.
 
 The ask belongs to the score and shares its lifetime
 ([session-priority.md](session-priority.md)): once the session runs again (the
 user answered it) the ask no longer counts. Setting a score with text replaces
-the whole ask, its page included (a new ask without `--page` has none); setting
+the whole ask, its page and context included (a new ask without `--page` has
+none); setting
 one without text keeps the stored ask while the stored score is current, so a
-focus re-rank with `--session` never erases it. `clear` drops score, ask and
-page. aoe stores the page as `<app_dir>/ask-pages/<session id>.html`, outside
-`sessions.json`; deleting the session deletes it, and the daemon removes pages
-of sessions that no longer exist when it starts.
+focus re-rank with `--session` never erases it. `clear` drops score, ask, page
+and context. aoe stores them as `<app_dir>/ask-pages/<session id>.html` and
+`<session id>.context`, outside `sessions.json`; deleting the session deletes
+them, and the daemon removes those of sessions that no longer exist when it
+starts.
 
 ### Re-ranking from the whole picture
 
@@ -89,9 +110,55 @@ no current ask (none posted, or the session ran since) it exits non-zero and
 changes nothing. The override lasts as long as the ask: the session's own
 re-score without text keeps it, a new ask from the session replaces it.
 
+## The input/output agent
+
+One agent owns the queue: it turns each session's request into the ask the user
+sees, and its metric is input/output speed between the user and their agents
+(on Viktor's machine, io-agent in the agent economy; its own docs govern how it
+decides). aoe gives it three things and keeps the mechanics itself.
+
+**Reading the queue.** `aoe session asks` prints every current ask as JSON, one
+object per session: `session_id`, `title`, `profile`, `status`, `priority`, the
+`ask` (all fields above plus `posted_at`, `refined_at`, `merged_into`), and the
+`context` text or `null`. A request is unrefined while `refined_at` is absent.
+
+**Refining an ask.**
+
+```sh
+aoe session refine --session <id> --for <posted_at> [--text "<line>"] [--ask <kind>] \
+  [--objective ...] [--link ...] [--value N] [--minutes N] [--due ...] \
+  [--option ...]... [--page <file>] [--merge-into <session id>]
+```
+
+It replaces only the given fields of that session's current ask, stamps
+`refined_at`, and leaves who asked, `posted_at`, the score and its currency
+alone. `--for` must equal the ask's `posted_at`: a refine worked out for a
+request the session has since replaced exits non-zero and changes nothing, so a
+slow refine never overwrites a newer request. Options are replaced as a set when
+any is given. With no current ask it exits non-zero.
+
+**Merging.** `--merge-into <id>` marks this ask as the same as session `<id>`'s
+current ask. A merged ask is not listed; when the user answers the one it is
+merged into, the same reply is typed into that session and into every session
+whose current ask is merged into it, and all of their unread markers clear. The
+target must be another session with a current, unmerged ask; anything else is
+refused. A merge ends with the merged ask (the session runs again or posts a new
+one).
+
+**Measuring.** aoe appends one JSON line per event to
+`<app_dir>/inbox-log.jsonl`, with the server's time: `posted` (a session posted
+an ask), `refined`, `opened` (the ask page was first shown in this visit),
+`answered` (with the input form: `option`, `text` or `done`, and the
+milliseconds the page was open), and `dismissed` (Done on the list, unanswered).
+Each line names `session_id` and the ask's `posted_at`. Turnaround is
+`answered.at - posted.at`; the user's attention is the answered line's
+milliseconds. The dashboard reports page events with
+`POST /api/sessions/{id}/ask/events` (`{event, posted_at, form?, ms_open?}`,
+refused in read-only mode and for an ask that is not current).
+
 ## What is listed
 
-A session is in the Inbox while both hold:
+A session is in the Inbox while all hold:
 
 1. Its [effective priority](session-priority.md) is above 0. Running, archived,
    snoozed, trashed and 0-scored sessions are never listed.
@@ -100,6 +167,7 @@ A session is in the Inbox while both hold:
    button clears the marker. Opening the ask page alone does not. The Inbox
    follows the unread marker, so it needs the unread indicator setting on (the
    default).
+3. Its ask is not merged into another session's.
 
 A session that needs the user but posted no ask is listed with a stand-in: kind
 `answer` and "Reply to it" when Waiting, otherwise kind `check` and "Read what it
@@ -149,7 +217,9 @@ Sending input types one message into the session, as
 `POST /api/sessions/{id}/send` does: `Inbox reply to "<ask text>": <input>`,
 where Done sends `done`. Once it is sent the session's unread marker is
 cleared, so the ask leaves the Inbox (and the session's next run makes it
-stale anyway), and the dashboard returns to the Inbox for the next ask. A
+stale anyway), and the dashboard opens the page of the next posted ask in Inbox
+order straight away, the pages coming one after another; with none left it
+returns to the home screen. A
 failed send keeps the ask and shows the error. Structured-view sessions do not
 take terminal messages, so their ask pages show only Open session. Read-only
 mode shows no input.
