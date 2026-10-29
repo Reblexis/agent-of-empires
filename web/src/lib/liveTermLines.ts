@@ -122,8 +122,8 @@ export const NO_LINKS: LinkSpan[] = [];
 
 /** How many extra rows a wrapped URL may continue across; bounds the join walk. */
 const MAX_URL_CONTINUATION_ROWS = 8;
-/** A row's text column: its indent plus a list or tool-output marker, where an agent's hard wrap resumes. */
-const TEXT_COLUMN_RE = /^\s*(?:(?:[-*+•⎿]|\d+[.)])\s+)?/;
+/** A row's text column: its indent plus a list, reply or tool-output marker, where an agent's hard wrap resumes. */
+const TEXT_COLUMN_RE = /^\s*(?:(?:[-*+•⎿●⏺]|\d+[.)])\s+)?/;
 /** A continuation row: indent, then the run of characters a URL can contain. */
 const URL_CONTINUATION_RE = /^(\s*)([A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]+)/;
 
