@@ -705,7 +705,16 @@ mod tests {
         read.unread = false;
         let mut paged = asking("quickask", Some(40), Some(2));
         paged.priority.as_mut().unwrap().ask.as_mut().unwrap().page = true;
-        let state = seeded(vec![asking("slowask", Some(90), Some(30)), read, paged]);
+        // An ask posted by a session that kept running: in the queue, not listed.
+        let mut busy = asking("busyask", None, None);
+        busy.status = Status::Running;
+        busy.run_started_at = Some(chrono::Utc::now() - chrono::Duration::minutes(5));
+        let state = seeded(vec![
+            asking("slowask", Some(90), Some(30)),
+            read,
+            paged,
+            busy,
+        ]);
         let (status, json) = body(get_inbox_asks(State(state)).await).await;
         assert_eq!(status, StatusCode::OK);
         let rows = json.as_array().unwrap();
@@ -724,10 +733,12 @@ mod tests {
             vec![
                 ("quickask", true, true),
                 ("slowask", true, false),
-                ("readask", false, false)
+                ("readask", false, false),
+                ("busyask", false, false),
             ]
         );
         assert_eq!(rows[0]["ask"]["text"], "ask quickask");
+        assert_eq!(rows[3]["status"], "running");
         assert!(rows[0].get("context").is_some());
     }
 

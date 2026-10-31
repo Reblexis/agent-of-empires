@@ -1402,8 +1402,10 @@ fn from_instance_carries_the_current_priority_ask_only() {
     let wire = serde_json::to_value(SessionResponse::from_instance(&inst, false)).unwrap();
     assert_eq!(wire["priority_ask"]["kind"], "decide");
     inst.status = Status::Running;
-    assert_eq!(reason(&inst), None, "a running session shows no reason");
-    inst.status = Status::Idle;
+    assert!(
+        reason(&inst).is_some(),
+        "a session that scored and kept running still shows its ask"
+    );
     inst.run_started_at = Some(chrono::Utc::now() + chrono::Duration::seconds(5));
     assert_eq!(reason(&inst), None, "the session ran since the score");
 }
