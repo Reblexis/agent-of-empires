@@ -1000,6 +1000,11 @@ mod tests {
         // running, and `aoe session asks` left it out.
         let busy = asks.iter().find(|a| a["session_id"] == "bbbb2222").unwrap();
         assert_eq!(busy["status"], "running");
+        // io ranks a running session's ask by what it posted, not its 0.
+        assert_eq!(
+            (busy["priority"].clone(), busy["score"].clone()),
+            (0.into(), 9.into())
+        );
         assert_eq!(busy["ask"]["text"], "Check the answers");
         let asks: Vec<_> = asks
             .into_iter()
@@ -1010,6 +1015,7 @@ mod tests {
         assert_eq!(a["title"], "pricing work");
         assert_eq!(a["status"], "idle");
         assert_eq!(a["priority"], 8);
+        assert_eq!(a["score"], 8);
         assert_eq!(a["ask"]["text"], "Pick");
         assert!(a["ask"]["posted_at"].is_string());
         assert_eq!(a["context"], "notes");

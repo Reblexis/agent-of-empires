@@ -739,6 +739,10 @@ mod tests {
         );
         assert_eq!(rows[0]["ask"]["text"], "ask quickask");
         assert_eq!(rows[3]["status"], "running");
+        assert_eq!(
+            (rows[3]["priority"].clone(), rows[3]["score"].clone()),
+            (0.into(), 5.into())
+        );
         assert!(rows[0].get("context").is_some());
     }
 

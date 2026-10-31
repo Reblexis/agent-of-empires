@@ -98,6 +98,7 @@ pub fn ask_json(inst: &Instance, context: Option<String>) -> Option<serde_json::
         "profile": inst.source_profile,
         "status": inst.status.as_str(),
         "priority": inst.effective_priority(),
+        "score": inst.priority.as_ref().map(|s| s.value),
         "ask": ask,
         "context": context,
     }))

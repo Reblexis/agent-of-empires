@@ -133,7 +133,9 @@ sees, and its metric is input/output speed between the user and their agents
 decides). aoe gives it three things and keeps the mechanics itself.
 
 **Reading the queue.** `aoe session asks` prints every current ask as JSON, one
-object per session: `session_id`, `title`, `profile`, `status`, `priority`, the
+object per session: `session_id`, `title`, `profile`, `status`, `priority` (the
+effective priority, 0 while running), `score` (the 0 to 10 the session posted
+with this ask), the
 `ask` (all fields above plus `posted_at`, `request`, `refined_at`,
 `merged_into`, `answered_at`), and the
 `context` text or `null`. A request is unrefined while `refined_at` is absent.
