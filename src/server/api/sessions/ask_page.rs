@@ -106,8 +106,9 @@ pub async fn post_ask_event(
         return resp;
     }
     // Only an answer keeps its claim.
-    let answered = entry.event == Event::Answered;
-    super::inbox::settle_claim(&state, &id, req.posted_at, now, answered).await;
+    if entry.event != Event::Answered {
+        super::inbox::release_claim(&state, &id, req.posted_at).await;
+    }
     let dismissed = entry.event == Event::Dismissed;
     let session_id = entry.session_id.clone();
     match tokio::task::spawn_blocking(move || inbox_log::append(&entry)).await {
