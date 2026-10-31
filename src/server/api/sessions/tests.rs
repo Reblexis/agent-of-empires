@@ -5433,6 +5433,7 @@ async fn the_dashboard_logs_page_events_for_the_current_ask_only() {
     let _app = crate::session::test_support::isolate_app_dir();
     let mut inst = Instance::new("asker", "/tmp/ask-events");
     inst.id = "askevents1".to_string();
+    inst.source_profile = "default".to_string();
     inst.status = Status::Idle;
     inst.set_priority(
         Some(8),
@@ -5442,6 +5443,13 @@ async fn the_dashboard_logs_page_events_for_the_current_ask_only() {
         }),
     );
     let posted_at = inst.priority_ask().unwrap().posted_at.unwrap();
+    Storage::new_unwatched("default")
+        .unwrap()
+        .update(|rows, _| {
+            rows.push(inst.clone());
+            Ok(())
+        })
+        .unwrap();
     let state = crate::server::test_support::build_test_app_state(vec![inst]);
     let send = |id: &str, body: serde_json::Value| {
         let state = state.clone();

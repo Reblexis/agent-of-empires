@@ -105,10 +105,12 @@ async fn current_ask(
     Ok((inst.clone(), instances.clone()))
 }
 
-/// Claim the answer to `id`'s ask posted at `posted_at`, in memory, so a
-/// concurrent answer is refused; the claim is persisted once delivered.
-/// Returns the ask's text and the sessions, or the refusal: `404` without the
-/// session, `409` `answered` or `not_current`.
+/// Claim the answer to `id`'s ask posted at `posted_at` on disk, under the
+/// storage lock, before anything is typed: the daemon reloads its rows from
+/// disk at any time, so only the stored claim refuses a second answer. The
+/// stored score is mirrored into memory. Returns the ask's text and the
+/// sessions, or the refusal: `404` without the session, `409` `answered` or
+/// `not_current`.
 pub(super) async fn claim(
     state: &AppState,
     id: &str,
@@ -116,18 +118,22 @@ pub(super) async fn claim(
     now: chrono::DateTime<chrono::Utc>,
 ) -> Result<(String, Vec<Instance>), axum::response::Response> {
     use crate::session::priority::{claim_answer, Unanswerable};
-    let mut instances = state.instances.write().await;
-    let Some(inst) = instances.iter_mut().find(|i| i.id == id) else {
-        return Err(session_not_found());
-    };
-    match claim_answer(inst.priority.as_mut(), posted_at, now) {
-        Ok(text) => Ok((text, instances.clone())),
-        Err(Unanswerable::Answered) => Err(api_error(
+    let outcome = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let stored = std::sync::Arc::clone(&outcome);
+    let claimed = mirror_stored_score(state, id, move |score| {
+        *stored.lock().unwrap() = Some(claim_answer(score, posted_at, now));
+    })
+    .await?;
+    let result = outcome.lock().unwrap().take();
+    match result {
+        _ if !claimed => Err(session_not_found()),
+        Some(Ok(text)) => Ok((text, state.instances.read().await.clone())),
+        Some(Err(Unanswerable::Answered)) => Err(api_error(
             StatusCode::CONFLICT,
             "answered",
             "That ask already took its answer",
         )),
-        Err(Unanswerable::Gone) => Err(api_error(
+        Some(Err(Unanswerable::Gone)) | None => Err(api_error(
             StatusCode::CONFLICT,
             "not_current",
             "That ask is not the session's current one",
@@ -135,25 +141,40 @@ pub(super) async fn claim(
     }
 }
 
-/// Persist a claim on disk, or drop it from memory when `delivered` is false.
-pub(super) async fn settle_claim(
+/// Undo a claim whose answer could not be delivered.
+pub(super) async fn release_claim(
     state: &AppState,
     id: &str,
     posted_at: chrono::DateTime<chrono::Utc>,
-    now: chrono::DateTime<chrono::Utc>,
-    delivered: bool,
 ) {
-    use crate::session::priority::{claim_answer, unclaim_answer};
-    let mut instances = state.instances.write().await;
-    let Some(inst) = instances.iter_mut().find(|i| i.id == id) else {
-        return;
-    };
-    if !delivered {
-        unclaim_answer(inst.priority.as_mut(), posted_at);
-        return;
+    let released = mirror_stored_score(state, id, move |score| {
+        crate::session::priority::unclaim_answer(score, posted_at)
+    })
+    .await;
+    if released.is_err() {
+        tracing::warn!(target: "server.inbox", session = %id, "answer claim not released");
     }
-    let profile = inst.source_profile.clone();
-    drop(instances);
+}
+
+/// Apply `f` to `id`'s score on disk and copy the stored score into memory.
+/// `Ok(false)` when the row is not on disk; `Err` is the response to return.
+async fn mirror_stored_score(
+    state: &AppState,
+    id: &str,
+    f: impl FnOnce(Option<&mut crate::session::priority::PriorityScore>) + Send + 'static,
+) -> Result<bool, axum::response::Response> {
+    let Some(profile) = state
+        .instances
+        .read()
+        .await
+        .iter()
+        .find(|i| i.id == id)
+        .map(|i| i.source_profile.clone())
+    else {
+        return Err(session_not_found());
+    };
+    let after = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let seen = std::sync::Arc::clone(&after);
     let persist_id = id.to_string();
     let persisted = persist_session_update(
         profile,
@@ -161,14 +182,28 @@ pub(super) async fn settle_claim(
         state.file_watch.clone(),
         move |rows| {
             if let Some(row) = rows.iter_mut().find(|i| i.id == persist_id) {
-                let _ = claim_answer(row.priority.as_mut(), posted_at, now);
+                f(row.priority.as_mut());
+                *seen.lock().unwrap() = Some(row.priority.clone());
             }
         },
     )
     .await;
     if persisted.is_err() {
-        tracing::warn!(target: "server.inbox", session = %id, "answered_at not persisted");
+        return Err(persist_failed_response());
     }
+    let Some(score) = after.lock().unwrap().take() else {
+        return Ok(false);
+    };
+    if let Some(inst) = state
+        .instances
+        .write()
+        .await
+        .iter_mut()
+        .find(|i| i.id == id)
+    {
+        inst.priority = score;
+    }
+    Ok(true)
 }
 
 /// Mark a session read, on disk and in memory, as `PATCH .../unread` does.
@@ -391,7 +426,7 @@ pub async fn post_ask_answer(
         match sent {
             Ok(_) => answered.push(target),
             Err(e) if i == 0 => {
-                settle_claim(&state, &id, req.posted_at, now, false).await;
+                release_claim(&state, &id, req.posted_at).await;
                 return api_error(
                     StatusCode::BAD_GATEWAY,
                     "not_delivered",
@@ -403,7 +438,6 @@ pub async fn post_ask_answer(
             }
         }
     }
-    settle_claim(&state, &id, req.posted_at, now, true).await;
     for target in &answered {
         mark_read(&state, target).await;
     }
@@ -859,20 +893,16 @@ mod tests {
     /// Apply `f` to the session in memory and on disk, as a CLI post and the
     /// daemon's reload would.
     async fn change(state: &AppState, id: &str, f: impl Fn(&mut Instance)) {
-        Storage::new_unwatched("default")
+        let row = Storage::new_unwatched("default")
             .unwrap()
             .update(|rows, _| {
-                rows.iter_mut().filter(|i| i.id == id).for_each(&f);
-                Ok(())
+                let row = rows.iter_mut().find(|i| i.id == id).unwrap();
+                f(row);
+                Ok(row.clone())
             })
             .unwrap();
-        state
-            .instances
-            .write()
-            .await
-            .iter_mut()
-            .filter(|i| i.id == id)
-            .for_each(&f);
+        let mut memory = state.instances.write().await;
+        *memory.iter_mut().find(|i| i.id == id).unwrap() = row;
     }
 
     fn reply(text: &str) -> Option<Ask> {
@@ -946,6 +976,19 @@ mod tests {
             (StatusCode::OK, serde_json::json!(["answerpane"]))
         );
         typed("Inbox reply to \"ask answerpane\": Ada".into());
+        // 2026-10-31 03:19 UTC, live: the daemon reloaded the row while the
+        // first answer was typed, and a second answer to the same ask was
+        // delivered too.
+        let mut stale = state.instances.read().await[0].priority.clone();
+        stale
+            .as_mut()
+            .unwrap()
+            .replaced
+            .as_mut()
+            .unwrap()
+            .ask
+            .answered_at = None;
+        state.instances.write().await[0].priority = stale;
         let (status, json) = answer(&state, "answerpane", first, "again").await;
         assert_eq!(
             (status, json["error"].as_str()),
