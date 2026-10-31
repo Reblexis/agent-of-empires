@@ -146,21 +146,24 @@ fn set_priority(
     if context.is_some() && ask.is_none() {
         anyhow::bail!("an ask needs its one line saying what to do");
     }
-    let replaces = ask.is_some() || value.is_none();
     let (home, id) = resolve_home(profile, session, env_id)?;
     let (title, posted_at) = Storage::new_unwatched(&home)?.update(|instances, _groups| {
         super::patch_instance(instances, &id, |inst| {
-            let new = ask.is_some();
+            let stored_post = |inst: &crate::session::Instance| {
+                inst.priority
+                    .as_ref()
+                    .and_then(|p| p.ask.as_ref())
+                    .and_then(|a| a.posted_at)
+            };
+            let before = stored_post(inst);
+            let given = ask.is_some();
             inst.set_priority(value, ask);
-            let posted_at = inst
-                .priority
-                .as_ref()
-                .and_then(|p| p.ask.as_ref())
-                .filter(|_| new)
-                .and_then(|a| a.posted_at);
+            let posted_at = stored_post(inst).filter(|at| given && Some(*at) != before);
             Ok((inst.title.clone(), posted_at))
         })
     })?;
+    // The same ask posted again keeps its page and context.
+    let replaces = posted_at.is_some() || value.is_none();
     match page {
         Some(html) => ask_page::write_page(&id, html)?,
         None if replaces => ask_page::clear_page(&id)?,
@@ -778,6 +781,75 @@ mod tests {
             format!("{:#}", bare.unwrap_err()).contains("one line"),
             "context needs an ask"
         );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn posting_the_same_ask_again_keeps_its_page_and_context_and_logs_no_new_request() {
+        let _app = crate::session::test_support::isolate_app_dir();
+        seed("default", "aaaa1111", "pricing work");
+        let posted_at = post("aaaa1111", "need a number");
+        crate::session::ask_page::write_page("aaaa1111", b"<p>refined</p>").unwrap();
+        let same = priority::AskInput {
+            kind: Some(priority::AskKind::Answer),
+            text: Some("need  a number "),
+            ..priority::AskInput::default()
+        };
+        set_priority("default", "6", same, None, None, None, Some("aaaa1111")).unwrap();
+        let ask = stored("default", "aaaa1111")
+            .priority_ask()
+            .cloned()
+            .unwrap();
+        assert_eq!(
+            (ask.posted_at, ask.text.as_str()),
+            (Some(posted_at), "need a number")
+        );
+        assert_eq!(
+            crate::session::ask_page::read_page("aaaa1111")
+                .unwrap()
+                .as_deref(),
+            Some(&b"<p>refined</p>"[..]),
+            "the page stays"
+        );
+        assert_eq!(
+            crate::session::ask_page::read_context("aaaa1111")
+                .unwrap()
+                .as_deref(),
+            Some("the notes"),
+            "the context stays"
+        );
+        let posted_lines = || {
+            std::fs::read_to_string(crate::session::inbox_log::log_path().unwrap())
+                .unwrap()
+                .lines()
+                .count()
+        };
+        assert_eq!(posted_lines(), 1, "no second posted line");
+        set_priority(
+            "default",
+            "6",
+            same,
+            None,
+            Some("newer notes"),
+            None,
+            Some("aaaa1111"),
+        )
+        .unwrap();
+        assert_eq!(
+            crate::session::ask_page::read_context("aaaa1111")
+                .unwrap()
+                .as_deref(),
+            Some("newer notes"),
+            "a context given with it replaces the stored one"
+        );
+        assert_eq!(
+            stored("default", "aaaa1111")
+                .priority_ask()
+                .unwrap()
+                .posted_at,
+            Some(posted_at)
+        );
+        assert_eq!(posted_lines(), 1);
     }
 
     #[test]

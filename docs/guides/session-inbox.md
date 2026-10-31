@@ -81,13 +81,26 @@ aoe session priority 8 --ask decide --objective "Telarchy social media support" 
 Text, objective, link and options are trimmed and their whitespace runs collapse
 to one space. A field over its limit or out of its range, an unknown kind, an
 unparseable due or an unreadable page or context exits non-zero and changes
-nothing. Posting stamps the ask's `posted_at`, the request's identity.
+nothing. Posting stamps the ask's `posted_at`, the request's identity, and
+keeps the kind, text and options as the session wrote them as the ask's
+`request`, which a refine never changes.
+
+**The same ask posted again is not a new one.** A post whose kind, text and
+options equal the stored ask's `request` keeps the stored ask exactly as it is:
+its `posted_at`, its refine and rank, its page and its context, even when the
+session ran since. Only the score is set, which makes the ask current again; a
+`--page` or `--context` given with it replaces the stored one. It is a new
+request instead when the stored ask was answered or merged. So a loop's wake or
+a background task's notice that ends with the same ask changes nothing the user
+sees and logs no `posted`. (Measured over 2026-10-29 to 31: 46% of the posts
+repeated the session's previous ask word for word; half of all asks were
+replaced within 5 minutes.)
 
 The ask belongs to the score and shares its lifetime
 ([session-priority.md](session-priority.md)): once the session runs again (the
-user answered it) the ask no longer counts. Setting a score with text replaces
-the whole ask, its page and context included (a new ask without `--page` has
-none); setting
+user answered it) the ask no longer counts. Setting a score with a different
+ask replaces the whole ask, its page and context included (a new ask without
+`--page` has none); setting
 one without text keeps the stored ask while the stored score is current, so a
 focus re-rank with `--session` never erases it. `clear` drops score, ask, page
 and context. aoe stores them as `<app_dir>/ask-pages/<session id>.html` and
@@ -119,7 +132,8 @@ decides). aoe gives it three things and keeps the mechanics itself.
 
 **Reading the queue.** `aoe session asks` prints every current ask as JSON, one
 object per session: `session_id`, `title`, `profile`, `status`, `priority`, the
-`ask` (all fields above plus `posted_at`, `refined_at`, `merged_into`), and the
+`ask` (all fields above plus `posted_at`, `request`, `refined_at`,
+`merged_into`, `answered_at`), and the
 `context` text or `null`. A request is unrefined while `refined_at` is absent.
 
 **Refining an ask.**
@@ -136,6 +150,16 @@ alone. `--for` must equal the ask's `posted_at`: a refine worked out for a
 request the session has since replaced exits non-zero and changes nothing, so a
 slow refine never overwrites a newer request. Options are replaced as a set when
 any is given. With no current ask it exits non-zero.
+
+**Answering.** An answer names its ask by `posted_at` and is delivered while
+that ask is **answerable**: it is the session's stored ask, current or not (a
+session that started running for another reason still takes the input), or the
+ask a new score replaced or dropped at most 5 minutes ago. The reply is typed
+with that ask's own text, so the session reads which ask it answers, and the
+ask is stamped `answered_at`. An ask takes one answer: a second one, an older
+ask, or an ask dropped by `clear` is refused. Before this, an answer typed
+while the session posted its next ask was lost (2026-10-29 18:22:54 PT, a
+`409` in the same second).
 
 **Merging.** `--merge-into <id>` marks this ask as the same as session `<id>`'s
 current ask. A merged ask is not listed; when the user answers the one it is
@@ -154,7 +178,8 @@ Each line names `session_id` and the ask's `posted_at`. Turnaround is
 `answered.at - posted.at`; the user's attention is the answered line's
 milliseconds. The dashboard reports page events with
 `POST /api/sessions/{id}/ask/events` (`{event, posted_at, form?, ms_open?}`,
-refused in read-only mode and for an ask that is not current).
+refused in read-only mode and for an ask that is not answerable, see
+Answering); `answered` stamps the ask's `answered_at`.
 
 ### The Inbox API and its key
 
@@ -185,10 +210,13 @@ bearer token of its own, separate from the login, the passphrase and
 - `POST /api/sessions/{id}/ask/answer`: `{for, form, input, ms_open}`, `form`
   one of `option`, `text`, `done`. Exactly what the dashboard's ask page does:
   types `Inbox reply to "<ask text>": <input>` into the session and into every
-  session whose current ask is merged into it, clears their unread markers, and
-  logs `answered`. `409` when the ask is no longer current, `400` for an empty
-  input or an unknown form, `502` when the session itself could not take the
-  message (nothing is cleared or logged then); `200` with
+  session whose current ask is merged into it, clears their unread markers,
+  stamps `answered_at` and logs `answered`. `409` when the ask is not
+  answerable (Answering, above: code `answered` for one already answered,
+  `not_current` otherwise), `400` for an empty input or an unknown form, `502`
+  when the session itself could not take the message (nothing is cleared,
+  stamped or logged then); two answers at once deliver one and refuse the
+  other; `200` with
   `{"answered": [<session ids>]}`, which leaves out a merged session that could
   not take it.
 - `POST /api/sessions/{id}/ask/events` (Measuring, above). `dismissed` also

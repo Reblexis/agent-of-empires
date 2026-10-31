@@ -1394,6 +1394,7 @@ fn from_instance_carries_the_current_priority_ask_only() {
     assert_eq!(
         Ask {
             posted_at: None,
+            request: None,
             ..posted
         },
         ask

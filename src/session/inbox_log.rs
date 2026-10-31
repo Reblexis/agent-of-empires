@@ -45,14 +45,19 @@ pub fn log_path() -> Result<PathBuf> {
     Ok(super::get_app_dir()?.join(FILE_NAME))
 }
 
-/// Append one entry. `answered` needs its form; only `answered` carries a
-/// form or the open time.
-pub fn append_to(path: &Path, entry: &Entry) -> Result<()> {
-    use std::io::Write;
+/// `answered` needs its form; only `answered` carries a form or the open time.
+pub fn check(entry: &Entry) -> Result<()> {
     let answered = entry.event == Event::Answered;
     if answered != entry.form.is_some() || (!answered && entry.ms_open.is_some()) {
         bail!("only an answered event carries a form and an open time, and it needs its form");
     }
+    Ok(())
+}
+
+/// Append one entry that passes `check`.
+pub fn append_to(path: &Path, entry: &Entry) -> Result<()> {
+    use std::io::Write;
+    check(entry)?;
     let mut line = serde_json::to_vec(entry)?;
     line.push(b'\n');
     if let Some(dir) = path.parent() {

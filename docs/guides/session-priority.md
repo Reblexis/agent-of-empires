@@ -78,7 +78,7 @@ default applies. The ask is current exactly when its score is.
   it is above 0.
 - **Web sidebar row**: a small numeric badge when above 0.
 - **API**: `GET /api/sessions` carries `priority` (the effective value) and
-  `priority_ask` (the current ask `{kind, text, objective, link, value, minutes, due, options, page, posted_at, refined_at, merged_into}`, or `null`) on
+  `priority_ask` (the current ask `{kind, text, objective, link, value, minutes, due, options, page, posted_at, request, refined_at, merged_into, answered_at}`, or `null`) on
   each session.
 - **Inbox** (web): the unread sessions above 0, highest first, as asks; see
   [session-inbox.md](session-inbox.md).

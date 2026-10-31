@@ -64,9 +64,10 @@ pub struct AskEventRequest {
     pub ms_open: Option<u64>,
 }
 
-/// Append an `opened`, `answered` or `dismissed` line for the session's
-/// current ask. `400` for another event or a malformed one, `404` without the
-/// session, `409` when `posted_at` is not the current ask's, `403` read-only.
+/// Append an `opened`, `answered` or `dismissed` line for an answerable ask
+/// (`priority::claim_answer`); `answered` stamps it. `400` for another event or
+/// a malformed one, `404` without the session, `409` when the ask is not
+/// answerable, `403` read-only.
 pub async fn post_ask_event(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -89,28 +90,24 @@ pub async fn post_ask_event(
             "Only opened, answered and dismissed come from the dashboard",
         );
     }
-    let current = {
-        let instances = state.instances.read().await;
-        match instances.iter().find(|i| i.id == id) {
-            None => return session_not_found(),
-            Some(inst) => inst.priority_ask().and_then(|a| a.posted_at),
-        }
-    };
-    if current != Some(req.posted_at) {
-        return api_error(
-            StatusCode::CONFLICT,
-            "not_current",
-            "That ask is not the session's current one",
-        );
-    }
+    let now = chrono::Utc::now();
     let entry = Entry {
-        at: chrono::Utc::now(),
+        at: now,
         event: req.event,
-        session_id: id,
+        session_id: id.clone(),
         posted_at: req.posted_at,
         form: req.form,
         ms_open: req.ms_open,
     };
+    if let Err(e) = inbox_log::check(&entry) {
+        return api_error(StatusCode::BAD_REQUEST, "bad_event", format!("{e:#}"));
+    }
+    if let Err(resp) = super::inbox::claim(&state, &id, req.posted_at, now).await {
+        return resp;
+    }
+    // Only an answer keeps its claim.
+    let answered = entry.event == Event::Answered;
+    super::inbox::settle_claim(&state, &id, req.posted_at, now, answered).await;
     let dismissed = entry.event == Event::Dismissed;
     let session_id = entry.session_id.clone();
     match tokio::task::spawn_blocking(move || inbox_log::append(&entry)).await {

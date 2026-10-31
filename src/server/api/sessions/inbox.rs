@@ -105,6 +105,72 @@ async fn current_ask(
     Ok((inst.clone(), instances.clone()))
 }
 
+/// Claim the answer to `id`'s ask posted at `posted_at`, in memory, so a
+/// concurrent answer is refused; the claim is persisted once delivered.
+/// Returns the ask's text and the sessions, or the refusal: `404` without the
+/// session, `409` `answered` or `not_current`.
+pub(super) async fn claim(
+    state: &AppState,
+    id: &str,
+    posted_at: chrono::DateTime<chrono::Utc>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<(String, Vec<Instance>), axum::response::Response> {
+    use crate::session::priority::{claim_answer, Unanswerable};
+    let mut instances = state.instances.write().await;
+    let Some(inst) = instances.iter_mut().find(|i| i.id == id) else {
+        return Err(session_not_found());
+    };
+    match claim_answer(inst.priority.as_mut(), posted_at, now) {
+        Ok(text) => Ok((text, instances.clone())),
+        Err(Unanswerable::Answered) => Err(api_error(
+            StatusCode::CONFLICT,
+            "answered",
+            "That ask already took its answer",
+        )),
+        Err(Unanswerable::Gone) => Err(api_error(
+            StatusCode::CONFLICT,
+            "not_current",
+            "That ask is not the session's current one",
+        )),
+    }
+}
+
+/// Persist a claim on disk, or drop it from memory when `delivered` is false.
+pub(super) async fn settle_claim(
+    state: &AppState,
+    id: &str,
+    posted_at: chrono::DateTime<chrono::Utc>,
+    now: chrono::DateTime<chrono::Utc>,
+    delivered: bool,
+) {
+    use crate::session::priority::{claim_answer, unclaim_answer};
+    let mut instances = state.instances.write().await;
+    let Some(inst) = instances.iter_mut().find(|i| i.id == id) else {
+        return;
+    };
+    if !delivered {
+        unclaim_answer(inst.priority.as_mut(), posted_at);
+        return;
+    }
+    let profile = inst.source_profile.clone();
+    drop(instances);
+    let persist_id = id.to_string();
+    let persisted = persist_session_update(
+        profile,
+        "inbox answer",
+        state.file_watch.clone(),
+        move |rows| {
+            if let Some(row) = rows.iter_mut().find(|i| i.id == persist_id) {
+                let _ = claim_answer(row.priority.as_mut(), posted_at, now);
+            }
+        },
+    )
+    .await;
+    if persisted.is_err() {
+        tracing::warn!(target: "server.inbox", session = %id, "answered_at not persisted");
+    }
+}
+
 /// Mark a session read, on disk and in memory, as `PATCH .../unread` does.
 async fn mark_read(state: &AppState, id: &str) -> bool {
     let lock = state.instance_lock(id).await;
@@ -302,14 +368,11 @@ pub async fn post_ask_answer(
             "An answer needs its input",
         );
     }
-    let (inst, instances) = match current_ask(&state, &id, req.posted_at).await {
+    let now = chrono::Utc::now();
+    let (text, instances) = match claim(&state, &id, req.posted_at, now).await {
         Ok(found) => found,
         Err(resp) => return resp,
     };
-    let text = inst
-        .priority_ask()
-        .map(|a| a.text.clone())
-        .unwrap_or_default();
     let message = crate::session::inbox::reply_message(&text, input);
     let mut answered = Vec::new();
     for (i, target) in crate::session::inbox::answer_targets(&instances, &id)
@@ -328,6 +391,7 @@ pub async fn post_ask_answer(
         match sent {
             Ok(_) => answered.push(target),
             Err(e) if i == 0 => {
+                settle_claim(&state, &id, req.posted_at, now, false).await;
                 return api_error(
                     StatusCode::BAD_GATEWAY,
                     "not_delivered",
@@ -339,6 +403,7 @@ pub async fn post_ask_answer(
             }
         }
     }
+    settle_claim(&state, &id, req.posted_at, now, true).await;
     for target in &answered {
         mark_read(&state, target).await;
     }
@@ -776,6 +841,212 @@ mod tests {
             !crate::session::inbox_log::log_path().unwrap().exists(),
             "nothing logged"
         );
+    }
+
+    async fn answer(
+        state: &Arc<AppState>,
+        id: &str,
+        posted_at: chrono::DateTime<chrono::Utc>,
+        input: &str,
+    ) -> (StatusCode, serde_json::Value) {
+        let req: AnswerRequest = serde_json::from_value(
+            serde_json::json!({"for": posted_at, "form": "text", "input": input}),
+        )
+        .unwrap();
+        body(post_ask_answer(State(state.clone()), Path(id.into()), Json(req)).await).await
+    }
+
+    /// Apply `f` to the session in memory and on disk, as a CLI post and the
+    /// daemon's reload would.
+    async fn change(state: &AppState, id: &str, f: impl Fn(&mut Instance)) {
+        Storage::new_unwatched("default")
+            .unwrap()
+            .update(|rows, _| {
+                rows.iter_mut().filter(|i| i.id == id).for_each(&f);
+                Ok(())
+            })
+            .unwrap();
+        state
+            .instances
+            .write()
+            .await
+            .iter_mut()
+            .filter(|i| i.id == id)
+            .for_each(&f);
+    }
+
+    fn reply(text: &str) -> Option<Ask> {
+        Some(Ask {
+            kind: Some(AskKind::Answer),
+            text: text.into(),
+            ..Ask::default()
+        })
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn an_answer_typed_while_the_session_posts_its_next_ask_is_still_delivered() {
+        let _app = crate::session::test_support::isolate_app_dir();
+        if !crate::tmux::tmux_command()
+            .arg("-V")
+            .output()
+            .is_ok_and(|o| o.status.success())
+        {
+            eprintln!("skipping: tmux not available");
+            return;
+        }
+        let inst = asking("answerpane", None, None);
+        let name = crate::tmux::Session::generate_name(&inst.id, &inst.title);
+        let _kill = crate::tmux::test_helpers::TmuxTestSession::from_name(name.clone());
+        let mut args = [
+            "new-session",
+            "-d",
+            "-s",
+            &name,
+            "-x",
+            "200",
+            "-y",
+            "40",
+            "cat",
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+        crate::tmux::utils::append_pane_base_index_args(&mut args, &name);
+        assert!(crate::tmux::tmux_command()
+            .args(&args)
+            .output()
+            .unwrap()
+            .status
+            .success());
+        let cache = crate::tmux::SessionCacheGuard::capture();
+        cache.force_present(&[name.as_str()]);
+        let pane = crate::tmux::Session::from_name(&name);
+        let typed = |needle: String| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while !pane.capture_pane(40).unwrap().contains(&needle) {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "never typed: {needle}"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        };
+        let state = seeded(vec![inst]);
+        let first = posted(&state, "answerpane").await;
+        // 2026-10-29 18:22:54 PT: the session posted its next ask in the same
+        // second the user sent the answer to the one on screen.
+        change(&state, "answerpane", |i| {
+            i.set_priority(Some(5), reply("Read the report"))
+        })
+        .await;
+        let (status, json) = answer(&state, "answerpane", first, "Ada").await;
+        assert_eq!(
+            (status, json["answered"].clone()),
+            (StatusCode::OK, serde_json::json!(["answerpane"]))
+        );
+        typed("Inbox reply to \"ask answerpane\": Ada".into());
+        let (status, json) = answer(&state, "answerpane", first, "again").await;
+        assert_eq!(
+            (status, json["error"].as_str()),
+            (StatusCode::CONFLICT, Some("answered"))
+        );
+        let disk = Storage::new_unwatched("default").unwrap().load().unwrap();
+        let replaced = disk[0]
+            .priority
+            .as_ref()
+            .unwrap()
+            .replaced
+            .as_ref()
+            .unwrap();
+        assert!(replaced.ask.answered_at.is_some(), "the stamp is persisted");
+        let log = std::fs::read_to_string(crate::session::inbox_log::log_path().unwrap()).unwrap();
+        assert!(
+            log.lines()
+                .map(|l| serde_json::from_str::<crate::session::inbox_log::Entry>(l).unwrap())
+                .any(|e| e.event == crate::session::inbox_log::Event::Answered
+                    && e.posted_at == first),
+            "answered is logged for the ask it answered"
+        );
+
+        // Two answers to the same ask at once: one is delivered.
+        let second = posted(&state, "answerpane").await;
+        let (a, b) = tokio::join!(
+            answer(&state, "answerpane", second, "first"),
+            answer(&state, "answerpane", second, "second")
+        );
+        let mut statuses = [a.0, b.0];
+        statuses.sort();
+        assert_eq!(statuses, [StatusCode::OK, StatusCode::CONFLICT]);
+
+        // The session started running for another reason: its ask still takes the answer.
+        change(&state, "answerpane", |i| {
+            i.set_priority(Some(5), reply("Name the file"));
+            i.run_started_at = Some(chrono::Utc::now());
+        })
+        .await;
+        let third = state.instances.read().await[0]
+            .priority
+            .as_ref()
+            .unwrap()
+            .ask
+            .as_ref()
+            .unwrap()
+            .posted_at
+            .unwrap();
+        assert_eq!(
+            answer(&state, "answerpane", third, "notes.md").await.0,
+            StatusCode::OK
+        );
+        typed("Inbox reply to \"Name the file\": notes.md".into());
+        drop(cache);
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn an_answered_event_stamps_the_ask_and_reaches_one_just_replaced() {
+        let _app = crate::session::test_support::isolate_app_dir();
+        let state = seeded(vec![asking("eventask", None, None)]);
+        let first = posted(&state, "eventask").await;
+        change(&state, "eventask", |i| {
+            i.set_priority(Some(5), reply("Next"))
+        })
+        .await;
+        let event = |name: &str| {
+            let mut body = serde_json::json!({"event": name, "posted_at": first});
+            if name == "answered" {
+                body["form"] = "done".into();
+            }
+            let req: AskEventRequest = serde_json::from_value(body).unwrap();
+            let state = state.clone();
+            async move {
+                post_ask_event(State(state), Path("eventask".into()), Json(req))
+                    .await
+                    .status()
+            }
+        };
+        assert_eq!(
+            event("opened").await,
+            StatusCode::NO_CONTENT,
+            "a replaced ask is still answerable"
+        );
+        assert_eq!(event("answered").await, StatusCode::NO_CONTENT);
+        assert_eq!(
+            event("answered").await,
+            StatusCode::CONFLICT,
+            "one answer per ask"
+        );
+        let disk = Storage::new_unwatched("default").unwrap().load().unwrap();
+        assert!(disk[0]
+            .priority
+            .as_ref()
+            .unwrap()
+            .replaced
+            .as_ref()
+            .unwrap()
+            .ask
+            .answered_at
+            .is_some());
     }
 
     const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";

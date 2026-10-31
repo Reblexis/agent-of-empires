@@ -21,6 +21,50 @@ pub struct PriorityScore {
     /// by status pushes. Shares the score's lifetime. See docs/guides/session-inbox.md.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ask: Option<Ask>,
+    /// The ask this score's post replaced or dropped, still answerable for
+    /// `ANSWER_GRACE_SECS`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaced: Option<Replaced>,
+}
+
+/// An ask a new score replaced or dropped, and when.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Replaced {
+    pub at: DateTime<Utc>,
+    pub ask: Ask,
+}
+
+/// How long an answer to a replaced ask is still delivered.
+pub const ANSWER_GRACE_SECS: i64 = 300;
+
+/// The kind, text and options as the session posted them: what makes a
+/// repost the same request. A refine never changes it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct Request {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<AskKind>,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub options: Vec<String>,
+}
+
+impl Request {
+    fn of(ask: &Ask) -> Self {
+        Self {
+            kind: ask.kind,
+            text: ask.text.clone(),
+            options: ask.options.clone(),
+        }
+    }
+}
+
+/// Why an answer is refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unanswerable {
+    /// The ask already took its answer.
+    Answered,
+    /// No stored ask, nor one replaced within the grace window, was posted then.
+    Gone,
 }
 
 /// One concrete ask of the user.
@@ -55,12 +99,17 @@ pub struct Ask {
     /// refine must name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub posted_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<Request>,
     /// When the input/output agent last refined it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refined_at: Option<DateTime<Utc>>,
     /// The session whose current ask this one is the same as.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub merged_into: Option<String>,
+    /// When the user's answer to it was delivered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub answered_at: Option<DateTime<Utc>>,
 }
 
 /// What `aoe session refine` replaces on a current ask; absent fields stay.
@@ -258,7 +307,9 @@ fn one_line(raw: Option<&str>, what: &str, max: usize) -> Result<Option<String>>
 
 /// The score after `aoe session priority`: `value` `None` clears score and
 /// ask; a new score without an ask keeps the stored ask only while the stored
-/// score is current.
+/// score is current. A post of the stored ask's own request (unanswered,
+/// unmerged) keeps that ask whole, even after a run. An ask the new score
+/// replaces or drops is kept as `replaced`, so a late answer still reaches it.
 pub fn next_score(
     stored: Option<&PriorityScore>,
     value: Option<u8>,
@@ -266,19 +317,44 @@ pub fn next_score(
     run_started_at: Option<DateTime<Utc>>,
     now: DateTime<Utc>,
 ) -> Option<PriorityScore> {
-    let kept = || {
-        stored
-            .filter(|s| is_current(s, run_started_at))
-            .and_then(|s| s.ask.clone())
+    let value = value?;
+    let stored_ask = stored.and_then(|s| s.ask.as_ref());
+    let same = |new: &Ask| {
+        stored_ask.filter(|old| {
+            old.answered_at.is_none()
+                && old.merged_into.is_none()
+                && old.request.as_ref() == Some(&Request::of(new))
+        })
     };
-    let posted = ask.map(|ask| Ask {
-        posted_at: Some(now),
-        ..ask
-    });
-    value.map(|value| PriorityScore {
+    let next = match ask {
+        Some(new) => match same(&new) {
+            Some(old) => Some(Ask {
+                page: old.page || new.page,
+                ..old.clone()
+            }),
+            None => Some(Ask {
+                posted_at: Some(now),
+                request: Some(Request::of(&new)),
+                ..new
+            }),
+        },
+        None => stored
+            .filter(|s| is_current(s, run_started_at))
+            .and_then(|s| s.ask.clone()),
+    };
+    let gone = stored_ask.filter(|old| next.as_ref().map(|n| n.posted_at) != Some(old.posted_at));
+    let replaced = match gone {
+        Some(old) => Some(Replaced {
+            at: now,
+            ask: old.clone(),
+        }),
+        None => stored.and_then(|s| s.replaced.clone()),
+    };
+    Some(PriorityScore {
         value,
         set_at: now,
-        ask: posted.or_else(kept),
+        ask: next,
+        replaced,
     })
 }
 
@@ -343,6 +419,56 @@ pub fn refine_ask(
     }
     ask.refined_at = Some(now);
     Ok(score)
+}
+
+/// The ask an answer naming `posted_at` goes to: the stored ask, current or
+/// not, or the one replaced at most `ANSWER_GRACE_SECS` before `now`.
+fn answer_target(
+    score: &mut PriorityScore,
+    posted_at: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Option<&mut Ask> {
+    if score
+        .ask
+        .as_ref()
+        .is_some_and(|a| a.posted_at == Some(posted_at))
+    {
+        return score.ask.as_mut();
+    }
+    score
+        .replaced
+        .as_mut()
+        .filter(|r| (now - r.at).num_seconds() <= ANSWER_GRACE_SECS)
+        .map(|r| &mut r.ask)
+        .filter(|a| a.posted_at == Some(posted_at))
+}
+
+/// Claim the answer to the ask posted at `posted_at`, stamping its
+/// `answered_at`, and return the ask's text as the user saw it.
+pub fn claim_answer(
+    score: Option<&mut PriorityScore>,
+    posted_at: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Result<String, Unanswerable> {
+    let ask = score
+        .and_then(|s| answer_target(s, posted_at, now))
+        .ok_or(Unanswerable::Gone)?;
+    if ask.answered_at.is_some() {
+        return Err(Unanswerable::Answered);
+    }
+    ask.answered_at = Some(now);
+    Ok(ask.text.clone())
+}
+
+/// Undo `claim_answer` when the answer could not be delivered.
+pub fn unclaim_answer(score: Option<&mut PriorityScore>, posted_at: DateTime<Utc>) {
+    let Some(score) = score else { return };
+    let replaced = score.replaced.as_mut().map(|r| &mut r.ask);
+    for ask in score.ask.iter_mut().chain(replaced) {
+        if ask.posted_at == Some(posted_at) {
+            ask.answered_at = None;
+        }
+    }
 }
 
 /// The ask the Inbox and pushes show: the current score's, and only while
@@ -450,6 +576,7 @@ mod tests {
             value,
             set_at: t(at),
             ask: text.map(ask),
+            replaced: None,
         }
     }
 
@@ -673,6 +800,274 @@ mod tests {
         );
         let replaced = next_score(Some(&posted), Some(5), Some(ask("Other")), None, t(70)).unwrap();
         assert_eq!(replaced.ask.unwrap().posted_at, Some(t(70)));
+    }
+
+    fn decide(text: &str, options: &[&str]) -> Ask {
+        Ask {
+            kind: Some(AskKind::Decide),
+            options: options.iter().map(|o| o.to_string()).collect(),
+            ..ask(text)
+        }
+    }
+
+    /// "Pick" posted at 50, then refined and ranked by the input/output agent at 60.
+    fn refined_pick() -> PriorityScore {
+        let posted = next_score(
+            None,
+            Some(8),
+            Some(decide("Pick", &["A", "B"])),
+            None,
+            t(50),
+        )
+        .unwrap();
+        let refined = refine_ask(
+            Some(&posted),
+            None,
+            t(50),
+            Refine {
+                text: Some("Pick A or B for the launch?"),
+                value: Some(70),
+                page: true,
+                ..Refine::default()
+            },
+            t(60),
+        )
+        .unwrap();
+        rank_ask(
+            Some(&refined),
+            None,
+            Rank {
+                minutes: Some(2),
+                ..Rank::default()
+            },
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn the_same_ask_posted_again_is_not_a_new_request_even_after_the_session_ran() {
+        let stored = refined_pick();
+        assert_eq!(
+            stored.ask.as_ref().unwrap().request,
+            Some(Request {
+                kind: Some(AskKind::Decide),
+                text: "Pick".into(),
+                options: vec!["A".into(), "B".into()]
+            }),
+            "the request is what the session wrote, through a refine"
+        );
+        // (new post, run_started_at, same request, why)
+        let cases = [
+            (
+                decide("Pick", &["A", "B"]),
+                None,
+                true,
+                "identical, still current",
+            ),
+            (
+                decide("Pick", &["A", "B"]),
+                Some(t(80)),
+                true,
+                "identical after a loop wake ran the session",
+            ),
+            (
+                Ask {
+                    objective: Some("Other objective".into()),
+                    value: Some(5),
+                    ..decide("Pick", &["A", "B"])
+                },
+                Some(t(80)),
+                true,
+                "only kind, text and options name the request",
+            ),
+            (
+                decide("Pick A or B for the launch?", &["A", "B"]),
+                None,
+                false,
+                "the refined text is not what it posted",
+            ),
+            (decide("Pick one", &["A", "B"]), None, false, "other text"),
+            (decide("Pick", &["A", "C"]), None, false, "other options"),
+            (
+                Ask {
+                    kind: Some(AskKind::Answer),
+                    ..ask("Pick")
+                },
+                None,
+                false,
+                "other kind",
+            ),
+        ];
+        for (new, run, same, why) in cases {
+            let next = next_score(Some(&stored), Some(6), Some(new), run, t(100)).unwrap();
+            assert_eq!(
+                (next.value, next.set_at),
+                (6, t(100)),
+                "{why}: the score is set"
+            );
+            let a = next.ask.as_ref().unwrap();
+            if same {
+                assert_eq!(
+                    a,
+                    stored.ask.as_ref().unwrap(),
+                    "{why}: the stored ask stays whole"
+                );
+                assert_eq!(next.replaced, None, "{why}");
+                assert!(
+                    current_ask(Status::Idle, false, Some(&next), run).is_some(),
+                    "{why}: current again"
+                );
+            } else {
+                assert_eq!(a.posted_at, Some(t(100)), "{why}: a new request");
+                assert_eq!(
+                    (a.refined_at, a.page, a.minutes),
+                    (None, false, None),
+                    "{why}"
+                );
+                assert_eq!(
+                    next.replaced,
+                    Some(Replaced {
+                        at: t(100),
+                        ask: stored.ask.clone().unwrap()
+                    }),
+                    "{why}: the replaced ask is remembered"
+                );
+            }
+        }
+        let with_page = Ask {
+            page: true,
+            ..decide("Pick", &["A", "B"])
+        };
+        let mut unpaged = refined_pick();
+        unpaged.ask.as_mut().unwrap().page = false;
+        let next = next_score(Some(&unpaged), Some(6), Some(with_page), None, t(100)).unwrap();
+        assert!(
+            next.ask.unwrap().page,
+            "a page posted with the same ask is its page"
+        );
+    }
+
+    #[test]
+    fn an_answered_or_merged_ask_posted_again_is_a_new_request() {
+        let mut answered = refined_pick();
+        answered.ask.as_mut().unwrap().answered_at = Some(t(70));
+        let mut merged = refined_pick();
+        merged.ask.as_mut().unwrap().merged_into = Some("other1".into());
+        for (stored, why) in [(answered, "answered"), (merged, "merged")] {
+            let next = next_score(
+                Some(&stored),
+                Some(6),
+                Some(decide("Pick", &["A", "B"])),
+                None,
+                t(100),
+            )
+            .unwrap();
+            let a = next.ask.unwrap();
+            assert_eq!(
+                (a.posted_at, a.text.as_str()),
+                (Some(t(100)), "Pick"),
+                "{why}"
+            );
+            assert_eq!((a.answered_at, a.merged_into), (None, None), "{why}");
+        }
+    }
+
+    #[test]
+    fn an_answer_is_delivered_to_the_stored_ask_or_one_replaced_at_most_five_minutes_ago_and_only_once(
+    ) {
+        let pick = refined_pick();
+        let shown = "Pick A or B for the launch?";
+        let replaced = next_score(
+            Some(&pick),
+            Some(5),
+            Some(ask("Read the report")),
+            None,
+            t(100),
+        )
+        .unwrap();
+        // The session ran (t(80)) and rescored without an ask: the ask is dropped, not lost.
+        let dropped = next_score(Some(&pick), Some(5), None, Some(t(80)), t(100)).unwrap();
+        assert_eq!(dropped.ask, None);
+        let grace = ANSWER_GRACE_SECS;
+        // (score, answer for, answered at, expected, why)
+        let cases = [
+            (
+                Some(pick.clone()),
+                t(50),
+                t(70),
+                Ok(shown),
+                "the current ask",
+            ),
+            (
+                Some(pick.clone()),
+                t(50),
+                t(9_999),
+                Ok(shown),
+                "the stored ask, however late or stale",
+            ),
+            (
+                Some(replaced.clone()),
+                t(50),
+                t(100 + grace),
+                Ok(shown),
+                "replaced within the window, under the text the user saw",
+            ),
+            (
+                Some(replaced.clone()),
+                t(50),
+                t(101 + grace),
+                Err(Unanswerable::Gone),
+                "replaced too long ago",
+            ),
+            (
+                Some(replaced.clone()),
+                t(100),
+                t(110),
+                Ok("Read the report"),
+                "the new ask",
+            ),
+            (
+                Some(dropped),
+                t(50),
+                t(100 + grace),
+                Ok(shown),
+                "dropped within the window",
+            ),
+            (
+                Some(pick.clone()),
+                t(49),
+                t(70),
+                Err(Unanswerable::Gone),
+                "never posted then",
+            ),
+            (None, t(50), t(70), Err(Unanswerable::Gone), "cleared"),
+        ];
+        for (score, posted_at, now, expected, why) in cases {
+            let mut score = score;
+            let got = claim_answer(score.as_mut(), posted_at, now);
+            assert_eq!(got.as_deref().map_err(|e| *e), expected, "{why}");
+            if expected.is_ok() {
+                assert_eq!(
+                    claim_answer(score.as_mut(), posted_at, now),
+                    Err(Unanswerable::Answered),
+                    "{why}: an ask takes one answer"
+                );
+                unclaim_answer(score.as_mut(), posted_at);
+                assert!(
+                    claim_answer(score.as_mut(), posted_at, now).is_ok(),
+                    "{why}: an undelivered answer leaves the ask answerable"
+                );
+            }
+        }
+        let mut answered = pick.clone();
+        claim_answer(Some(&mut answered), t(50), t(70)).unwrap();
+        assert_eq!(answered.ask.as_ref().unwrap().answered_at, Some(t(70)));
+        let next = next_score(Some(&answered), Some(5), Some(ask("Next")), None, t(100)).unwrap();
+        assert_eq!(
+            claim_answer(Some(&mut next.clone()), t(50), t(110)),
+            Err(Unanswerable::Answered),
+            "an answered ask stays answered once replaced"
+        );
     }
 
     #[test]
