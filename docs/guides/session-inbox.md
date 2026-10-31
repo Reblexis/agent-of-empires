@@ -215,18 +215,23 @@ bearer token of its own, separate from the login, the passphrase and
   and refusals as `aoe session refine` (`for` is the ask's `posted_at`;
   `page_html` the page itself). `409` when `for` is not the current ask's,
   `400` for a refused field, `404` without the session; `204` on success.
-- `POST /api/sessions/{id}/ask/answer`: `{for, form, input, ms_open}`, `form`
-  one of `option`, `text`, `done`. Exactly what the dashboard's ask page does:
-  types `Inbox reply to "<ask text>": <input>` into the session and into every
-  session whose current ask is merged into it, clears their unread markers,
-  stamps `answered_at` and logs `answered`. `409` when the ask is not
+- `POST /api/sessions/{id}/ask/answer`: `{for, form, input, ms_open, images}`,
+  `form` one of `option`, `text`, `done`. Exactly what the dashboard's ask page
+  does: types `Inbox reply to "<ask text>": <input> <path> <path>` into the
+  session and into every session whose current ask is merged into it, clears
+  their unread markers, stamps `answered_at` and logs `answered`. `images`
+  (optional, `{data}`, base64, at most 10) are checked like those of
+  `POST /api/inbox/message` (below) and saved into each receiving session's own
+  `.aoe-pasted-images/`, kept 24 hours, their paths typed after the input
+  (Viktor, 2026-10-31: "cant paste images in the resopnse fieldds for these
+  prompts"); with images the input may be empty. `409` when the ask is not
   answerable (Answering, above: code `answered` for one already answered,
-  `not_current` otherwise), `400` for an empty input or an unknown form, `502`
-  when the session itself could not take the message (nothing is cleared,
-  stamped or logged then); two answers at once deliver one and refuse the
-  other; `200` with
-  `{"answered": [<session ids>]}`, which leaves out a merged session that could
-  not take it.
+  `not_current` otherwise), `400` for no input and no image, a bad image, too
+  many images or an unknown form (nothing is claimed then), `502` when the
+  session itself could not take the message (nothing is cleared, stamped or
+  logged then, and its images are deleted); two answers at once deliver one and
+  refuse the other; `200` with `{"answered": [<session ids>], "images": <n>}`,
+  which leaves out a merged session that could not take it.
 - `POST /api/sessions/{id}/ask/events` (Measuring, above). `dismissed` also
   clears the unread marker, without sending anything, like Done on the list.
 - `GET /api/inbox/log?since=<rfc3339>`: the lines of `inbox-log.jsonl` stamped
