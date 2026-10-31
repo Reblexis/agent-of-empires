@@ -94,7 +94,8 @@ request instead when the stored ask was answered or merged. So a loop's wake or
 a background task's notice that ends with the same ask changes nothing the user
 sees and logs no `posted`. (Measured over 2026-10-29 to 31: 46% of the posts
 repeated the session's previous ask word for word; half of all asks were
-replaced within 5 minutes.)
+replaced within 5 minutes. In the first 2 hours after this rule shipped,
+2026-10-31 03:45 to 05:50 UTC, 19% were, median life 8.8 minutes against 4.8.)
 
 The ask belongs to the score and shares its lifetime
 ([session-priority.md](session-priority.md)): once the session runs again (the
