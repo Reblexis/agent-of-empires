@@ -958,7 +958,7 @@ mod tests {
     }
 
     #[test]
-    fn asks_lists_every_current_ask_with_its_context() {
+    fn asks_lists_every_current_ask_with_its_context_running_sessions_included() {
         let mut asking = Instance::new("pricing work", "/tmp/asks");
         asking.id = "aaaa1111".into();
         asking.status = Status::Idle;
@@ -972,18 +972,39 @@ mod tests {
         let mut running = Instance::new("busy", "/tmp/asks");
         running.id = "bbbb2222".into();
         running.status = Status::Running;
+        running.run_started_at = Some(chrono::Utc::now() - chrono::Duration::minutes(5));
         running.set_priority(
+            Some(9),
+            Some(priority::Ask {
+                text: "Check the answers".into(),
+                ..priority::Ask::default()
+            }),
+        );
+        let mut stale = Instance::new("ran since", "/tmp/asks");
+        stale.id = "cccc3333".into();
+        stale.status = Status::Running;
+        stale.set_priority(
             Some(8),
             Some(priority::Ask {
                 text: "stale".into(),
                 ..priority::Ask::default()
             }),
         );
+        stale.run_started_at = Some(chrono::Utc::now() + chrono::Duration::seconds(1));
         let silent = Instance::new("quiet", "/tmp/asks");
-        let asks = asks_json(&[asking, running, silent], |id| {
+        let asks = asks_json(&[asking, running, stale, silent], |id| {
             (id == "aaaa1111").then(|| "notes".to_string())
         });
-        assert_eq!(asks.len(), 1, "{asks:?}");
+        assert_eq!(asks.len(), 2, "{asks:?}");
+        // 2026-10-31: the YC W27 session posted its priority 9 ask, kept
+        // running, and `aoe session asks` left it out.
+        let busy = asks.iter().find(|a| a["session_id"] == "bbbb2222").unwrap();
+        assert_eq!(busy["status"], "running");
+        assert_eq!(busy["ask"]["text"], "Check the answers");
+        let asks: Vec<_> = asks
+            .into_iter()
+            .filter(|a| a["session_id"] == "aaaa1111")
+            .collect();
         let a = &asks[0];
         assert_eq!(a["session_id"], "aaaa1111");
         assert_eq!(a["title"], "pricing work");

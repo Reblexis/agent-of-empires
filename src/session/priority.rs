@@ -471,8 +471,8 @@ pub fn unclaim_answer(score: Option<&mut PriorityScore>, posted_at: DateTime<Utc
     }
 }
 
-/// The ask the Inbox and pushes show: the current score's, and only while
-/// that score is what the effective priority uses and it is above 0.
+/// The ask the Inbox and pushes show: the current score's while it is above 0,
+/// for a waiting, idle, errored or still-running session that is not sunk.
 pub fn current_ask(
     status: Status,
     sunk: bool,
@@ -480,7 +480,13 @@ pub fn current_ask(
     run_started_at: Option<DateTime<Utc>>,
 ) -> Option<&Ask> {
     let score = score.filter(|s| is_current(s, run_started_at))?;
-    let uses_score = !sunk && matches!(status, Status::Waiting | Status::Idle | Status::Error);
+    // Running counts: an agent that scores and keeps working must still reach
+    // the user (two priority 9 asks went unseen on 2026-10-31).
+    let uses_score = !sunk
+        && matches!(
+            status,
+            Status::Waiting | Status::Idle | Status::Error | Status::Running
+        );
     if !uses_score || score.value == 0 {
         return None;
     }
@@ -1360,18 +1366,21 @@ mod tests {
     }
 
     #[test]
-    fn an_ask_counts_only_while_its_score_ranks_the_session_above_zero() {
+    fn an_ask_counts_while_its_score_is_current_even_if_the_session_keeps_running() {
         let why = owned(8, 20, Some("Approve the budget"));
         let zero = owned(0, 20, Some("Nothing needed"));
         // (status, sunk, score, run_started_at, shown)
-        let cases: [(Status, bool, &PriorityScore, Option<DateTime<Utc>>, bool); 8] = [
+        let cases: [(Status, bool, &PriorityScore, Option<DateTime<Utc>>, bool); 9] = [
             (Status::Idle, false, &why, Some(t(10)), true),
             (Status::Waiting, false, &why, None, true),
             (Status::Error, false, &why, Some(t(10)), true),
+            // 2026-10-31: a session that posted a priority 9 ask and kept
+            // working; its ask vanished from the queue while it ran.
+            (Status::Running, false, &why, Some(t(10)), true),
             // Stale: the session ran again after the score.
             (Status::Idle, false, &why, Some(t(30)), false),
-            // Running, sunk or Unknown sessions do not use the score.
-            (Status::Running, false, &why, Some(t(10)), false),
+            (Status::Running, false, &why, Some(t(30)), false),
+            // Sunk or Unknown sessions do not use the score.
             (Status::Idle, true, &why, Some(t(10)), false),
             (Status::Unknown, false, &why, Some(t(10)), false),
             // A score of 0 means it does not need you.

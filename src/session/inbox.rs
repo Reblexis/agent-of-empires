@@ -329,6 +329,7 @@ mod tests {
             .unwrap()
             .merged_into = Some("main".into());
         stale_dup.status = Status::Running;
+        stale_dup.run_started_at = Some(chrono::Utc::now() + chrono::Duration::seconds(1));
         let instances = vec![
             dup,
             asking("main", None, None, 5),

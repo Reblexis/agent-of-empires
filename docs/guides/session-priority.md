@@ -61,7 +61,10 @@ belongs to one ask: the agent sets it while finishing its turn, it shows while
 the session waits for you, and once you reply and the session runs again it
 stops counting. If the agent then ends its next turn without scoring, the
 default applies rather than the stale number. `clear` drops the score, so the
-default applies. The ask is current exactly when its score is.
+default applies. The ask is current exactly when its score is, whatever the
+status: an agent that scores and then keeps working posts an ask that stays
+current while that run goes on, though the running session's effective
+priority is 0.
 
 ## Where it shows
 

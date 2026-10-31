@@ -98,8 +98,9 @@ replaced within 5 minutes. In the first 2 hours after this rule shipped,
 2026-10-31 03:45 to 05:50 UTC, 19% were, median life 8.8 minutes against 4.8.)
 
 The ask belongs to the score and shares its lifetime
-([session-priority.md](session-priority.md)): once the session runs again (the
-user answered it) the ask no longer counts. Setting a score with a different
+([session-priority.md](session-priority.md)): it counts from the moment it is
+posted, also while the session that posted it keeps running, and once the
+session runs again after it (the user answered it) the ask no longer counts. Setting a score with a different
 ask replaces the whole ask, its page and context included (a new ask without
 `--page` has none); setting
 one without text keeps the stored ask while the stored score is current, so a
@@ -136,6 +137,10 @@ object per session: `session_id`, `title`, `profile`, `status`, `priority`, the
 `ask` (all fields above plus `posted_at`, `request`, `refined_at`,
 `merged_into`, `answered_at`), and the
 `context` text or `null`. A request is unrefined while `refined_at` is absent.
+A session that posted its ask and kept working is included with status
+`running`, though it is not [listed](#what-is-listed); the input/output agent
+shows it itself, so an ask is never lost because its session is
+still busy (two priority 9 asks went unseen on 2026-10-31).
 
 **Refining an ask.**
 
