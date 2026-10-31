@@ -134,9 +134,16 @@ pub fn check_merge(instances: &[Instance], id: &str, into: &str) -> Result<()> {
     }
 }
 
-/// What an answer types into the session.
-pub fn reply_message(ask_text: &str, input: &str) -> String {
-    format!("Inbox reply to \"{ask_text}\": {input}")
+/// What an answer types into the session: the input, then each image path the
+/// way the dashboard terminal pastes one.
+pub fn reply_message(ask_text: &str, input: &str, paths: &[String]) -> String {
+    let mut parts = vec![format!("Inbox reply to \"{ask_text}\":")];
+    let input = input.trim();
+    if !input.is_empty() {
+        parts.push(input.to_string());
+    }
+    parts.extend(paths.iter().map(|p| p.replace(' ', "\\ ")));
+    parts.join(" ")
 }
 
 /// What the queue's input box types into the router: the text, then each
@@ -341,10 +348,35 @@ mod tests {
             answer_targets(&instances, "main"),
             vec!["main".to_string(), "dup".to_string()]
         );
-        assert_eq!(
-            reply_message("Approve the budget?", "Yes"),
-            r#"Inbox reply to "Approve the budget?": Yes"#
-        );
+        // (input, image paths, typed)
+        let cases: [(&str, &[&str], &str); 4] = [
+            ("Yes", &[], r#"Inbox reply to "Approve the budget?": Yes"#),
+            (
+                "See these",
+                &["/p/.aoe-pasted-images/a.png", "/p/.aoe-pasted-images/b.jpg"],
+                r#"Inbox reply to "Approve the budget?": See these /p/.aoe-pasted-images/a.png /p/.aoe-pasted-images/b.jpg"#,
+            ),
+            // An answer may be images only.
+            (
+                "",
+                &["/p/a.png"],
+                r#"Inbox reply to "Approve the budget?": /p/a.png"#,
+            ),
+            // A path with a space is escaped the way the terminal pastes one.
+            (
+                "ok",
+                &["/my p/a.png"],
+                r#"Inbox reply to "Approve the budget?": ok /my\ p/a.png"#,
+            ),
+        ];
+        for (input, paths, typed) in cases {
+            let paths: Vec<String> = paths.iter().map(|p| p.to_string()).collect();
+            assert_eq!(
+                reply_message("Approve the budget?", input, &paths),
+                typed,
+                "{input:?}"
+            );
+        }
     }
 
     #[test]

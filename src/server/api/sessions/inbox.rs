@@ -29,6 +29,8 @@ pub struct AnswerRequest {
     pub input: String,
     #[serde(default)]
     pub ms_open: Option<u64>,
+    #[serde(default)]
+    pub images: Vec<MessageImage>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -396,48 +398,80 @@ pub async fn post_ask_answer(
         return resp;
     }
     let input = req.input.trim();
-    if input.is_empty() {
+    if input.is_empty() && req.images.is_empty() {
         return api_error(
             StatusCode::BAD_REQUEST,
             "empty_input",
-            "An answer needs its input",
+            "An answer needs its input or an image",
         );
     }
+    let images = match decode_images(&req.images) {
+        Ok(images) => images,
+        Err(resp) => return resp,
+    };
     let now = chrono::Utc::now();
     let (text, instances) = match claim(&state, &id, req.posted_at, now).await {
         Ok(found) => found,
         Err(resp) => return resp,
     };
-    let message = crate::session::inbox::reply_message(&text, input);
     let mut answered = Vec::new();
+    let mut kept = Vec::new();
     for (i, target) in crate::session::inbox::answer_targets(&instances, &id)
         .into_iter()
         .enumerate()
     {
+        let saved = match instances.iter().find(|inst| inst.id == target) {
+            Some(inst) => save_images(inst, &images).await,
+            None => Err(std::io::Error::other("session not found")),
+        };
+        let (host_paths, paths) = match saved {
+            Ok(saved) => saved,
+            Err(e) if i == 0 => {
+                tracing::warn!(target: "server.inbox", session = %target, "answer images not saved: {e}");
+                release_claim(&state, &id, req.posted_at).await;
+                return api_error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "write_failed",
+                    "An image could not be saved",
+                );
+            }
+            Err(e) => {
+                tracing::warn!(target: "server.inbox", session = %target, "merged session's answer images not saved: {e}");
+                continue;
+            }
+        };
+        let message = crate::session::inbox::reply_message(&text, input, &paths);
         // Never revive a pane to deliver an answer: a stopped session gets 502.
         let sent = send_terminal_message(
             &state.session_service,
             &state.status_tx,
             &target,
-            message.clone(),
+            message,
             false,
         )
         .await;
         match sent {
-            Ok(_) => answered.push(target),
-            Err(e) if i == 0 => {
-                release_claim(&state, &id, req.posted_at).await;
-                return api_error(
-                    StatusCode::BAD_GATEWAY,
-                    "not_delivered",
-                    format!("The session could not take the answer: {}", send_error(&e)),
-                );
+            Ok(_) => {
+                answered.push(target);
+                kept.extend(host_paths);
             }
             Err(e) => {
+                for p in &host_paths {
+                    let _ = std::fs::remove_file(p);
+                }
+                if i == 0 {
+                    release_claim(&state, &id, req.posted_at).await;
+                    return api_error(
+                        StatusCode::BAD_GATEWAY,
+                        "not_delivered",
+                        format!("The session could not take the answer: {}", send_error(&e)),
+                    );
+                }
                 tracing::warn!(target: "server.inbox", session = %target, "merged session missed the answer: {}", send_error(&e))
             }
         }
     }
+    expire_images(kept);
     for target in &answered {
         mark_read(&state, target).await;
     }
@@ -448,7 +482,89 @@ pub async fn post_ask_answer(
         Some(req.form),
         req.ms_open,
     );
-    Json(serde_json::json!({ "answered": answered })).into_response()
+    Json(serde_json::json!({ "answered": answered, "images": images.len() })).into_response()
+}
+
+type Image = (Vec<u8>, &'static str);
+
+/// Each image checked like a dashboard paste, or the `400` refusing them all.
+fn decode_images(images: &[MessageImage]) -> Result<Vec<Image>, axum::response::Response> {
+    use base64::Engine as _;
+    if images.len() > MAX_MESSAGE_IMAGES {
+        return Err(api_error(
+            StatusCode::BAD_REQUEST,
+            "too_many_images",
+            "At most 10 images",
+        ));
+    }
+    images
+        .iter()
+        .map(|img| {
+            let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(img.data.as_bytes())
+            else {
+                return Err(api_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_base64",
+                    "An image is not base64",
+                ));
+            };
+            if bytes.is_empty() || bytes.len() > super::send::MAX_PASTE_IMAGE_BYTES {
+                return Err(api_error(
+                    StatusCode::BAD_REQUEST,
+                    "image_size",
+                    "An image is empty or over 5 MB",
+                ));
+            }
+            let Some(mime) = crate::server::api::acp::sniff_image_mime(&bytes) else {
+                return Err(api_error(
+                    StatusCode::BAD_REQUEST,
+                    "not_an_image",
+                    "Not an image",
+                ));
+            };
+            Ok((bytes, super::send::paste_image_extension(mime)))
+        })
+        .collect()
+}
+
+/// Save `images` into `inst`'s paste folder: the host paths, and the paths as
+/// its pane sees them.
+async fn save_images(
+    inst: &Instance,
+    images: &[Image],
+) -> std::io::Result<(Vec<std::path::PathBuf>, Vec<String>)> {
+    if images.is_empty() {
+        return Ok((Vec::new(), Vec::new()));
+    }
+    let project = inst.project_path.clone();
+    let sandboxed = inst.is_sandboxed();
+    let images = images.to_vec();
+    let written = tokio::task::spawn_blocking(move || {
+        images
+            .iter()
+            .map(|(bytes, ext)| super::send::write_paste_image(&project, bytes, ext))
+            .collect::<std::io::Result<Vec<_>>>()
+    })
+    .await
+    .map_err(std::io::Error::other)??;
+    let paths = written
+        .iter()
+        .map(|(_, name)| super::send::pane_visible_paste_path(&inst.project_path, sandboxed, name))
+        .collect();
+    Ok((written.into_iter().map(|(p, _)| p).collect(), paths))
+}
+
+/// Delete delivered images after the 24 hours the reader may need them.
+fn expire_images(paths: Vec<std::path::PathBuf>) {
+    if paths.is_empty() {
+        return;
+    }
+    tokio::spawn(async move {
+        tokio::time::sleep(MESSAGE_IMAGE_TTL).await;
+        for p in paths {
+            let _ = tokio::fs::remove_file(&p).await;
+        }
+    });
 }
 
 /// The queue's input box: text and images, typed into the router session only.
@@ -456,7 +572,6 @@ pub async fn post_inbox_message(
     State(state): State<Arc<AppState>>,
     Json(req): Json<MessageRequest>,
 ) -> axum::response::Response {
-    use base64::Engine as _;
     if let Some(resp) = crate::server::api::read_only_block(&state) {
         return resp;
     }
@@ -470,35 +585,10 @@ pub async fn post_inbox_message(
             "A message needs text or an image",
         );
     }
-    if req.images.len() > MAX_MESSAGE_IMAGES {
-        return api_error(
-            StatusCode::BAD_REQUEST,
-            "too_many_images",
-            "At most 10 images",
-        );
-    }
-    let mut images = Vec::new();
-    for img in &req.images {
-        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(img.data.as_bytes())
-        else {
-            return api_error(
-                StatusCode::BAD_REQUEST,
-                "invalid_base64",
-                "An image is not base64",
-            );
-        };
-        if bytes.is_empty() || bytes.len() > super::send::MAX_PASTE_IMAGE_BYTES {
-            return api_error(
-                StatusCode::BAD_REQUEST,
-                "image_size",
-                "An image is empty or over 5 MB",
-            );
-        }
-        let Some(mime) = crate::server::api::acp::sniff_image_mime(&bytes) else {
-            return api_error(StatusCode::BAD_REQUEST, "not_an_image", "Not an image");
-        };
-        images.push((bytes, super::send::paste_image_extension(mime)));
-    }
+    let images = match decode_images(&req.images) {
+        Ok(images) => images,
+        Err(resp) => return resp,
+    };
     let router = match crate::session::inbox::read_router() {
         Ok(Some(id)) => id,
         Ok(None) => {
@@ -531,31 +621,14 @@ pub async fn post_inbox_message(
             "The Inbox router is not a session",
         );
     };
-    let project = inst.project_path.clone();
-    let sandboxed = inst.is_sandboxed();
-    let written = tokio::task::spawn_blocking(move || {
-        images
-            .iter()
-            .map(|(bytes, ext)| super::send::write_paste_image(&project, bytes, ext))
-            .collect::<std::io::Result<Vec<_>>>()
-    })
-    .await;
-    let written = match written {
-        Ok(Ok(w)) => w,
-        _ => {
-            return api_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "write_failed",
-                "An image could not be saved",
-            )
-        }
+    let Ok((host_paths, paths)) = save_images(&inst, &images).await else {
+        return api_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "write_failed",
+            "An image could not be saved",
+        );
     };
-    let paths: Vec<String> = written
-        .iter()
-        .map(|(_, name)| super::send::pane_visible_paste_path(&inst.project_path, sandboxed, name))
-        .collect();
     let message = crate::session::inbox::message_text(&req.text, &paths);
-    let host_paths: Vec<_> = written.into_iter().map(|(p, _)| p).collect();
     // Never revive a pane to deliver a message, like an answer.
     if let Err(e) = send_terminal_message(
         &state.session_service,
@@ -576,12 +649,7 @@ pub async fn post_inbox_message(
         );
     }
     let n = host_paths.len();
-    tokio::spawn(async move {
-        tokio::time::sleep(MESSAGE_IMAGE_TTL).await;
-        for p in host_paths {
-            let _ = tokio::fs::remove_file(&p).await;
-        }
-    });
+    expire_images(host_paths);
     Json(serde_json::json!({ "delivered_to": router, "images": n })).into_response()
 }
 
@@ -843,7 +911,10 @@ mod tests {
     async fn an_answer_that_cannot_reach_its_session_clears_and_logs_nothing() {
         let _app = crate::session::test_support::isolate_app_dir();
         crate::session::set_unread_enabled(true);
-        let state = seeded(vec![asking("answerme", None, None)]);
+        let project = tempfile::tempdir().unwrap();
+        let mut inst = asking("answerme", None, None);
+        inst.project_path = project.path().to_string_lossy().to_string();
+        let state = seeded(vec![inst]);
         let at = posted(&state, "answerme").await;
         let call = |body: serde_json::Value| {
             let state = state.clone();
@@ -866,6 +937,34 @@ mod tests {
                 serde_json::json!({"for": at, "form": "text", "input": "  "}),
                 StatusCode::BAD_REQUEST,
                 "empty input",
+            ),
+            (
+                serde_json::json!({"for": at, "form": "text", "input": "  ", "images": []}),
+                StatusCode::BAD_REQUEST,
+                "no input and no image",
+            ),
+            // A refused image claims nothing: the later rows still reach the
+            // session instead of getting 409.
+            (
+                serde_json::json!({"for": at, "form": "text", "input": "x", "images": [{"data": "%%%"}]}),
+                StatusCode::BAD_REQUEST,
+                "not base64",
+            ),
+            (
+                serde_json::json!({"for": at, "form": "text", "input": "x", "images": [{"data": "aGVsbG8="}]}),
+                StatusCode::BAD_REQUEST,
+                "not an image",
+            ),
+            (
+                serde_json::json!({"for": at, "form": "text", "input": "x", "images": vec![serde_json::json!({"data": PNG}); 11]}),
+                StatusCode::BAD_REQUEST,
+                "more than 10 images",
+            ),
+            // Images only is an answer; this one cannot be typed.
+            (
+                serde_json::json!({"for": at, "form": "text", "input": "", "images": [{"data": PNG}]}),
+                StatusCode::BAD_GATEWAY,
+                "unreachable session, images only",
             ),
             // No tmux pane behind the test session: the message cannot be typed.
             (
@@ -890,6 +989,121 @@ mod tests {
             !crate::session::inbox_log::log_path().unwrap().exists(),
             "nothing logged"
         );
+        assert_eq!(
+            pasted_in(project.path()),
+            Vec::<String>::new(),
+            "an undelivered answer leaves no image behind"
+        );
+    }
+
+    /// The image files in a project's paste folder.
+    fn pasted_in(project: &std::path::Path) -> Vec<String> {
+        std::fs::read_dir(project.join(".aoe-pasted-images"))
+            .map(|d| {
+                d.filter_map(|e| e.ok())
+                    .map(|e| e.file_name().to_string_lossy().to_string())
+                    .filter(|n| n != ".gitignore")
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn an_answer_with_pasted_images_reaches_the_asker_and_its_merged_session_each_in_its_own_folder(
+    ) {
+        let _app = crate::session::test_support::isolate_app_dir();
+        if !crate::tmux::tmux_command()
+            .arg("-V")
+            .output()
+            .is_ok_and(|o| o.status.success())
+        {
+            eprintln!("skipping: tmux not available");
+            return;
+        }
+        let projects = [tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap()];
+        let mut main = asking("imgmain", None, None);
+        let mut dup = asking("imgdup", None, None);
+        dup.priority
+            .as_mut()
+            .unwrap()
+            .ask
+            .as_mut()
+            .unwrap()
+            .merged_into = Some("imgmain".into());
+        let mut kills = Vec::new();
+        let mut names = Vec::new();
+        for (inst, project) in [(&mut main, &projects[0]), (&mut dup, &projects[1])] {
+            inst.project_path = project.path().to_string_lossy().to_string();
+            let name = crate::tmux::Session::generate_name(&inst.id, &inst.title);
+            kills.push(crate::tmux::test_helpers::TmuxTestSession::from_name(
+                name.clone(),
+            ));
+            let mut args = [
+                "new-session",
+                "-d",
+                "-s",
+                &name,
+                "-x",
+                "300",
+                "-y",
+                "40",
+                "cat",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+            crate::tmux::utils::append_pane_base_index_args(&mut args, &name);
+            assert!(crate::tmux::tmux_command()
+                .args(&args)
+                .output()
+                .unwrap()
+                .status
+                .success());
+            names.push(name);
+        }
+        let cache = crate::tmux::SessionCacheGuard::capture();
+        cache.force_present(&names.iter().map(String::as_str).collect::<Vec<_>>());
+        let state = seeded(vec![main, dup]);
+        let at = posted(&state, "imgmain").await;
+        let req: AnswerRequest = serde_json::from_value(serde_json::json!({
+            "for": at, "form": "text", "input": "", "images": [{"data": PNG}, {"data": PNG}]
+        }))
+        .unwrap();
+        let (status, json) =
+            body(post_ask_answer(State(state.clone()), Path("imgmain".into()), Json(req)).await)
+                .await;
+        assert_eq!(
+            (status, json["answered"].clone(), json["images"].clone()),
+            (
+                StatusCode::OK,
+                serde_json::json!(["imgmain", "imgdup"]),
+                2.into()
+            )
+        );
+        for (name, project) in names.iter().zip(&projects) {
+            let saved = pasted_in(project.path());
+            assert_eq!(
+                saved.len(),
+                2,
+                "two images in this session's own folder: {saved:?}"
+            );
+            let pane = crate::tmux::Session::from_name(name);
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                let screen = pane.capture_pane(40).unwrap().replace('\n', "");
+                if screen.contains("Inbox reply to \"ask imgmain\": /")
+                    && saved.iter().all(|f| screen.contains(f.as_str()))
+                {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "{name} never got: {screen}"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
     }
 
     async fn answer(
