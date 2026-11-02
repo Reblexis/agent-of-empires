@@ -306,8 +306,8 @@ fn one_line(raw: Option<&str>, what: &str, max: usize) -> Result<Option<String>>
 }
 
 /// The score after `aoe session priority`: `value` `None` clears score and
-/// ask; a new score without an ask keeps the stored ask only while the stored
-/// score is current. A post of the stored ask's own request (unanswered,
+/// ask; a new score without an ask keeps the stored ask while it is current or
+/// unanswered, and a score of 0 drops it. A post of the stored ask's own request (unanswered,
 /// unmerged) keeps that ask whole, even after a run. An ask the new score
 /// replaces or drops is kept as `replaced`, so a late answer still reaches it.
 pub fn next_score(
@@ -338,8 +338,10 @@ pub fn next_score(
                 ..new
             }),
         },
+        // A score-only call keeps an unanswered ask whenever it comes; 0 means nothing is needed.
+        None if value == 0 => None,
         None => stored
-            .filter(|s| is_current(s, run_started_at))
+            .filter(|s| ask_is_current(s, run_started_at))
             .and_then(|s| s.ask.clone()),
     };
     let gone = stored_ask.filter(|old| next.as_ref().map(|n| n.posted_at) != Some(old.posted_at));
@@ -986,6 +988,21 @@ mod tests {
     }
 
     #[test]
+    fn an_unanswered_ask_survives_a_later_score_only_priority_call() {
+        // 2026-11-02: the router posted a score 7 brief, ran again, then scored 7 with
+        // no ask line, and the brief vanished from the Inbox.
+        let pick = refined_pick();
+        let kept = next_score(Some(&pick), Some(7), None, Some(t(80)), t(100)).unwrap();
+        assert_eq!(kept.ask, pick.ask);
+        let mut answered = pick.clone();
+        answered.ask.as_mut().unwrap().answered_at = Some(t(70));
+        let gone = next_score(Some(&answered), Some(7), None, Some(t(80)), t(100)).unwrap();
+        assert_eq!(gone.ask, None, "an answered ask goes once the session ran");
+        let zero = next_score(Some(&pick), Some(0), None, Some(t(80)), t(100)).unwrap();
+        assert_eq!(zero.ask, None, "0 means nothing is needed");
+    }
+
+    #[test]
     fn an_answer_is_delivered_to_the_stored_ask_or_one_replaced_at_most_five_minutes_ago_and_only_once(
     ) {
         let pick = refined_pick();
@@ -998,8 +1015,8 @@ mod tests {
             t(100),
         )
         .unwrap();
-        // The session ran (t(80)) and rescored without an ask: the ask is dropped, not lost.
-        let dropped = next_score(Some(&pick), Some(5), None, Some(t(80)), t(100)).unwrap();
+        // The session ran (t(80)) and rescored 0 without an ask: the ask is dropped, not lost.
+        let dropped = next_score(Some(&pick), Some(0), None, Some(t(80)), t(100)).unwrap();
         assert_eq!(dropped.ask, None);
         let grace = ANSWER_GRACE_SECS;
         // (score, answer for, answered at, expected, why)
@@ -1322,6 +1339,8 @@ mod tests {
     fn rescoring_without_an_ask_never_erases_what_a_current_session_asks() {
         let now = t(100);
         let had = owned(8, 20, Some("Approve the budget"));
+        let mut answered = had.clone();
+        answered.ask.as_mut().unwrap().answered_at = Some(t(25));
         type Case<'a> = (
             Option<&'a PriorityScore>,
             Option<u8>,
@@ -1330,7 +1349,7 @@ mod tests {
             Option<&'a str>,
         );
         // (stored, value, new ask, run_started_at, expected ask)
-        let cases: [Case; 6] = [
+        let cases: [Case; 7] = [
             // Focus re-rank of a current score keeps its ask.
             (
                 Some(&had),
@@ -1349,7 +1368,9 @@ mod tests {
                 Some("Pay the invoice"),
             ),
             // The session ran since: the old ask was answered.
-            (Some(&had), Some(5), None, Some(t(30)), None),
+            (Some(&answered), Some(5), None, Some(t(30)), None),
+            // The session ran since, the ask unanswered: it stays.
+            (Some(&had), Some(5), None, Some(t(30)), Some("Approve the budget")),
             (None, Some(5), None, None, None),
             (
                 None,

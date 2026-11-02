@@ -67,7 +67,11 @@ The ask outlives that rule: an **unanswered** ask stays current, whatever the
 status, until the agent replaces it with a new score, clears it, or the ask
 takes its answer; a new run alone does not end it, because a session also
 runs for reasons other than your reply (another session's message, a hook).
-An answered ask is current only while its score is, as above. (2026-11-02:
+An answered ask is current only while its score is, as above. A later score
+without an ask line (`aoe session priority 7` alone) keeps an unanswered ask
+too, whenever it comes; a score of 0 drops it, since 0 means nothing is
+needed. (2026-11-02: a score-only call after a new run dropped the router's
+score 7 brief for Viktor's call.) (2026-11-02:
 the router session runs again on nearly every message, so its asks vanished
 from the Inbox the moment it got busy; Viktor: "welll i dont see it".) A
 running session's effective priority is still 0.
