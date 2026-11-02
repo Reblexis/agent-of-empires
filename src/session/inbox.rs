@@ -338,6 +338,8 @@ mod tests {
             .merged_into = Some("main".into());
         stale_dup.status = Status::Running;
         stale_dup.run_started_at = Some(chrono::Utc::now() + chrono::Duration::seconds(1));
+        // Answered before that run: stale (an unanswered merged ask would still take the answer).
+        stale_dup.priority.as_mut().unwrap().ask.as_mut().unwrap().answered_at = Some(chrono::Utc::now());
         let instances = vec![
             dup,
             asking("main", None, None, 5),

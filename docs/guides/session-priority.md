@@ -61,10 +61,16 @@ belongs to one ask: the agent sets it while finishing its turn, it shows while
 the session waits for you, and once you reply and the session runs again it
 stops counting. If the agent then ends its next turn without scoring, the
 default applies rather than the stale number. `clear` drops the score, so the
-default applies. The ask is current exactly when its score is, whatever the
-status: an agent that scores and then keeps working posts an ask that stays
-current while that run goes on, though the running session's effective
-priority is 0.
+default applies.
+
+The ask outlives that rule: an **unanswered** ask stays current, whatever the
+status, until the agent replaces it with a new score, clears it, or the ask
+takes its answer; a new run alone does not end it, because a session also
+runs for reasons other than your reply (another session's message, a hook).
+An answered ask is current only while its score is, as above. (2026-11-02:
+the router session runs again on nearly every message, so its asks vanished
+from the Inbox the moment it got busy; Viktor: "welll i dont see it".) A
+running session's effective priority is still 0.
 
 ## Where it shows
 

@@ -1407,7 +1407,12 @@ fn from_instance_carries_the_current_priority_ask_only() {
         "a session that scored and kept running still shows its ask"
     );
     inst.run_started_at = Some(chrono::Utc::now() + chrono::Duration::seconds(5));
-    assert_eq!(reason(&inst), None, "the session ran since the score");
+    assert!(
+        reason(&inst).is_some(),
+        "an unanswered ask outlives a new run (2026-11-02: the router's asks vanished while it worked)"
+    );
+    inst.priority.as_mut().unwrap().ask.as_mut().unwrap().answered_at = Some(chrono::Utc::now());
+    assert_eq!(reason(&inst), None, "an answered ask goes once the session ran since the score");
 }
 
 #[test]
@@ -5387,6 +5392,8 @@ async fn the_ask_page_is_served_only_for_a_current_ask_that_has_one() {
     };
     let mut stale = posted("askpagestale", true);
     stale.run_started_at = Some(chrono::Utc::now() + chrono::Duration::seconds(5));
+    // Answered: an unanswered ask would outlive the run (docs/guides/session-priority.md).
+    stale.priority.as_mut().unwrap().ask.as_mut().unwrap().answered_at = Some(chrono::Utc::now());
     for id in ["askpageok", "askpagestale", "askpageflagless"] {
         crate::session::ask_page::write_page(id, b"<p>40 EUR</p>").unwrap();
     }

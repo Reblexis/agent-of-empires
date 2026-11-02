@@ -279,7 +279,7 @@ pub fn rank_ask(
     let minutes = check_minutes(rank.minutes)?;
     let due = check_due(rank.due)?;
     let Some(mut score) = stored
-        .filter(|s| is_current(s, run_started_at) && s.ask.is_some())
+        .filter(|s| ask_is_current(s, run_started_at) && s.ask.is_some())
         .cloned()
     else {
         bail!("no current ask to rank: the session posted none, or ran since");
@@ -371,7 +371,7 @@ pub fn refine_ask(
     now: DateTime<Utc>,
 ) -> Result<PriorityScore> {
     let Some(mut score) = stored
-        .filter(|s| is_current(s, run_started_at) && s.ask.is_some())
+        .filter(|s| ask_is_current(s, run_started_at) && s.ask.is_some())
         .cloned()
     else {
         bail!("no current ask to refine: the session posted none, or ran since");
@@ -479,7 +479,7 @@ pub fn current_ask(
     score: Option<&PriorityScore>,
     run_started_at: Option<DateTime<Utc>>,
 ) -> Option<&Ask> {
-    let score = score.filter(|s| is_current(s, run_started_at))?;
+    let score = score.filter(|s| ask_is_current(s, run_started_at))?;
     // Running counts: an agent that scores and keeps working must still reach
     // the user (two priority 9 asks went unseen on 2026-10-31).
     let uses_score = !sunk
@@ -491,6 +491,13 @@ pub fn current_ask(
         return None;
     }
     score.ask.as_ref()
+}
+
+/// An ask is current while its score is, or, unanswered, until the agent
+/// replaces or clears it: a new run alone does not end it (the router session
+/// runs on nearly every message; docs/guides/session-priority.md).
+fn ask_is_current(score: &PriorityScore, run_started_at: Option<DateTime<Utc>>) -> bool {
+    is_current(score, run_started_at) || score.ask.as_ref().is_some_and(|a| a.answered_at.is_none())
 }
 
 /// A score is current when it was set after the session last started running.
@@ -1146,6 +1153,9 @@ mod tests {
         );
         // (stored, run_started_at, for, refine, error mentions)
         let stale_run = Some(t(60));
+        // An answered ask goes stale once the session runs again (an unanswered one does not).
+        let mut answered = posted.clone();
+        answered.ask.as_mut().unwrap().answered_at = Some(t(55));
         let refused: [Refused; 6] = [
             (
                 None,
@@ -1158,7 +1168,7 @@ mod tests {
                 "no current ask",
             ),
             (
-                Some(&posted),
+                Some(&answered),
                 stale_run,
                 t(50),
                 Refine {
@@ -1259,7 +1269,8 @@ mod tests {
         .unwrap();
         assert_eq!(due_only.ask.unwrap().due.as_deref(), Some("2026-10-29"));
         // (stored, run_started_at, rank, error mentions)
-        let stale = owned(8, 20, Some("Old ask"));
+        let mut stale = owned(8, 20, Some("Old ask"));
+        stale.ask.as_mut().unwrap().answered_at = Some(t(25));
         let unasked = owned(8, 20, None);
         let refused: [(Option<&PriorityScore>, Option<DateTime<Utc>>, Rank, &str); 5] = [
             (Some(&posted), None, Rank::default(), "--value"),
@@ -1369,17 +1380,24 @@ mod tests {
     fn an_ask_counts_while_its_score_is_current_even_if_the_session_keeps_running() {
         let why = owned(8, 20, Some("Approve the budget"));
         let zero = owned(0, 20, Some("Nothing needed"));
+        let mut answered = owned(8, 20, Some("Approve the budget"));
+        answered.ask.as_mut().unwrap().answered_at = Some(t(25));
         // (status, sunk, score, run_started_at, shown)
-        let cases: [(Status, bool, &PriorityScore, Option<DateTime<Utc>>, bool); 9] = [
+        let cases: [(Status, bool, &PriorityScore, Option<DateTime<Utc>>, bool); 12] = [
             (Status::Idle, false, &why, Some(t(10)), true),
             (Status::Waiting, false, &why, None, true),
             (Status::Error, false, &why, Some(t(10)), true),
             // 2026-10-31: a session that posted a priority 9 ask and kept
             // working; its ask vanished from the queue while it ran.
             (Status::Running, false, &why, Some(t(10)), true),
-            // Stale: the session ran again after the score.
-            (Status::Idle, false, &why, Some(t(30)), false),
-            (Status::Running, false, &why, Some(t(30)), false),
+            // 2026-11-02: an unanswered ask outlives a new run (the router
+            // session runs on nearly every message; its asks vanished).
+            (Status::Idle, false, &why, Some(t(30)), true),
+            (Status::Running, false, &why, Some(t(30)), true),
+            // An answered ask goes stale once the session runs again.
+            (Status::Idle, false, &answered, Some(t(30)), false),
+            (Status::Running, false, &answered, Some(t(30)), false),
+            (Status::Idle, false, &answered, Some(t(10)), true),
             // Sunk or Unknown sessions do not use the score.
             (Status::Idle, true, &why, Some(t(10)), false),
             (Status::Unknown, false, &why, Some(t(10)), false),
