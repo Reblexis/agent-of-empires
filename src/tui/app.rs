@@ -2553,6 +2553,7 @@ impl App {
                     .session
                     .auto_stop_idle_secs
             },
+            crate::session::held_work::holds_scheduled_work,
         );
         let mut reaped = false;
         for cand in candidates {

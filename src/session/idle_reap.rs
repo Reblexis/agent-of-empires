@@ -24,6 +24,7 @@ pub fn idle_reap_candidates(
     now: DateTime<Utc>,
     attached: &HashSet<String>,
     resolve_threshold: impl Fn(&str) -> u32,
+    holds_scheduled_work: impl Fn(&Instance) -> bool,
 ) -> Vec<IdleReapCandidate> {
     let mut candidates = Vec::new();
     for inst in instances {
@@ -46,7 +47,8 @@ pub fn idle_reap_candidates(
             inst.last_accessed_at,
             is_attached,
             threshold_secs,
-        ) {
+        ) && !holds_scheduled_work(inst)
+        {
             candidates.push(IdleReapCandidate {
                 session_id: inst.id.clone(),
                 profile,
@@ -188,15 +190,36 @@ mod tests {
         let attached = HashSet::from([idle.tmux_session().unwrap().name().to_string()]);
         let one = std::slice::from_ref(&idle);
 
-        let got = idle_reap_candidates(one, n, &HashSet::new(), |_| 60);
+        let got = idle_reap_candidates(one, n, &HashSet::new(), |_| 60, |_| false);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].session_id, idle.id);
         assert_eq!(got[0].threshold_secs, 60);
 
         assert!(
-            idle_reap_candidates(one, n, &attached, |_| 60).is_empty(),
+            idle_reap_candidates(one, n, &attached, |_| 60, |_| false).is_empty(),
             "an attached session is never a candidate"
         );
+    }
+
+    #[test]
+    fn session_holding_scheduled_work_is_never_auto_stopped() {
+        let n = now();
+        let held = idle_instance("held");
+        let free = idle_instance("free");
+        let held_id = held.id.clone();
+        let got = idle_reap_candidates(
+            &[held, free.clone()],
+            n,
+            &HashSet::new(),
+            |_| 60,
+            |i| i.id == held_id,
+        );
+        assert_eq!(
+            got.len(),
+            1,
+            "only the session without scheduled work stops"
+        );
+        assert_eq!(got[0].session_id, free.id);
     }
 
     #[test]

@@ -701,6 +701,37 @@ fn config_root(
     .ok()
 }
 
+/// Absolute paths of every transcript of this session's Claude
+/// conversations, in the config root it runs on. Empty for other agents or
+/// when the root cannot be resolved.
+pub(crate) fn claude_transcript_paths(instance: &Instance) -> Vec<PathBuf> {
+    let (Some(agent), Some(home)) = (
+        crate::session::resolved_agent_for(
+            &instance.source_profile,
+            &instance.tool,
+            &instance.detect_as,
+        ),
+        dirs::home_dir(),
+    ) else {
+        return Vec::new();
+    };
+    if !carries_transcript(agent) {
+        return Vec::new();
+    }
+    let profile = instance.effective_profile();
+    let Some(root) = config_root(instance, &profile, &instance.tool, agent, &home) else {
+        return Vec::new();
+    };
+    let Ok(dir) = AnchoredDir::open(&root) else {
+        return Vec::new();
+    };
+    conversation_ids(instance)
+        .iter()
+        .flat_map(|id| claude_transcripts_for(&dir, id).unwrap_or_default())
+        .map(|relative| root.join(relative))
+        .collect()
+}
+
 /// Every `projects/<encoded-cwd>/<sid>.jsonl` under `root`.
 ///
 /// The encoded directory is derived from the cwd the agent ran in, which for a

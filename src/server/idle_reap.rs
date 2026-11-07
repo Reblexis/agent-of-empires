@@ -55,10 +55,17 @@ pub(super) async fn reap_idle_sessions(
         .await
         .unwrap_or_default();
 
-    let candidates =
-        crate::session::idle_reap::idle_reap_candidates(&instances, now, &attached, |p| {
-            thresholds.get(p).copied().unwrap_or(0)
-        });
+    let candidates = tokio::task::spawn_blocking(move || {
+        crate::session::idle_reap::idle_reap_candidates(
+            &instances,
+            now,
+            &attached,
+            |p| thresholds.get(p).copied().unwrap_or(0),
+            crate::session::held_work::holds_scheduled_work,
+        )
+    })
+    .await
+    .unwrap_or_default();
 
     let sem = Arc::new(tokio::sync::Semaphore::new(
         SESSION_IDLE_REAP_MAX_CONCURRENT,

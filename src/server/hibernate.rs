@@ -53,9 +53,18 @@ pub(super) async fn hibernate_lru_sessions(
     .await
     .unwrap_or_default();
 
-    let candidates = crate::session::hibernate::hibernate_candidates(&instances, &attached, |p| {
-        caps.get(p).copied().unwrap_or(0)
-    });
+    // The scheduled-work check reads transcripts and panes, so it runs off the
+    // async runtime and only for sessions the cap would otherwise park.
+    let candidates = tokio::task::spawn_blocking(move || {
+        crate::session::hibernate::hibernate_candidates(
+            &instances,
+            &attached,
+            |p| caps.get(p).copied().unwrap_or(0),
+            crate::session::held_work::holds_scheduled_work,
+        )
+    })
+    .await
+    .unwrap_or_default();
 
     let sem = Arc::new(tokio::sync::Semaphore::new(
         SESSION_IDLE_REAP_MAX_CONCURRENT,

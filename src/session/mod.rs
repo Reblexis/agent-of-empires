@@ -21,6 +21,7 @@ pub mod forecast;
 pub mod fork;
 mod groups;
 pub(crate) mod handoff;
+pub mod held_work;
 pub mod hibernate;
 pub mod idle_reap;
 pub mod import;

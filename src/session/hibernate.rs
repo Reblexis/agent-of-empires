@@ -63,12 +63,15 @@ fn recency(inst: &Instance) -> DateTime<Utc> {
 /// safe to park: currently `Idle` and with no tmux client attached. A busy
 /// tail member (`Running`, `Waiting`, `Starting`, ...) is left alone, which
 /// is the deliberate overflow: the cap bounds idle agents, never working
-/// ones. `attached` is the set of live-client tmux session names from
+/// ones. So is a tail member that `holds_scheduled_work` (a pending wake or
+/// a background job, see [`super::held_work`]); it is asked last, only for
+/// sessions that would otherwise park, because it does I/O. `attached` is the set of live-client tmux session names from
 /// [`crate::tmux::attached_session_names`].
 pub fn hibernate_candidates(
     instances: &[Instance],
     attached: &HashSet<String>,
     resolve_cap: impl Fn(&str) -> u32,
+    holds_scheduled_work: impl Fn(&Instance) -> bool,
 ) -> Vec<HibernateCandidate> {
     let mut by_profile: HashMap<String, Vec<&Instance>> = HashMap::new();
     for inst in instances {
@@ -102,7 +105,7 @@ pub fn hibernate_candidates(
                 .tmux_session()
                 .ok()
                 .is_some_and(|s| attached.contains(s.name()));
-            if is_attached {
+            if is_attached || holds_scheduled_work(inst) {
                 continue;
             }
             candidates.push(HibernateCandidate {
@@ -204,14 +207,14 @@ mod tests {
     #[test]
     fn cap_zero_disables_the_feature() {
         let instances = vec![plain("a", Status::Idle, 300), plain("b", Status::Idle, 200)];
-        let got = hibernate_candidates(&instances, &HashSet::new(), |_| 0);
+        let got = hibernate_candidates(&instances, &HashSet::new(), |_| 0, |_| false);
         assert!(got.is_empty());
     }
 
     #[test]
     fn under_the_cap_nothing_is_parked() {
         let instances = vec![plain("a", Status::Idle, 300), plain("b", Status::Idle, 200)];
-        let got = hibernate_candidates(&instances, &HashSet::new(), |_| 2);
+        let got = hibernate_candidates(&instances, &HashSet::new(), |_| 2, |_| false);
         assert!(got.is_empty());
     }
 
@@ -221,7 +224,7 @@ mod tests {
         let b = plain("b", Status::Idle, 100);
         let c = plain("c", Status::Idle, 1000); // coldest
         let expect = c.id.clone();
-        let got = hibernate_candidates(&[a, b, c], &HashSet::new(), |_| 2);
+        let got = hibernate_candidates(&[a, b, c], &HashSet::new(), |_| 2, |_| false);
         assert_eq!(ids(&got), vec![expect]);
     }
 
@@ -231,7 +234,7 @@ mod tests {
         // is the most recent so it holds the one live slot. Nothing parks.
         let running = plain("running", Status::Running, 1000);
         let idle = plain("idle", Status::Idle, 10);
-        let got = hibernate_candidates(&[running, idle], &HashSet::new(), |_| 1);
+        let got = hibernate_candidates(&[running, idle], &HashSet::new(), |_| 1, |_| false);
         assert!(got.is_empty(), "a working agent must never be parked");
     }
 
@@ -241,7 +244,12 @@ mod tests {
         let working = plain("working", Status::Waiting, 500);
         let coldest = plain("coldest", Status::Idle, 1000);
         let expect = coldest.id.clone();
-        let got = hibernate_candidates(&[newest, working, coldest], &HashSet::new(), |_| 1);
+        let got = hibernate_candidates(
+            &[newest, working, coldest],
+            &HashSet::new(),
+            |_| 1,
+            |_| false,
+        );
         assert_eq!(ids(&got), vec![expect]);
     }
 
@@ -252,7 +260,7 @@ mod tests {
         let name = cold.tmux_session().unwrap().name().to_string();
         let mut attached = HashSet::new();
         attached.insert(name);
-        let got = hibernate_candidates(&[warm, cold], &attached, |_| 1);
+        let got = hibernate_candidates(&[warm, cold], &attached, |_| 1, |_| false);
         assert!(
             got.is_empty(),
             "a session with a live tmux client is in use"
@@ -270,7 +278,12 @@ mod tests {
         let errored = plain("errored", Status::Error, 5);
         let mut dormant = plain("dormant", Status::Idle, 5);
         dormant.mark_idle_dormant();
-        let got = hibernate_candidates(&[a, b, stopped, errored, dormant], &HashSet::new(), |_| 2);
+        let got = hibernate_candidates(
+            &[a, b, stopped, errored, dormant],
+            &HashSet::new(),
+            |_| 2,
+            |_| false,
+        );
         assert!(got.is_empty());
     }
 
@@ -279,8 +292,26 @@ mod tests {
         let mut sv = plain("sv", Status::Idle, 1000);
         sv.view = crate::session::View::Structured;
         let a = plain("a", Status::Idle, 10);
-        let got = hibernate_candidates(&[sv, a], &HashSet::new(), |_| 1);
+        let got = hibernate_candidates(&[sv, a], &HashSet::new(), |_| 1, |_| false);
         assert!(got.is_empty());
+    }
+
+    #[test]
+    fn session_holding_a_scheduled_wake_is_never_hibernated() {
+        // 2e370f46 lost its 19:13 UTC measurement when hibernation killed the
+        // process holding its one-shot cron. Cap 1: both cold sessions are
+        // past the cap, only the one without scheduled work parks.
+        let warm = plain("warm", Status::Idle, 10);
+        let held = plain("held", Status::Idle, 500);
+        let cold = plain("cold", Status::Idle, 1000);
+        let (held_id, expect) = (held.id.clone(), cold.id.clone());
+        let got = hibernate_candidates(
+            &[warm, held, cold],
+            &HashSet::new(),
+            |_| 1,
+            |i| i.id == held_id,
+        );
+        assert_eq!(ids(&got), vec![expect]);
     }
 
     #[test]
@@ -292,7 +323,7 @@ mod tests {
         fresh.last_accessed_at = None;
         fresh.created_at = Utc::now();
         let expect = old.id.clone();
-        let got = hibernate_candidates(&[old, fresh], &HashSet::new(), |_| 1);
+        let got = hibernate_candidates(&[old, fresh], &HashSet::new(), |_| 1, |_| false);
         assert_eq!(ids(&got), vec![expect]);
     }
 

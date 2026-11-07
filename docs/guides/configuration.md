@@ -90,8 +90,8 @@ You can browse tips from **Ctrl+K > Show tips** even with the bar hidden.
 |--------|---------|-------------|
 | `default_tool` | (auto-detect) | Default agent for new sessions, including a custom agent name. Falls back to the first available tool. |
 | `yolo_mode_default` | `false` | Start sessions with permission prompts skipped. In the terminal view this passes `--dangerously-skip-permissions`; in the structured view it maps to ACP `bypassPermissions` (see [Modes and YOLO](../structured-view/controls.md#permission-modes-and-yolo)). |
-| `auto_stop_idle_secs` | `0` | Seconds a plain tmux session may sit `Idle` before its tmux session and container are killed, leaving a restartable `Stopped` row. Idle age counts from the later of the last `Idle` transition and the last interaction, a session with an attached tmux client is spared, and the check runs about once a minute. Structured view workers use `acp.auto_stop_idle_secs`. |
-| `hibernate_max_live` | `0` | Cap on plain sessions kept live at once, per profile. When more than this many have a running tmux/agent process, the least-recently-used idle ones are hibernated: tmux and any sandbox container are torn down, the row stays in every list marked dormant, and selecting it restarts the agent with its conversation resumed (the same resume path a dead session's ensure uses). Selecting a session counts as using it. Working sessions and sessions with an attached tmux client are never hibernated, so the live count may exceed the cap while agents are busy. `0` disables it. Enforced by the `aoe serve` daemon about once a minute. |
+| `auto_stop_idle_secs` | `0` | Seconds a plain tmux session may sit `Idle` before its tmux session and container are killed, leaving a restartable `Stopped` row. Idle age counts from the later of the last `Idle` transition and the last interaction, a session with an attached tmux client or [scheduled work](#scheduled-work-keeps-a-session-live) is spared, and the check runs about once a minute. Structured view workers use `acp.auto_stop_idle_secs`. |
+| `hibernate_max_live` | `0` | Cap on plain sessions kept live at once, per profile. When more than this many have a running tmux/agent process, the least-recently-used idle ones are hibernated: tmux and any sandbox container are torn down, the row stays in every list marked dormant, and selecting it restarts the agent with its conversation resumed (the same resume path a dead session's ensure uses). Selecting a session counts as using it. Working sessions, sessions with an attached tmux client, and sessions holding [scheduled work](#scheduled-work-keeps-a-session-live) are never hibernated, so the live count may exceed the cap while agents are busy or waiting on a timer. `0` disables it. Enforced by the `aoe serve` daemon about once a minute. |
 | `prevent_sleep_when_active` | `false` | Have the `aoe serve` daemon hold an OS sleep inhibitor (`caffeinate -i`, `systemd-inhibit`) while any session is active. Global only; a TUI without a daemon gets nothing. |
 | `prevent_sleep_idle_grace_minutes` | `15` | Minutes (0 to 240) every session must stay idle before the inhibitor is released. A session that never reaches `Idle` (`Waiting` on a prompt, `Creating` forever) holds it indefinitely. |
 | `session_id_poller_max_threads` | `50` | Ceiling on concurrent session-id pollers per process. Past the ceiling, an overflow session's id is not refreshed until it gets a poller; starting one is retried on a 5 s to 60 s backoff. Global only, applied at process start. |
@@ -120,6 +120,27 @@ You can browse tips from **Ctrl+K > Show tips** even with the bar hidden.
 | `agent_config_dir` | `{}` | Config directory an agent reads instead of its built-in default, keyed by agent name. Wins over the agent's config-dir environment variable. Two names pointing at the same agent are two accounts of it; a restart that swaps between them carries the conversation across. A resumed host or structured Claude conversation keeps the store it recorded, which outranks this entry; a sandboxed one keeps the store its container was created with and follows the entry only once that container is recreated, see [Session Resume](session-resume.md#swapping-the-engine-on-a-restart). Global/profile only. |
 | `agents.<name>.status_map` | `{}` | Trusted hook-event to status mapping (`running`, `waiting`, `idle`, `error`), applied on the next hook install. Hooks receive `AOE_PROFILE`, so a script can read the resolved map with `aoe -p "$AOE_PROFILE" profile show --status-map <agent> --json`. Global/profile only. |
 | `agents.<name>.status_rules` | `[]` | Declarative pane status rules. See [Status rules](#status-rules-for-custom-agents). Global/profile only. |
+
+### Scheduled work keeps a session live
+
+Idle auto-stop and hibernation both tear down the agent process, which also
+destroys anything the agent was holding in memory for later. A Claude session
+holds scheduled work, and neither reaper touches it, while any of these is true:
+
+- **A pending wake.** Its transcript shows a `ScheduleWakeup` whose fire time
+  (call time plus `delaySeconds`) is still ahead and that no later
+  `ScheduleWakeup` with `stop` replaced, or a `CronCreate` that no `CronDelete`
+  cancelled and that has not run out: a one-shot holds until its `nextFireAt`,
+  a recurring one for 7 days after it was created (Claude's own expiry).
+- **A background job.** Its pane footer shows a running background shell
+  (`· 1 shell`), a running background agent row, or `Waiting for N background
+  agent(s)`.
+
+The check is deliberately conservative: a wake recorded before the agent
+process restarted still counts until it would have fired, since keeping one
+session live costs memory while losing its wake loses work. A sweep evaluates
+it only for sessions it would otherwise stop, so it adds no cost to sessions
+under the cap.
 
 Per-agent structured view defaults live under `[acp]`, not `[session]`:
 
