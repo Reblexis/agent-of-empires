@@ -16,7 +16,9 @@ AoE `3d108d3d1d9c436f`; keeper: `595425472be34943`. Earlier owners
 - Scheduled-work protection was pushed as `2df8fd89` on
   `fix/hibernate-keeps-scheduled-work` and `local-defaults`. Review found
   that recorded Claude account stores could differ from current config;
-  the recorded-store regression must pass before deployment.
+  `f86b9a9a` fixes this lookup. The new regression failed against the old
+  lookup and passed after the fix; all six conversation-carry and both
+  held-work tests passed with it.
 - The shared heavy-job lock is deployed by telarchy-youtube `d424b335`
   and telarchy-creators `7050728b`. All nine heavy units use the same lock;
   a harmless contender against a live holder returned 75. Manual examples
@@ -26,11 +28,12 @@ AoE `3d108d3d1d9c436f`; keeper: `595425472be34943`. Earlier owners
   have `gc.auto=0` and `maintenance.auto=false`. Sequential low-priority GC
   is scheduled for 03:30 Pacific, bounded to 1536 MiB and no swap. The
   focused GC script passed 11 checks; the first full nightly run is pending.
-- Memory vital: io-agent `48835d5`; observation follow-up `142262d`
-  (PR 77), pinned by agents `5f2430a`. The threshold uses exact 85% RAM
-  occupancy. 130 relevant tests passed. The existing five-minute CSV is
+- Memory vital: io-agent `48835d5`; observation follow-ups `142262d` and
+  `886fe67` (PRs 77 and 78), pinned by agents `aae105d`. The threshold uses exact 85% RAM
+  occupancy. 130 relevant tests and 34 focused follow-up tests passed. The existing five-minute CSV is
   `~/.local/state/io-vitals/memory.csv`; page counters and boot IDs are in
-  `memory-observation.csv` beside it. Both collectors are installed.
+  `memory-observation.csv` beside it. Both collectors are installed. The recorder preserves timer jitter and
+  the review message uses the configured current keeper.
 - Short zero-swap-write samples did not prove recovery. At 23:29 UTC,
   concurrent compilation and test suites produced fresh swap writes again.
 
@@ -38,13 +41,18 @@ AoE `3d108d3d1d9c436f`; keeper: `595425472be34943`. Earlier owners
 
 The owners stopped a duplicate two-worker Jest gate and three broad Python
 suites. The remaining Telarchy gate was serialized. The AoE regression
-compile runs at reduced CPU priority and idle disk priority. Two fresh
+compile was temporarily deprioritized while the local gates drained, then
+returned to its ordinary priority once those jobs moved. Two fresh
 one-second vmstat samples after that reduction had no swap writes, compared
 with 60 to 70 MB/s before it; this is only a short observation.
 
 All ten dedicated Telarchy runners were idle at 23:33 UTC. They are reserved
 for telarchy-app, so its owner received the documented SSH path and a unique
-runner-owned temporary directory. The thumbnail owner moved serial exact
+runner-owned directory under `/home/runner/telarchy-validation/`, with a
+per-job `RUNNER_TEMP` and cache. An initial `_work/_temp` recommendation
+was withdrawn after Actions startup erased manual jobs there. Stable base
+directories were prepared on A, B and C, owned by `runner` with mode 0750;
+one manual gate per host shares `.gate.lock` and retains its two-worker cap. The thumbnail owner moved serial exact
 YouTube and creators archives to the laptop with one host lock. An initial
 infra-box suggestion was withdrawn when its backup-only role was confirmed;
 the owner stopped its setup process and verified its temporary directory was
@@ -52,7 +60,7 @@ removed, with no tests, services or global packages changed there.
 
 ## Pending evidence
 
-- Finish the recorded-account test, full suite and release build; deploy only
+- Finish the full suite and release build; deploy only
   the complete `local-defaults` branch and verify conversation pointers.
 - Start a complete day after deployment and validation finish. The persistent
   review timer must wake the continuation owner and current keeper above,
