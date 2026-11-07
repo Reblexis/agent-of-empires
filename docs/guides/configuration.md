@@ -127,7 +127,9 @@ Idle auto-stop and hibernation both tear down the agent process, which also
 destroys anything the agent was holding in memory for later. A Claude session
 holds scheduled work, and neither reaper touches it, while any of these is true:
 
-- **A pending wake.** Its transcript shows a `ScheduleWakeup` whose fire time
+- **A pending wake.** Read the transcript from the account store recorded for
+  the running conversation, even when the current account configuration has
+  changed. Its transcript shows a `ScheduleWakeup` whose fire time
   (call time plus `delaySeconds`) is still ahead and that no later
   `ScheduleWakeup` with `stop` replaced, or a `CronCreate` that no `CronDelete`
   cancelled and that has not run out: a one-shot holds until its `nextFireAt`,

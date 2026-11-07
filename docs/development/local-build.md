@@ -62,3 +62,6 @@ trackability and correct trackingo ftabs is 100% guaranteed". The contract that
 answers it is in [session-resume.md](../guides/session-resume.md), "How the
 conversation ID stays correct". After any deploy, `aoe session verify-pointers`
 must print no violations.
+
+Memory-pressure recovery and its pending day-long verification are recorded in
+[aoe-cloud-memory-recovery.md](aoe-cloud-memory-recovery.md).
