@@ -705,31 +705,68 @@ fn config_root(
 /// conversations, in the config root it runs on. Empty for other agents or
 /// when the root cannot be resolved.
 pub(crate) fn claude_transcript_paths(instance: &Instance) -> Vec<PathBuf> {
-    let (Some(agent), Some(home)) = (
-        crate::session::resolved_agent_for(
-            &instance.source_profile,
-            &instance.tool,
-            &instance.detect_as,
-        ),
-        dirs::home_dir(),
-    ) else {
-        return Vec::new();
-    };
-    if !carries_transcript(agent) {
-        return Vec::new();
+    let mut roots = Vec::new();
+    if !instance.is_sandboxed() {
+        // A running conversation keeps its recorded store when its configured
+        // account changes. Include both live and retained conversation routes.
+        roots.extend(
+            instance
+                .active_execution
+                .as_ref()
+                .map(|active| &active.binding)
+                .into_iter()
+                .chain(
+                    [
+                        instance.agent_session_binding.as_ref(),
+                        instance.resume_binding.as_ref(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .filter(|binding| binding.is_known())
+                    .filter_map(|binding| binding.execution.as_ref()),
+                )
+                .filter(|execution| execution.agent == "claude" && execution.filesystem == "host")
+                .flat_map(|execution| execution.stores.iter().cloned()),
+        );
     }
-    let profile = instance.effective_profile();
-    let Some(root) = config_root(instance, &profile, &instance.tool, agent, &home) else {
-        return Vec::new();
-    };
-    let Ok(dir) = AnchoredDir::open(&root) else {
-        return Vec::new();
-    };
-    conversation_ids(instance)
-        .iter()
-        .flat_map(|id| claude_transcripts_for(&dir, id).unwrap_or_default())
-        .map(|relative| root.join(relative))
-        .collect()
+    if roots.is_empty() {
+        let (Some(agent), Some(home)) = (
+            crate::session::resolved_agent_for(
+                &instance.source_profile,
+                &instance.tool,
+                &instance.detect_as,
+            ),
+            dirs::home_dir(),
+        ) else {
+            return Vec::new();
+        };
+        if !carries_transcript(agent) {
+            return Vec::new();
+        }
+        let profile = instance.effective_profile();
+        let Some(root) = config_root(instance, &profile, &instance.tool, agent, &home) else {
+            return Vec::new();
+        };
+        roots.push(root);
+    }
+    roots.sort();
+    roots.dedup();
+    let ids = conversation_ids(instance);
+    let mut paths = Vec::new();
+    for root in roots {
+        let Ok(dir) = AnchoredDir::open(&root) else {
+            continue;
+        };
+        for id in &ids {
+            paths.extend(
+                claude_transcripts_for(&dir, id)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|relative| root.join(relative)),
+            );
+        }
+    }
+    paths
 }
 
 /// Every `projects/<encoded-cwd>/<sid>.jsonl` under `root`.
@@ -855,6 +892,55 @@ mod tests {
         let path = dir.join(format!("{session_id}.jsonl"));
         std::fs::write(&path, body).unwrap();
         path
+    }
+
+    #[test]
+    fn scheduled_work_transcripts_follow_recorded_stores_after_configuration_changes() {
+        use crate::session::{
+            ActiveExecution, ConversationBinding, ConversationProvenance, ExecutionBinding,
+        };
+
+        let temp = tempfile::tempdir().unwrap();
+        let terminal = "11111111-2222-4333-8444-555555555555";
+        let structured = "66666666-7777-4888-8999-000000000000";
+        let execution = |store: PathBuf| ExecutionBinding {
+            agent: "claude".into(),
+            stores: vec![store],
+            configuration: Vec::new(),
+            cwd: temp.path().into(),
+            cwd_filesystem: "host".into(),
+            filesystem: "host".into(),
+            exported_default_store: Some(false),
+        };
+        let recorded = execution(temp.path().join("recorded"));
+        let expected = [terminal, structured]
+            .map(|sid| seed_transcript(&recorded.stores[0], "-project", sid, "{}\n"));
+        let mut inst = Instance::new("scheduled-work", temp.path().to_str().unwrap());
+        inst.tool = "claude".into();
+        inst.agent_session_id = Some(terminal.into());
+        inst.acp_session_id = Some(structured.into());
+        inst.active_execution = Some(ActiveExecution {
+            launch_id: "launch".into(),
+            binding: recorded.clone(),
+            capture: None,
+            container: None,
+        });
+        for active in [true, false] {
+            if !active {
+                inst.active_execution = None;
+                inst.agent_session_binding = Some(ConversationBinding {
+                    session_id: terminal.into(),
+                    execution: Some(recorded.clone()),
+                    provenance: ConversationProvenance::Observed,
+                    transcript_path: None,
+                });
+            }
+            let mut got = claude_transcript_paths(&inst);
+            got.sort();
+            let mut want = expected.to_vec();
+            want.sort();
+            assert_eq!(got, want, "active execution present: {active}");
+        }
     }
 
     fn carry(source: &Path, target: &Path, session_ids: &[&str]) -> ConversationCarry {
