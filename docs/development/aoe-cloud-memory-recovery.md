@@ -250,3 +250,51 @@ or `creators-yt-baseline.timer`. The release runner is prepared to use one Rust
 compiler and the shared heavy-job lock. Root disk headroom fell to 5.5 GiB;
 request `b16f443b3de9` returned disk recovery to its existing owner, preserving
 the shared target cache and all branches. No new release build has started.
+
+## Native pressure and role protection deployed, 8 November 04:52 UTC
+
+The shipping release from `local-defaults` source `f6f36df8` contains feature
+`be0de0e6`. Final checks passed formatting, all-target Clippy with warnings denied,
+4,309 unit tests, 191 integration tests and both standalone tests. Existing
+ignored tests were unchanged. The installed and running daemon SHA-256 is
+`c5797cad5eccd10786e5d4477cff80d95b78ded27fd18666790db775226c06ea`.
+
+The private shipping-binary fixture `/tmp/aoe-pressure-smoke-y8_c_qjt/result.json`
+passed dashboard-root and entry-asset HTTP checks, healthy memory above the cap,
+pressure below the cap with only the eligible idle victim parked, protection for
+an older role and scheduled work, and no additional parking after recovery.
+Its private daemon and tmux server were cleaned up. The list validator regression
+also failed before the fix and passes in the final integration suite.
+
+Installation completed at 2026-11-08 04:52:12 UTC. Dashboard HTTP 200 and
+`aoe session verify-pointers` with no violations passed. All 61 native agent
+PIDs retained their process start identities through the daemon-only restart.
+Live cap is 50, RAM-pressure threshold 85 and protected list length 79. The
+04:50:46 UTC role audit covers all 78 required current roles and successors,
+retaining one existing non-role entry. The exact release, role-audit, install
+and process-preservation receipts are in
+`~/.local/state/aoe-oom-recovery/pressure-20261108/`.
+
+The first shipping attempt embedded an empty dashboard because its cached asset
+input equaled the build output. Dashboard 404 caused rollback to the previous
+binary/config; HTTP 200 returned and all 60 agent identities from that attempt
+survived. The stronger private check now rejects that exact bad artifact before
+installation. An independent audit verified the replacement cache against the
+unchanged tracked web tree, all 11 index references, 1,923 local asset targets
+and restored production index/JS/CSS bytes. The corrected release took 21m30s,
+with one compiler under the shared heavy-job lock and a 10 GiB memory ceiling.
+Seven reviewed old incremental sessions were pruned by the disk owner, freeing
+about 10 GiB while retaining newer sessions, lock files and release dependencies.
+
+Central source `0132464` includes the admission-race and cooldown-restoration
+regressions. The agents umbrella already pins it in `65aab34`, so no duplicate
+pointer bump was made. The controller is `central.service`; the absent
+`central-agent.service` must not be diagnosed as a controller outage. Native
+installation success has been handed to the rollout owner for overload opt-in
+and a single restart of the correct controller unit. Independent live worker
+verification remains pending. No protected-role admission bypass is authorized.
+
+The original 9 November 00:47:08 UTC observation review and first nightly GC
+review remain pending. This deployment does not reset that interval, erase its
+already-failed no-new-swap-writes condition or close task #1185/request
+`a160433581e8`.
