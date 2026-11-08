@@ -37,6 +37,46 @@ AoE `3d108d3d1d9c436f`; keeper: `595425472be34943`. Earlier owners
 - Short zero-swap-write samples did not prove recovery. At 23:29 UTC,
   concurrent compilation and test suites produced fresh swap writes again.
 
+## Deployment and observation
+
+`local-defaults` source `2df6d397` was built with
+`cargo build --release --features web -j 2` and installed on 8 November
+at about 00:46 UTC. The release build passed in 24m 33s. Its SHA-256 is
+`ce77ca3623b755921d193ec1adf75e6bfebe195190841afe9990ad350a8f6de5`.
+All historically deployed branches in `local-build.md` were verified as
+ancestors before building. No optional inbox-target proposal was included.
+
+Validation passed: 4,304 unit tests, 190 integration tests, the two additional
+single-test targets, formatting, and Clippy for all targets with and without
+the web feature alias. The existing ignored tests were unchanged. The release
+build retained an existing release-only unused import warning in
+`src/server/runtime_ws.rs`.
+
+A real isolated daemon and private tmux server reproduced the reported bug
+with the old installed binary: it hibernated a session holding a future wake.
+The new release kept that session alive while parking an unprotected session,
+then parked the held session after its wake was cancelled. The transcript was
+only in the recorded Claude account store, different from current defaults.
+Both private test process trees were cleaned up.
+
+The installed daemon was restarted with its existing `KillMode=process`.
+All 35 tracked native agents survived with the same process identities.
+The dashboard returned HTTP 200 and `aoe session verify-pointers` reported no
+violations. The previous binary, deployment receipt and pointer output are in
+`~/.local/state/aoe-oom-recovery/20261108/`. Smoke results are retained in
+`/tmp/aoe-hold-smoke-tg0zd5zv/` (old binary) and
+`/tmp/aoe-hold-smoke-3slfmf0q/` (new binary).
+
+The observation interval is **8 November 2026 00:47:08 UTC through
+9 November 2026 00:47:08 UTC**. The explicit initial sample records RAM 47.6%,
+swap 9,152 MiB, `pswpin=282101866`, and `pswpout=381735264`.
+`io-memory-observe.timer` records every five minutes with one-second timer
+accuracy. The enabled persistent `io-memory-review.timer` wakes current owner
+`3d108d3d1d9c436f` and keeper `595425472be34943` at the end. Its config is
+`~/.local/state/io-vitals/oom-observation/config.json`; its durable result will
+be `summary.json` beside that config. The keeper was hibernated, not replaced,
+and received the deployment updates. Original owners stay stopped.
+
 ## Validation load, central request 68b9ca0383cc
 
 The owners stopped a duplicate two-worker Jest gate and three broad Python
@@ -58,13 +98,17 @@ infra-box suggestion was withdrawn when its backup-only role was confirmed;
 the owner stopped its setup process and verified its temporary directory was
 removed, with no tests, services or global packages changed there.
 
+The final setup release owner reported 485 passing backend files and serial
+frontend coverage of 317 files / 4,669 tests, plus passing typecheck, lint and
+build. Its manual gates on A, B and C were released. Automatic Actions jobs
+remain independent of the manual lock, so other owners retain the agreed
+preflight (no `Runner.Worker` and at least 4 GiB available) and stop their own
+manual workers below 1 GiB. No extra capacity or caps were added.
+
 ## Pending evidence
 
-- Finish the full suite and release build; deploy only
-  the complete `local-defaults` branch and verify conversation pointers.
-- Start a complete day after deployment and validation finish. The persistent
-  review timer must wake the continuation owner and current keeper above,
-  never the stopped original sessions.
+- Complete the observation interval above and inspect the first full nightly
+  sequential GC run. Task #1185 and central request `a160433581e8` remain open.
 - Accept only complete samples without a reboot or counter reset, no gaps
   longer than ten minutes, no new swap-out counter growth and no increase in
   end-of-day occupied swap. Cached swap reads are reported separately.
@@ -78,5 +122,9 @@ whole-project validations can still exhaust this host. One minute of lower
 swap pressure is insufficient evidence that the original task is complete.
 
 Test-shell detail: this host inherits umask 0002. Permission-sensitive tests
-created group-writable temporary directories and failed their security checks.
-The same login and UDS tests passed with umask 077, without a source change.
+need ordinary private directory modes. Focused security tests passed with
+umask 077, but one integration fixture deliberately expects a 0644 lock file.
+The complete integration run therefore used umask 022 and passed all 190 tests.
+An initial migration timing message also changed stderr in a parity check;
+its focused rerun and the complete integration rerun passed without a source
+change.
