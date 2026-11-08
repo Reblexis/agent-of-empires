@@ -40,15 +40,14 @@ pub(super) async fn reap_idle_sessions(
         .collect::<std::collections::HashSet<_>>()
         .into_iter()
         .collect();
-    let thresholds: std::collections::HashMap<String, u32> =
+    let configs: std::collections::HashMap<String, crate::session::config::SessionConfig> =
         tokio::task::spawn_blocking(move || {
             profiles
                 .into_iter()
                 .map(|p| {
-                    let secs = crate::session::config::profile_config::resolve_config_or_warn(&p)
-                        .session
-                        .auto_stop_idle_secs;
-                    (p, secs)
+                    let config =
+                        crate::session::config::profile_config::resolve_config_or_warn(&p).session;
+                    (p, config)
                 })
                 .collect()
         })
@@ -60,8 +59,18 @@ pub(super) async fn reap_idle_sessions(
             &instances,
             now,
             &attached,
-            |p| thresholds.get(p).copied().unwrap_or(0),
-            crate::session::held_work::holds_scheduled_work,
+            |p| {
+                configs
+                    .get(p)
+                    .map(|config| config.auto_stop_idle_secs)
+                    .unwrap_or(0)
+            },
+            |inst| {
+                configs
+                    .get(&inst.effective_profile())
+                    .is_some_and(|config| config.protects_from_automatic_stop(&inst.id))
+                    || crate::session::held_work::holds_scheduled_work(inst)
+            },
         )
     })
     .await

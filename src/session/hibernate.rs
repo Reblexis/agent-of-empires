@@ -1,4 +1,4 @@
-//! Pure decision logic for the LRU session cap (`session.hibernate_max_live`).
+//! Pure decision logic for count or memory-pressure session hibernation.
 //!
 //! Where `idle_reap` (#1690) stops sessions by *age* ("idle longer than T"),
 //! this module parks them by *rank*: only the N most-recently-used plain
@@ -6,7 +6,8 @@
 //! torn down, row kept in the list as dormant, woken with the agent resumed
 //! the moment the user selects them (the existing `/ensure` path). Busy
 //! sessions never count as parkable, so the live set may exceed N while
-//! agents are actually working.
+//! agents are actually working. An enabled memory-pressure threshold replaces
+//! the count trigger and reclaims at most one oldest eligible session per sweep.
 //!
 //! This module owns eligibility only: no tmux calls, no storage writes, no
 //! config resolution (mirrors `idle_reap`'s contract). Callers resolve the
@@ -28,6 +29,7 @@ use chrono::{DateTime, Utc};
 
 use super::{Instance, Status, Storage};
 use crate::file_watch::FileWatchService;
+use crate::process::metrics::MemorySample;
 
 /// A plain session the reaper intends to hibernate, with the profile the
 /// caller needs to open the right storage for the claim.
@@ -35,6 +37,25 @@ use crate::file_watch::FileWatchService;
 pub struct HibernateCandidate {
     pub session_id: String,
     pub profile: String,
+}
+
+/// The per-profile trigger for count or memory-pressure hibernation.
+#[derive(Clone, Copy, Default)]
+pub struct HibernatePolicy {
+    pub max_live: u32,
+    pub memory_pressure_percent: u8,
+}
+
+impl HibernatePolicy {
+    /// Whether the current sample permits this profile's hibernation mode.
+    pub(crate) fn should_check(self, memory: &MemorySample) -> bool {
+        if self.memory_pressure_percent == 0 {
+            return self.max_live > 0;
+        }
+        memory.total_bytes > 0
+            && u128::from(memory.used_bytes()) * 100
+                >= u128::from(memory.total_bytes) * u128::from(self.memory_pressure_percent)
+    }
 }
 
 /// Whether this session holds (or is about to hold) a live agent process,
@@ -54,24 +75,21 @@ fn recency(inst: &Instance) -> DateTime<Utc> {
     inst.last_accessed_at.unwrap_or(inst.created_at)
 }
 
-/// Select the plain sessions to hibernate so at most `cap` live sessions
-/// remain per profile, most-recently-used kept.
+/// Select idle, unattached plain sessions eligible for hibernation.
 ///
-/// Within each profile (caps resolve per profile, like every session
-/// setting), rank the live sessions by [`recency`] and take everything past
-/// the first `cap` as the tail - then park only the tail members that are
-/// safe to park: currently `Idle` and with no tmux client attached. A busy
-/// tail member (`Running`, `Waiting`, `Starting`, ...) is left alone, which
-/// is the deliberate overflow: the cap bounds idle agents, never working
-/// ones. So is a tail member that `holds_scheduled_work` (a pending wake or
-/// a background job, see [`super::held_work`]); it is asked last, only for
-/// sessions that would otherwise park, because it does I/O. `attached` is the set of live-client tmux session names from
-/// [`crate::tmux::attached_session_names`].
+/// Count mode keeps the most recent `max_live` sessions per profile, with
+/// working sessions deliberately overflowing the cap. Pressure mode ignores
+/// that cap and selects at most one oldest eligible session across all
+/// pressure-enabled profiles, only when the supplied memory sample reaches
+/// the profile's threshold. The caller supplies a fresh sample each sweep.
+/// The protection callback runs last because checking scheduled work does I/O.
+/// It can also protect sessions with other obligations, such as a standing role.
 pub fn hibernate_candidates(
     instances: &[Instance],
     attached: &HashSet<String>,
-    resolve_cap: impl Fn(&str) -> u32,
-    holds_scheduled_work: impl Fn(&Instance) -> bool,
+    resolve_policy: impl Fn(&str) -> HibernatePolicy,
+    is_protected: impl Fn(&Instance) -> bool,
+    memory: &MemorySample,
 ) -> Vec<HibernateCandidate> {
     let mut by_profile: HashMap<String, Vec<&Instance>> = HashMap::new();
     for inst in instances {
@@ -83,10 +101,27 @@ pub fn hibernate_candidates(
             .or_default()
             .push(inst);
     }
+    let eligible = |inst: &&Instance| {
+        inst.status == Status::Idle
+            && !inst
+                .tmux_session()
+                .ok()
+                .is_some_and(|s| attached.contains(s.name()))
+            && !is_protected(inst)
+    };
     let mut candidates = Vec::new();
+    let mut pressure_candidates = Vec::new();
     for (profile, mut live) in by_profile {
-        let cap = resolve_cap(&profile) as usize;
-        if cap == 0 || live.len() <= cap {
+        let policy = resolve_policy(&profile);
+        if !policy.should_check(memory) {
+            continue;
+        }
+        if policy.memory_pressure_percent > 0 {
+            pressure_candidates.extend(live);
+            continue;
+        }
+        let cap = policy.max_live as usize;
+        if live.len() <= cap {
             continue;
         }
         // Most recent first; ties break on created_at then id so the order
@@ -97,22 +132,26 @@ pub fn hibernate_candidates(
                 .then(b.created_at.cmp(&a.created_at))
                 .then(a.id.cmp(&b.id))
         });
-        for inst in &live[cap..] {
-            if inst.status != Status::Idle {
-                continue;
-            }
-            let is_attached = inst
-                .tmux_session()
-                .ok()
-                .is_some_and(|s| attached.contains(s.name()));
-            if is_attached || holds_scheduled_work(inst) {
-                continue;
-            }
+        for inst in live[cap..].iter().filter(|inst| eligible(inst)) {
             candidates.push(HibernateCandidate {
                 session_id: inst.id.clone(),
                 profile: profile.clone(),
             });
         }
+    }
+    // Oldest first, across profiles, so one sweep cannot shed a whole tail
+    // from a single pressured sample that predates the first teardown.
+    pressure_candidates.sort_by(|a, b| {
+        recency(a)
+            .cmp(&recency(b))
+            .then(a.created_at.cmp(&b.created_at))
+            .then(a.id.cmp(&b.id))
+    });
+    if let Some(inst) = pressure_candidates.iter().find(|inst| eligible(inst)) {
+        candidates.push(HibernateCandidate {
+            session_id: inst.id.clone(),
+            profile: inst.effective_profile(),
+        });
     }
     candidates
 }
@@ -204,17 +243,267 @@ mod tests {
         candidates.iter().map(|c| c.session_id.clone()).collect()
     }
 
+    fn count_candidates(
+        instances: &[Instance],
+        attached: &HashSet<String>,
+        resolve_cap: impl Fn(&str) -> u32,
+        holds_scheduled_work: impl Fn(&Instance) -> bool,
+    ) -> Vec<HibernateCandidate> {
+        hibernate_candidates(
+            instances,
+            attached,
+            |profile| HibernatePolicy {
+                max_live: resolve_cap(profile),
+                memory_pressure_percent: 0,
+            },
+            holds_scheduled_work,
+            &MemorySample::default(),
+        )
+    }
+
     #[test]
-    fn cap_zero_disables_the_feature() {
+    fn healthy_memory_does_not_restart_sessions_above_the_live_cap() {
+        let instances = [
+            plain("newest", Status::Idle, 10),
+            plain("older", Status::Idle, 100),
+            plain("oldest", Status::Idle, 1000),
+        ];
+        let cases = [
+            ("healthy above cap", 1000, 600, 2, 85, 0),
+            ("just below threshold", 1000, 151, 2, 85, 0),
+            ("exact threshold above cap", 1000, 150, 2, 85, 1),
+            ("pressure below cap", 1000, 100, 5, 85, 1),
+            ("pressure without count cap", 1000, 100, 0, 85, 1),
+            ("pressure reclaims only one", 1000, 100, 1, 85, 1),
+            ("unavailable memory", 0, 0, 1, 85, 0),
+            ("invalid memory reading", 1000, 1200, 1, 85, 0),
+            ("lowest threshold", 1000, 990, 1, 1, 1),
+            ("full occupancy threshold", 1000, 0, 1, 100, 1),
+            ("almost full occupancy", 1000, 1, 1, 100, 0),
+            ("large memory arithmetic", u64::MAX, 0, 1, 100, 1),
+            ("zero preserves count mode", 1000, 600, 1, 0, 2),
+            ("both disabled", 1000, 0, 0, 0, 0),
+            ("invalid pressure threshold", 1000, 0, 1, 101, 0),
+        ];
+        let mut failures = Vec::new();
+        for (label, total_bytes, available_bytes, max_live, memory_pressure_percent, expected) in
+            cases
+        {
+            let got = hibernate_candidates(
+                &instances,
+                &HashSet::new(),
+                |_| HibernatePolicy {
+                    max_live,
+                    memory_pressure_percent,
+                },
+                |_| false,
+                &MemorySample {
+                    total_bytes,
+                    available_bytes,
+                    // Neither memory nor disk PSI triggers occupancy-based reclamation.
+                    psi_mem_some_avg10: Some(99.0),
+                    psi_io_some_avg10: Some(99.0),
+                    ..MemorySample::default()
+                },
+            );
+            if got.len() != expected {
+                failures.push(format!("{label}: expected {expected}, got {}", got.len()));
+            }
+            if memory_pressure_percent > 0 && expected == 1 && got.len() == 1 {
+                assert_eq!(
+                    got[0].session_id, instances[2].id,
+                    "{label}: oldest must park"
+                );
+            }
+        }
+        assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn pressure_hibernates_one_oldest_eligible_session_across_profiles() {
+        let mut instances = vec![
+            plain("eligible", Status::Idle, 100),
+            plain("older eligible in another profile", Status::Idle, 200),
+            plain("working", Status::Running, 300),
+            plain("waiting", Status::Waiting, 400),
+            plain("starting", Status::Starting, 500),
+            plain("scheduled", Status::Idle, 600),
+            plain("attached", Status::Idle, 700),
+            plain("dormant", Status::Idle, 800),
+            plain("structured", Status::Idle, 900),
+            plain("archived", Status::Idle, 1000),
+            plain("trashed", Status::Idle, 1100),
+            plain("stopped", Status::Stopped, 1200),
+            plain("errored", Status::Error, 1300),
+        ];
+        instances[1].source_profile = "other-profile".to_owned();
+        instances[7].mark_idle_dormant();
+        instances[8].view = crate::session::View::Structured;
+        instances[9].archived_at = Some(Utc::now());
+        instances[10].trashed_at = Some(Utc::now());
+        let attached = HashSet::from([instances[6].tmux_session().unwrap().name().to_owned()]);
+        let memory = MemorySample {
+            total_bytes: 1000,
+            available_bytes: 100,
+            ..MemorySample::default()
+        };
+        let policy = |_: &str| HibernatePolicy {
+            max_live: 50,
+            memory_pressure_percent: 85,
+        };
+        let got = hibernate_candidates(
+            &instances,
+            &attached,
+            policy,
+            |i| i.id == instances[5].id,
+            &memory,
+        );
+        assert_eq!(ids(&got), vec![instances[1].id.clone()]);
+        let got = hibernate_candidates(
+            &instances[..2],
+            &attached,
+            |profile| HibernatePolicy {
+                max_live: 50,
+                memory_pressure_percent: if profile == "other-profile" { 95 } else { 85 },
+            },
+            |_| false,
+            &memory,
+        );
+        assert_eq!(
+            ids(&got),
+            vec![instances[0].id.clone()],
+            "an older healthy profile must not supply the pressure victim"
+        );
+        let got = hibernate_candidates(
+            &instances[2..],
+            &attached,
+            policy,
+            |i| i.id == instances[5].id,
+            &memory,
+        );
+        assert!(
+            got.is_empty(),
+            "pressure never overrides a session's protection"
+        );
+        assert!(hibernate_candidates(&[], &attached, policy, |_| false, &memory).is_empty());
+    }
+
+    #[test]
+    fn protected_role_ids_spare_oldest_newest_and_successors_in_both_hibernation_modes() {
+        let instances = [
+            plain("newest role", Status::Idle, 10),
+            plain("ordinary", Status::Idle, 100),
+            plain("oldest role", Status::Idle, 1000),
+        ];
+        let id = |index: usize| instances[index].id.clone();
+        let cases = [
+            ("empty", vec![], vec![1, 2], vec![2], vec![0, 1, 2]),
+            (
+                "oldest protected",
+                vec![id(2)],
+                vec![1],
+                vec![1],
+                vec![0, 1],
+            ),
+            (
+                "newest protected",
+                vec![id(0)],
+                vec![1, 2],
+                vec![2],
+                vec![1, 2],
+            ),
+            (
+                "both role ages protected",
+                vec![id(0), id(2)],
+                vec![1],
+                vec![1],
+                vec![1],
+            ),
+            (
+                "only protected sessions",
+                vec![id(0), id(1), id(2)],
+                vec![],
+                vec![],
+                vec![],
+            ),
+            (
+                "retired role id",
+                vec!["retired-session-id".to_owned()],
+                vec![1, 2],
+                vec![2],
+                vec![0, 1, 2],
+            ),
+            (
+                "prefix is not a full id",
+                vec![id(2)[..8].to_owned()],
+                vec![1, 2],
+                vec![2],
+                vec![0, 1, 2],
+            ),
+            (
+                "title is not an id",
+                vec![instances[2].title.clone()],
+                vec![1, 2],
+                vec![2],
+                vec![0, 1, 2],
+            ),
+        ];
+        for (label, protected, count_expected, pressure_expected, idle_expected) in cases {
+            let config = super::super::config::SessionConfig {
+                hibernate_protected_sessions: protected,
+                ..super::super::config::SessionConfig::default()
+            };
+            for (memory_pressure_percent, expected) in
+                [(0, count_expected), (85, pressure_expected)]
+            {
+                let got = hibernate_candidates(
+                    &instances,
+                    &HashSet::new(),
+                    |_| HibernatePolicy {
+                        max_live: 1,
+                        memory_pressure_percent,
+                    },
+                    |inst| config.protects_from_automatic_stop(&inst.id),
+                    &MemorySample {
+                        total_bytes: 1000,
+                        available_bytes: 100,
+                        ..MemorySample::default()
+                    },
+                );
+                assert_eq!(
+                    ids(&got),
+                    expected.into_iter().map(id).collect::<Vec<_>>(),
+                    "{label}, pressure={memory_pressure_percent}"
+                );
+            }
+            let idle = crate::session::idle_reap::idle_reap_candidates(
+                &instances,
+                Utc::now(),
+                &HashSet::new(),
+                |_| 1,
+                |inst| config.protects_from_automatic_stop(&inst.id),
+            );
+            assert_eq!(
+                idle.into_iter()
+                    .map(|candidate| candidate.session_id)
+                    .collect::<Vec<_>>(),
+                idle_expected.into_iter().map(id).collect::<Vec<_>>(),
+                "{label}, idle auto-stop"
+            );
+        }
+    }
+
+    #[test]
+    fn cap_zero_disables_count_hibernation() {
         let instances = vec![plain("a", Status::Idle, 300), plain("b", Status::Idle, 200)];
-        let got = hibernate_candidates(&instances, &HashSet::new(), |_| 0, |_| false);
+        let got = count_candidates(&instances, &HashSet::new(), |_| 0, |_| false);
         assert!(got.is_empty());
     }
 
     #[test]
     fn under_the_cap_nothing_is_parked() {
         let instances = vec![plain("a", Status::Idle, 300), plain("b", Status::Idle, 200)];
-        let got = hibernate_candidates(&instances, &HashSet::new(), |_| 2, |_| false);
+        let got = count_candidates(&instances, &HashSet::new(), |_| 2, |_| false);
         assert!(got.is_empty());
     }
 
@@ -224,7 +513,7 @@ mod tests {
         let b = plain("b", Status::Idle, 100);
         let c = plain("c", Status::Idle, 1000); // coldest
         let expect = c.id.clone();
-        let got = hibernate_candidates(&[a, b, c], &HashSet::new(), |_| 2, |_| false);
+        let got = count_candidates(&[a, b, c], &HashSet::new(), |_| 2, |_| false);
         assert_eq!(ids(&got), vec![expect]);
     }
 
@@ -234,7 +523,7 @@ mod tests {
         // is the most recent so it holds the one live slot. Nothing parks.
         let running = plain("running", Status::Running, 1000);
         let idle = plain("idle", Status::Idle, 10);
-        let got = hibernate_candidates(&[running, idle], &HashSet::new(), |_| 1, |_| false);
+        let got = count_candidates(&[running, idle], &HashSet::new(), |_| 1, |_| false);
         assert!(got.is_empty(), "a working agent must never be parked");
     }
 
@@ -244,7 +533,7 @@ mod tests {
         let working = plain("working", Status::Waiting, 500);
         let coldest = plain("coldest", Status::Idle, 1000);
         let expect = coldest.id.clone();
-        let got = hibernate_candidates(
+        let got = count_candidates(
             &[newest, working, coldest],
             &HashSet::new(),
             |_| 1,
@@ -260,7 +549,7 @@ mod tests {
         let name = cold.tmux_session().unwrap().name().to_string();
         let mut attached = HashSet::new();
         attached.insert(name);
-        let got = hibernate_candidates(&[warm, cold], &attached, |_| 1, |_| false);
+        let got = count_candidates(&[warm, cold], &attached, |_| 1, |_| false);
         assert!(
             got.is_empty(),
             "a session with a live tmux client is in use"
@@ -278,7 +567,7 @@ mod tests {
         let errored = plain("errored", Status::Error, 5);
         let mut dormant = plain("dormant", Status::Idle, 5);
         dormant.mark_idle_dormant();
-        let got = hibernate_candidates(
+        let got = count_candidates(
             &[a, b, stopped, errored, dormant],
             &HashSet::new(),
             |_| 2,
@@ -292,7 +581,7 @@ mod tests {
         let mut sv = plain("sv", Status::Idle, 1000);
         sv.view = crate::session::View::Structured;
         let a = plain("a", Status::Idle, 10);
-        let got = hibernate_candidates(&[sv, a], &HashSet::new(), |_| 1, |_| false);
+        let got = count_candidates(&[sv, a], &HashSet::new(), |_| 1, |_| false);
         assert!(got.is_empty());
     }
 
@@ -305,7 +594,7 @@ mod tests {
         let held = plain("held", Status::Idle, 500);
         let cold = plain("cold", Status::Idle, 1000);
         let (held_id, expect) = (held.id.clone(), cold.id.clone());
-        let got = hibernate_candidates(
+        let got = count_candidates(
             &[warm, held, cold],
             &HashSet::new(),
             |_| 1,
@@ -323,7 +612,7 @@ mod tests {
         fresh.last_accessed_at = None;
         fresh.created_at = Utc::now();
         let expect = old.id.clone();
-        let got = hibernate_candidates(&[old, fresh], &HashSet::new(), |_| 1, |_| false);
+        let got = count_candidates(&[old, fresh], &HashSet::new(), |_| 1, |_| false);
         assert_eq!(ids(&got), vec![expect]);
     }
 

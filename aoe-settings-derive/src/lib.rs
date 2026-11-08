@@ -323,6 +323,7 @@ fn build_validation(
         "none" => quote!(ValidationKind::None),
         "nonempty" => quote!(ValidationKind::NonEmptyString),
         "memory_limit" => quote!(ValidationKind::MemoryLimit),
+        "string_list" => quote!(ValidationKind::StringListValue),
         "volume_list" => quote!(ValidationKind::VolumeList),
         "env_list" => quote!(ValidationKind::EnvList),
         "port_mapping_list" => quote!(ValidationKind::PortMappingList),

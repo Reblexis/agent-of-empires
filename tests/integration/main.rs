@@ -25,6 +25,7 @@ mod cli_read_uds;
 mod common;
 #[cfg(unix)]
 mod frozen_environment;
+mod hibernate_protection;
 mod home_isolation;
 
 mod daemon_client;

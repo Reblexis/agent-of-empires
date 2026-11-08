@@ -284,6 +284,30 @@ mod tests {
     }
 
     #[test]
+    fn hibernation_pressure_accepts_only_percentages_including_disabled() {
+        for scope in [Scope::Global, Scope::Profile] {
+            for (value, accepted) in [
+                (json!(0), true),
+                (json!(1), true),
+                (json!(85), true),
+                (json!(100), true),
+                (json!(-1), false),
+                (json!(101), false),
+                (json!(256), false),
+                (json!(85.5), false),
+                (json!("85"), false),
+            ] {
+                let body = json!({"session": {"hibernate_memory_pressure_percent": value}});
+                assert_eq!(
+                    validate_patch(&body, scope, false).is_ok(),
+                    accepted,
+                    "{scope:?}: {value}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn systemd_global_patches_validate_each_leaf() {
         let valid = json!({"systemd": {
             "enabled": false,

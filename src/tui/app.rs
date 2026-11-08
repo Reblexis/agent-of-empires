@@ -2544,16 +2544,35 @@ impl App {
         };
         let now = chrono::Utc::now();
         let instances: Vec<crate::session::Instance> = self.home.instances().cloned().collect();
+        let configs: std::collections::HashMap<String, crate::session::config::SessionConfig> =
+            instances
+                .iter()
+                .map(|inst| inst.effective_profile())
+                .collect::<std::collections::HashSet<_>>()
+                .into_iter()
+                .map(|profile| {
+                    let config =
+                        crate::session::config::profile_config::resolve_config_or_warn(&profile)
+                            .session;
+                    (profile, config)
+                })
+                .collect();
         let candidates = crate::session::idle_reap::idle_reap_candidates(
             &instances,
             now,
             &attached,
             |profile| {
-                crate::session::config::profile_config::resolve_config_or_warn(profile)
-                    .session
-                    .auto_stop_idle_secs
+                configs
+                    .get(profile)
+                    .map(|config| config.auto_stop_idle_secs)
+                    .unwrap_or(0)
             },
-            crate::session::held_work::holds_scheduled_work,
+            |inst| {
+                configs
+                    .get(&inst.effective_profile())
+                    .is_some_and(|config| config.protects_from_automatic_stop(&inst.id))
+                    || crate::session::held_work::holds_scheduled_work(inst)
+            },
         );
         let mut reaped = false;
         for cand in candidates {

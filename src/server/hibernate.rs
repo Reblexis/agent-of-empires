@@ -1,12 +1,14 @@
-//! Hibernating least-recently-used plain sessions past the live cap.
+//! Hibernating plain sessions by live count or measured memory pressure.
 
 use std::sync::Arc;
 
 use super::idle_reap::{SESSION_IDLE_REAP_INTERVAL, SESSION_IDLE_REAP_MAX_CONCURRENT};
 use super::state::AppState;
+use crate::session::hibernate::HibernatePolicy;
 
 /// Hibernate least-recently-used plain sessions past the per-profile
-/// `session.hibernate_max_live` cap (LRU keep-alive). Same cadence, claim
+/// `session.hibernate_max_live` cap, or one eligible idle session when an
+/// enabled memory threshold is reached. Same cadence, claim
 /// discipline and bounded-concurrency teardown as
 /// [`super::idle_reap::reap_idle_sessions`]; the difference is the outcome: a
 /// hibernated row keeps `Status::Idle` plus the dormant marker (persisted
@@ -23,13 +25,6 @@ pub(super) async fn hibernate_lru_sessions(
     }
     *last_run = Some(std::time::Instant::now());
 
-    // Live attach state. If the tmux query fails, skip this pass entirely
-    // rather than risk parking a session the user is attached to.
-    let attached = match tokio::task::spawn_blocking(crate::tmux::attached_session_names).await {
-        Ok(Ok(set)) => set,
-        _ => return,
-    };
-
     let instances = { state.instances.read().await.clone() };
 
     let profiles: Vec<String> = instances
@@ -39,28 +34,59 @@ pub(super) async fn hibernate_lru_sessions(
         .collect::<std::collections::HashSet<_>>()
         .into_iter()
         .collect();
-    let caps: std::collections::HashMap<String, u32> = tokio::task::spawn_blocking(move || {
-        profiles
+    let (policies, memory) = tokio::task::spawn_blocking(move || {
+        let policies: std::collections::HashMap<
+            String,
+            (HibernatePolicy, crate::session::config::SessionConfig),
+        > = profiles
             .into_iter()
             .map(|p| {
-                let cap = crate::session::config::profile_config::resolve_config_or_warn(&p)
-                    .session
-                    .hibernate_max_live;
-                (p, cap)
+                let config = crate::session::config::profile_config::resolve_config_or_warn(&p);
+                let policy = HibernatePolicy {
+                    max_live: config.session.hibernate_max_live,
+                    memory_pressure_percent: config.session.hibernate_memory_pressure_percent,
+                };
+                (p, (policy, config.session))
             })
-            .collect()
+            .collect();
+        (policies, crate::process::metrics::sample_memory())
     })
     .await
     .unwrap_or_default();
 
-    // The scheduled-work check reads transcripts and panes, so it runs off the
-    // async runtime and only for sessions the cap would otherwise park.
+    if !policies
+        .values()
+        .any(|(policy, _)| policy.should_check(&memory))
+    {
+        return;
+    }
+
+    // Live attach state. If the tmux query fails, skip this pass entirely
+    // rather than risk parking a session the user is attached to.
+    let attached = match tokio::task::spawn_blocking(crate::tmux::attached_session_names).await {
+        Ok(Ok(set)) => set,
+        _ => return,
+    };
+
+    // Check held work only after the trigger and cheap eligibility checks.
+    // A healthy pressure-enabled fleet needs no tmux or transcript reads.
     let candidates = tokio::task::spawn_blocking(move || {
         crate::session::hibernate::hibernate_candidates(
             &instances,
             &attached,
-            |p| caps.get(p).copied().unwrap_or(0),
-            crate::session::held_work::holds_scheduled_work,
+            |p| {
+                policies
+                    .get(p)
+                    .map(|(policy, _)| *policy)
+                    .unwrap_or_default()
+            },
+            |inst| {
+                policies
+                    .get(&inst.effective_profile())
+                    .is_some_and(|(_, session)| session.protects_from_automatic_stop(&inst.id))
+                    || crate::session::held_work::holds_scheduled_work(inst)
+            },
+            &memory,
         )
     })
     .await
@@ -98,7 +124,7 @@ pub(super) async fn hibernate_lru_sessions(
                         target: "server.hibernate",
                         session = %cand.session_id,
                         profile = %cand.profile,
-                        "hibernated LRU session past the live cap",
+                        "hibernated eligible LRU session",
                     );
                 }
                 _ => {

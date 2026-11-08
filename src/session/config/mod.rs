@@ -1499,7 +1499,8 @@ pub struct SessionConfig {
     /// selected. Working sessions (`Running`/`Waiting`/...) and sessions
     /// with an attached tmux client are never hibernated, so the live count
     /// may exceed the cap while agents are busy. `0` disables (default).
-    /// Checked about once a minute alongside the idle reaper.
+    /// Checked about once a minute alongside the idle reaper. An enabled
+    /// `hibernate_memory_pressure_percent` replaces this count trigger.
     #[serde(default = "default_hibernate_max_live")]
     #[setting(
         label = "Max live sessions (LRU)",
@@ -1509,6 +1510,41 @@ pub struct SessionConfig {
         advanced
     )]
     pub hibernate_max_live: u32,
+
+    /// Host RAM occupancy that triggers pressure-based hibernation (1 to 100).
+    /// Replaces the live-count cap: at or above this percentage used, reclaim
+    /// at most one oldest eligible idle session per minute, even below the cap.
+    /// Healthy or unavailable memory readings never park sessions in this mode.
+    /// Working, attached and scheduled-work sessions remain protected. Memory
+    /// is sampled again each sweep; swap occupancy and PSI do not trigger it.
+    /// `0` retains count-based hibernation (default).
+    #[serde(default)]
+    #[setting(
+        label = "Hibernate at RAM used (%)",
+        widget = "number",
+        min = 0,
+        max = 100,
+        validate = "range:0:100",
+        category = "Interaction",
+        advanced
+    )]
+    pub hibernate_memory_pressure_percent: u8,
+
+    /// Full AoE session IDs excluded from automatic hibernation and idle
+    /// auto-stop. Exact IDs only, not prefixes or titles. Global only so a
+    /// profile cannot remove protection from a standing central, lead or
+    /// router role. Resolved each sweep, independently of scheduled work.
+    /// Explicit Stop is still allowed.
+    #[serde(default)]
+    #[setting(
+        label = "Sessions protected from automatic stop",
+        widget = "list",
+        validate = "string_list",
+        global_only,
+        category = "Interaction",
+        advanced
+    )]
+    pub hibernate_protected_sessions: Vec<String>,
 
     /// Hold an OS assertion preventing user-idle system sleep while any
     /// session is active. Released once every session has been idle past
@@ -2085,6 +2121,8 @@ impl Default for SessionConfig {
             trash_retention_minutes: default_trash_retention_minutes(),
             auto_stop_idle_secs: default_auto_stop_idle_secs(),
             hibernate_max_live: default_hibernate_max_live(),
+            hibernate_memory_pressure_percent: 0,
+            hibernate_protected_sessions: Vec::new(),
             prevent_sleep_when_active: false,
             prevent_sleep_idle_grace_minutes: default_prevent_sleep_idle_grace_minutes(),
             restart_wake_message: default_restart_wake_message(),
@@ -2174,6 +2212,13 @@ pub fn is_resolvable_agent_config_dir(dir: &str) -> bool {
 }
 
 impl SessionConfig {
+    /// Exact session identity remains protected as titles and roles change.
+    pub(crate) fn protects_from_automatic_stop(&self, session_id: &str) -> bool {
+        self.hibernate_protected_sessions
+            .iter()
+            .any(|protected| protected == session_id)
+    }
+
     /// Resolve the command override for a tool, checking agent_command_override first,
     /// then falling back to custom_agents. Returns empty string if no override found.
     pub fn resolve_tool_command(&self, tool: &str) -> String {
