@@ -1370,7 +1370,13 @@ mod tests {
             // The session ran since: the old ask was answered.
             (Some(&answered), Some(5), None, Some(t(30)), None),
             // The session ran since, the ask unanswered: it stays.
-            (Some(&had), Some(5), None, Some(t(30)), Some("Approve the budget")),
+            (
+                Some(&had),
+                Some(5),
+                None,
+                Some(t(30)),
+                Some("Approve the budget"),
+            ),
             (None, Some(5), None, None, None),
             (
                 None,

@@ -992,7 +992,14 @@ mod tests {
         );
         stale.run_started_at = Some(chrono::Utc::now() + chrono::Duration::seconds(1));
         // Answered, so the run since makes it stale (an unanswered ask would stay).
-        stale.priority.as_mut().unwrap().ask.as_mut().unwrap().answered_at = Some(chrono::Utc::now());
+        stale
+            .priority
+            .as_mut()
+            .unwrap()
+            .ask
+            .as_mut()
+            .unwrap()
+            .answered_at = Some(chrono::Utc::now());
         let silent = Instance::new("quiet", "/tmp/asks");
         let asks = asks_json(&[asking, running, stale, silent], |id| {
             (id == "aaaa1111").then(|| "notes".to_string())
