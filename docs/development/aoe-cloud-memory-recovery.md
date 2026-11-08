@@ -228,3 +228,25 @@ native agents were left running, and neither branch was edited. The exact
 interruption is recorded in `serialized-dogfood-suite.json` beside the
 operational runners; the interrupted suite must be rerun serially. This
 intervention is not a passing test result.
+
+The initial native pressure gate passed formatting, Clippy with warnings denied,
+4,308 unit tests and 190 integration tests, plus its smaller targets. This is
+not the final protection build. Before adding exact-ID shielding, the private
+intermediate-binary daemon reproduced the missing exemption: healthy memory
+left all four sessions live; pressure parked the configured protected Role
+while Free, Held and Warm remained live. Its receipt is
+`/tmp/aoe-pressure-smoke-_88_gpgx/result.json`, with daemon and private tmux
+cleanup confirmed. The small protection contract also failed on the old schema.
+The remaining protection tests cover exact IDs, retired IDs, prefix/title
+rejection, all automatic shedding paths and differing profile thresholds.
+
+Central integration is deployed with overload recovery disabled. Review of
+`592bb5c` found a second-admission race: pressure rising between queued-send
+admission and restart admission can turn a deferred restart into a terminal
+message failure. The central rollout owner has this blocker and must preserve
+the pending action, owner and retry budget before activation. Staged timer names
+must use the full loaded IDs listed above, not the missing `research-day7.timer`
+or `creators-yt-baseline.timer`. The release runner is prepared to use one Rust
+compiler and the shared heavy-job lock. Root disk headroom fell to 5.5 GiB;
+request `b16f443b3de9` returned disk recovery to its existing owner, preserving
+the shared target cache and all branches. No new release build has started.
