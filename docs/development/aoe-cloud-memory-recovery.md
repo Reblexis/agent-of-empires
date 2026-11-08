@@ -358,3 +358,37 @@ still 2026-11-09 00:47:08 UTC. The first full bounded nightly GC has not run;
 `a160433581e8` is marked waiting until the original review, with task #1185
 still open. At that review inspect the complete readings and GC result; if
 pressure remains, follow the documented larger-box price decision path.
+
+## Bounded capacity recovery, 8 November 19:43 UTC
+
+Central request `fad7785f86e1` was routed directly to current owner
+`3d108d3d1d9c436f`, with historical aliases retained only as history. Root reached
+zero user-available bytes and blocked release owner `13814b013c3d40fb` while
+adding four small status files. Central durable recovery, answer and plan writes
+also reported ENOSPC. No new validation, purchase or provider budget was granted.
+
+A fresh protection review found five older finalized AoE incremental sessions
+with newer valid siblings, no cargo/rustc processes and no open incremental
+files. Under the shared heavy-job lock, this owner rechecked those conditions
+and removed only the five approved session directories. Newer sessions, parent
+and lock files, debug/release dependencies, source work, archives, release
+fixtures and the 8141 attempts were preserved. No filesystem reserve, provider
+limit, spawn hold or service configuration changed.
+
+At 2026-11-08 19:43:05 UTC the bounded cleanup increased user-available capacity
+by 5,443,088,384 bytes, to 5,453,668,352 bytes. A 1 MiB file write and fsync
+passed as the ordinary user. The exact paths, preserved sibling paths and dated
+capacity receipt are `pressure-20261108/capacity-fad7785f86e1-20261108.json` under
+the recovery state directory. Proof was sent directly to release owner 13814b
+and io delivery owner `313f2dcdaf754006`, explicitly without new validation
+approval. Separate io-state cleanup reported 15,376,384 bytes from completed
+fixtures; that smaller concurrent reclamation was not this owner's cleanup.
+
+Same-session router restoration was authorized for `267fc6f3517e46bf`, but
+process inspection found it already alive: pane shell 2368957, wrapper 2369027
+and native Codex 2369116, with exact `AOE_INSTANCE_ID=267fc6f3517e46bf` and
+non-zombie state. Stored AoE status was idle. No restart, successor, duplicate,
+queue clearing or manual vital clearing was performed. The dated process tree
+is in `pressure-20261108/router-267-live-process-20261108.json`. Binding and
+retained delivery remain with io owner 313. This capacity request is complete;
+the original OOM observation request and its existing review remain separate.
