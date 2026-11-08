@@ -128,3 +128,32 @@ The complete integration run therefore used umask 022 and passed all 190 tests.
 An initial migration timing message also changed stderr in a parity check;
 its focused rerun and the complete integration rerun passed without a source
 change.
+
+## Wake verification, 8 November 01:45 UTC
+
+The repeated original request was checked against the installed deployment,
+not treated as a second incident. The installed binary still has the recorded
+SHA-256. Both observation timers are active with the original targets and
+deadline; no duplicate build, monitor or recovery owner was started. The first
+full nightly GC remains due at 03:30 Pacific on 8 November.
+
+At 01:44 UTC the host had 13 GiB RAM used and 17 GiB available, with load
+33.65 and memory PSI avg10 0.06%. A fresh `aoe ps --json` completed in
+8.67 seconds. Process totals at that snapshot were roughly 8,028 MiB RSS
+for 31 Codex processes, 1,487 MiB for 11 Claude processes, and 4,347 MiB
+for 18 Python processes. The serialized creators baseline job held about
+3 GiB RSS. These are transient observations, not workload caps.
+
+The first 13 samples span 57.9 minutes, retain one boot ID and have no gap
+over 300 seconds. RAM peaked at 71.7%; occupied swap fell from 9,152 to
+7,758 MiB. However, `pswpout` increased by 3,777,095 pages, or 14.41 GiB
+at the observed 4,096-byte page size. Thus the no-new-swap-writes acceptance
+condition has already failed for this observation interval. Lower occupied
+swap alone does not establish recovery. Do not reset the interval or report
+request done. Preserve the 9 November 00:47:08 UTC review and evaluate the
+complete evidence, then follow the documented larger-box price decision path
+if swapping persists. The separate disk owner is `4bde1a9370f14ff0`.
+
+This wake changed only the operational record. No new feature behavior or
+code was changed; validation used live processes, timer state, binary hash,
+the real CLI and persisted counter readings rather than a new feature test.
