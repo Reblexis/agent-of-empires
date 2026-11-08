@@ -157,3 +157,53 @@ if swapping persists. The separate disk owner is `4bde1a9370f14ff0`.
 This wake changed only the operational record. No new feature behavior or
 code was changed; validation used live processes, timer state, binary hash,
 the real CLI and persisted counter readings rather than a new feature test.
+
+## Restart churn and overload follow-through, 8 November
+
+Fix-central reported restoring the live cap from 25 to 50 at about 02:05 UTC:
+36 restarts across 33 sessions in an hour, with context rebuilding accounting
+for 34% of Codex usage. Its sample was about 190 MB per Codex process and
+18.5 GB available. These are the reporter's observations. The box README
+and provisioning now agree on the baseline cap of 50, via viktor-cihal PR350
+(merge `1c6e0ecb`). Provisioning preserves unrelated TOML and uses the helper
+staged with the setup script; three behavior tests pass, including quoted
+keys, multiline strings, invalid input and an older existing clone.
+
+The native pressure gate is being validated on `fix/pressure-hibernation`.
+The documented contract opts the box into RAM occupancy of at least 85%,
+parks at most one oldest eligible session per sweep, and leaves healthy or
+unknown memory alone even above the count cap. It can relieve pressure even
+below the count cap. A generic global protected-session list also excludes
+central, lead and router identities from automatic hibernation and idle-stop;
+the controller owns those role identities and their live successors. Manual
+Stop remains effective. Installation remains pending until fresh checks,
+real-daemon smoke and the process-preserving deployment receipt pass.
+
+The old installed binary reproduced healthy-memory parking in an isolated
+real-daemon fixture at `/tmp/aoe-pressure-smoke-acdvwtii/result.json`.
+Its expected failure left the scheduled-work session live and parked the
+ordinary idle session. Both private process trees were cleaned up. The new
+fixture also checks a protected role and uses a lower configured threshold
+to exercise pressure without allocating host RAM. Operational runners and
+receipts are under `~/.local/state/aoe-oom-recovery/pressure-20261108/`.
+
+The 02:20 self-heal brief additionally assigns central's overload runtime to
+this owner. Its separate contract is `central-agent/docs/overload-recovery.md`:
+a storm means more than ten restarts in an hour; cap increases require more
+than 6 GiB available. Load above three times the core count or swap occupancy
+above 80% must persist for five minutes before overload shedding. Admission
+waits while overloaded; only vetted headless timer launchers may pause, one
+at a time, leaving in-flight jobs intact. Central, leads, router and their
+successors are protected. Central decision `89565790cc66`, resolved by
+`419643af09a64d83`, rejects an overload or unknown-metrics bypass for their
+restarts: shed eligible background work and retry unattended instead.
+The overall self-heal owner keeps the inventory in `docs/strategy.md`;
+this owner covers the separate overload contract and tests.
+
+During validation, two dogfood full Jest suites overlapped with an additional
+Vitest run. To serialize them, only the `diary-payment-amounts` Jest process
+2894194 and its worker children were sent SIGTERM. The payback gate and all
+native agents were left running, and neither branch was edited. The exact
+interruption is recorded in `serialized-dogfood-suite.json` beside the
+operational runners; the interrupted suite must be rerun serially. This
+intervention is not a passing test result.
