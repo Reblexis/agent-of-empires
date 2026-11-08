@@ -198,7 +198,28 @@ successors are protected. Central decision `89565790cc66`, resolved by
 `419643af09a64d83`, rejects an overload or unknown-metrics bypass for their
 restarts: shed eligible background work and retry unattended instead.
 The overall self-heal owner keeps the inventory in `docs/strategy.md`;
-this owner covers the separate overload contract and tests.
+this owner covers the separate overload contract and tests. Central source
+`fix/overload-recovery` at `2cbe5aa` is pushed and independently reviewed:
+20 focused tests and all 1,603 Python tests pass. Sampling has its own
+15-second worker, independent of the health check and pulse; a regression
+covers the observed 135-second health stall. The source also shares AoE's
+`.config.lock`, rechecks admission before stopping a continuation owner and
+fails closed on corrupt durable state. Central rollout owner
+`48eb5b44c7484a07` has the integration handoff and owns the strategy inventory;
+this session retains deployment verification and the agents pointer bump.
+
+Activation order: central source may merge with overload recovery disabled;
+stage the protected-role identities; install the verified native pressure and
+protection binary; then enable central overload recovery with vetted timers.
+The live config already has 78 protected IDs staged, but the old binary ignores
+that unknown field. Its live cap is still 50 and the pressure threshold is not
+yet installed. The controller opt-in is absent. The installed binary must not
+be mistaken for the new release during this sequence. Vetted loaded independent
+headless timers are `telarchy-youtube-research-day7.timer` (priority 0) and
+`telarchy-creators-yt-baseline.timer` (priority 1). Do not pause GC, memory
+recording/review or control-role wake timers. Research track and sweep files
+exist but their user-unit adapters could not resolve a loaded timer, so skip
+those entries until verified.
 
 During validation, two dogfood full Jest suites overlapped with an additional
 Vitest run. To serialize them, only the `diary-payment-amounts` Jest process
