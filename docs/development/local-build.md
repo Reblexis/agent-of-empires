@@ -65,3 +65,20 @@ must print no violations.
 
 Memory-pressure recovery and its pending day-long verification are recorded in
 [aoe-cloud-memory-recovery.md](aoe-cloud-memory-recovery.md).
+
+## Cached dashboard assets
+
+A shipping release must include the dashboard, not only the API. When setting
+`AOE_WEB_DIST`, use an existing nonempty bundle outside this worktree's
+`web/dist`: the frontend build removes its destination before copying the input.
+The source must not equal, contain or be inside that destination. Check a
+nonempty `index.html` and every referenced local entry asset before compiling.
+Before installation, a private release daemon must return HTTP 200 for both
+the dashboard root and its referenced entry assets, then pass the pressure and
+protection checks. A passing `/api/sessions` alone does not verify a dashboard.
+
+On 8 November 2026, an input equal to the destination produced a release with
+empty embedded assets. The API and hibernation checks passed, but the production
+dashboard returned 404. The old binary/config were restored with HTTP 200;
+all 60 native agent process identities survived both daemon restarts. The
+separate pressure-hibernation worktree retained the valid cached bundle.
