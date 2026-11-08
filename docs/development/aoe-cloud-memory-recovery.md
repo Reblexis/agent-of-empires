@@ -336,3 +336,25 @@ pressure recovery state directory. The original memory observation timers
 remain active with their unchanged deadline. This completes the native cap,
 pressure, role-protection and overload-runtime changes, while the original
 24-hour acceptance review, first nightly GC review and task #1185 remain open.
+
+## Central follow-up, 8 November 09:12 UTC
+
+The original work remains a dated wait, not a dependency on another session.
+The runtime changes and independent verification above are complete. At this
+wake the host had 18,613 MiB available, occupied swap 10,835 MiB and load1 6.31
+on 16 cores. These are transient readings, not acceptance of the full day.
+
+The persisted observation has 102 samples spanning 8.38 hours, one boot ID and
+a maximum 300-second gap. RAM occupancy peaked at 82.1%. Occupied swap rose
+from 9,152 to 10,854 MiB in those samples, and cumulative swap-out increased
+by 14,759,785 pages, or 56.30 GiB at the host page size. The existing acceptance
+failure therefore remains; these readings include validation and release builds
+and must not be reset or described as a clean observation day. Receipt:
+`pressure-20261108/interim-20261108T0912Z.json` under the recovery state directory.
+
+Both memory observation/review timers remain active. The original review is
+still 2026-11-09 00:47:08 UTC. The first full bounded nightly GC has not run;
+`repo-gc.timer` is active and due at 2026-11-08 11:30 UTC. Request
+`a160433581e8` is marked waiting until the original review, with task #1185
+still open. At that review inspect the complete readings and GC result; if
+pressure remains, follow the documented larger-box price decision path.
