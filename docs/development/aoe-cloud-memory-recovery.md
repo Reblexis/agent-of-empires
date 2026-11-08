@@ -290,11 +290,49 @@ Central source `0132464` includes the admission-race and cooldown-restoration
 regressions. The agents umbrella already pins it in `65aab34`, so no duplicate
 pointer bump was made. The controller is `central.service`; the absent
 `central-agent.service` must not be diagnosed as a controller outage. Native
-installation success has been handed to the rollout owner for overload opt-in
-and a single restart of the correct controller unit. Independent live worker
-verification remains pending. No protected-role admission bypass is authorized.
+installation success was handed to the rollout owner for overload opt-in
+and a single restart of the correct controller unit. Activation and independent
+live verification are complete as recorded below. No protected-role admission
+bypass is authorized.
 
 The original 9 November 00:47:08 UTC observation review and first nightly GC
 review remain pending. This deployment does not reset that interval, erase its
 already-failed no-new-swap-writes condition or close task #1185/request
 `a160433581e8`.
+
+## Overload activation and live verification, 8 November 05:09 UTC
+
+Central PR 169 enabled the controller at `4a8a93aaa1c3a0c7b9cf9909c4764b5999860bdb`,
+pinned by agents `7817b6b`. Activation invoked one restart of `central.service`;
+PID 216151 remained active, and its health endpoint returned HTTP 200.
+The native source and installed binary remain the verified release above.
+
+A passive filesystem observer recorded 25 distinct worker samples across
+360.80 seconds. The maximum gap was 15.06 seconds, with no read errors.
+The independent check at 05:09:20 UTC found a fresh sample, valid metrics,
+59 primary panes in the baseline and healthy admission. The cap remained 50,
+RAM-pressure threshold 85 and protected list length 79. No production timer
+was paused; both vetted headless timers remained active with their expected
+service triggers. Dashboard HTTP 200, controller health and conversation
+pointers passed. The snapshot had 18.90 GiB available and load1 4.02 on 16 cores.
+This is a healthy-host observation, not an induced production overload.
+
+A separate real user-systemd fixture exercised the controller against synthetic
+metrics and a manual clock, without changing production units or host load.
+Load 49 on 16 cores denied admission immediately. At 299 seconds no timer
+paused; at 300 seconds only the lowest-priority eligible timer paused, while
+protected-role and higher-priority timers stayed active. Recovery waited its
+60-second action cooldown and resumed only the timer it owned. A manually
+inactive unowned timer stayed inactive. The in-flight sleep service retained
+its PID and InvocationID through pause/resume, with no restart. Unknown metrics
+denied admission. An in-memory disabled load detector produced the expected
+failure before the restored controller passed. All nine private fixture units
+were cleaned up, the sleep process exited and temporary state/config were
+removed; canonical source was unchanged.
+
+Receipts are `activation-20261108T045953Z.json`, `worker-cadence.json`,
+`live-verification-receipt.json` and `overload-real-backend-proof.json` in the
+pressure recovery state directory. The original memory observation timers
+remain active with their unchanged deadline. This completes the native cap,
+pressure, role-protection and overload-runtime changes, while the original
+24-hour acceptance review, first nightly GC review and task #1185 remain open.
