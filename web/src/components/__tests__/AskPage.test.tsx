@@ -6,7 +6,9 @@ import type { PriorityAsk, SessionResponse } from "../../lib/types";
 
 const api = vi.hoisted(() => ({
   getAskPage: vi.fn((_id: string) => Promise.resolve<string | null>(null)),
-  sendSessionMessage: vi.fn((_id: string, _message: string) => Promise.resolve<string | null>(null)),
+  sendSessionMessage: vi.fn((_id: string, _message: string, _deliveryId?: string) =>
+    Promise.resolve<string | null>(null),
+  ),
   setSessionUnread: vi.fn((_id: string, _unread: boolean) => Promise.resolve(null)),
   postAskEvent: vi.fn((_id: string, _event: object) => Promise.resolve()),
 }));
@@ -53,7 +55,11 @@ it("a decide ask offers its options and the pick goes straight back to the sessi
   expect(screen.queryByRole("button", { name: "Yes" })).toBeNull();
   fireEvent.click(screen.getByRole("button", { name: "Approve 40 EUR" }));
   await waitFor(() => expect(onDone).toHaveBeenCalled());
-  expect(api.sendSessionMessage).toHaveBeenCalledWith("s1", 'Inbox reply to "Approve the ad budget": Approve 40 EUR');
+  expect(api.sendSessionMessage).toHaveBeenCalledWith(
+    "s1",
+    'Inbox reply to "Approve the ad budget": Approve 40 EUR',
+    `inbox-answer:s1:${POSTED}:s1`,
+  );
   expect(api.setSessionUnread).toHaveBeenCalledWith("s1", false);
 });
 
@@ -88,12 +94,20 @@ it("an answer is typed and sent; Done sends done", async () => {
   fireEvent.change(screen.getByRole("textbox"), { target: { value: "Prague" } });
   fireEvent.click(send);
   await waitFor(() => expect(first.onDone).toHaveBeenCalled());
-  expect(api.sendSessionMessage).toHaveBeenLastCalledWith("s1", 'Inbox reply to "Which city?": Prague');
+  expect(api.sendSessionMessage).toHaveBeenLastCalledWith(
+    "s1",
+    'Inbox reply to "Which city?": Prague',
+    `inbox-answer:s1:${POSTED}:s1`,
+  );
   cleanup();
   const second = renderPage(session({ kind: "check", text: "Look at the chart" }));
   fireEvent.click(screen.getByRole("button", { name: "Done" }));
   await waitFor(() => expect(second.onDone).toHaveBeenCalled());
-  expect(api.sendSessionMessage).toHaveBeenLastCalledWith("s1", 'Inbox reply to "Look at the chart": done');
+  expect(api.sendSessionMessage).toHaveBeenLastCalledWith(
+    "s1",
+    'Inbox reply to "Look at the chart": done',
+    `inbox-answer:s1:${POSTED}:s1`,
+  );
 });
 
 it("a failed send keeps the ask open and says why", async () => {
@@ -144,8 +158,16 @@ it("one answer reaches every session whose ask is merged into this one, and thei
   const { onDone } = renderPage(session({ kind: "decide", text: "Budget?" }), { followers: [follower] });
   fireEvent.click(screen.getByRole("button", { name: "Yes" }));
   await waitFor(() => expect(onDone).toHaveBeenCalledWith(["s1", "s2"]));
-  expect(api.sendSessionMessage).toHaveBeenCalledWith("s1", 'Inbox reply to "Budget?": Yes');
-  expect(api.sendSessionMessage).toHaveBeenCalledWith("s2", 'Inbox reply to "Budget?": Yes');
+  expect(api.sendSessionMessage).toHaveBeenCalledWith(
+    "s1",
+    'Inbox reply to "Budget?": Yes',
+    `inbox-answer:s1:${POSTED}:s1`,
+  );
+  expect(api.sendSessionMessage).toHaveBeenCalledWith(
+    "s2",
+    'Inbox reply to "Budget?": Yes',
+    `inbox-answer:s1:${POSTED}:s2`,
+  );
   expect(api.setSessionUnread).toHaveBeenCalledWith("s2", false);
 });
 
@@ -174,4 +196,15 @@ it("the page reports when it was opened and how the answer was given, for the sp
       expect(api.postAskEvent).toHaveBeenCalledWith("s1", expect.objectContaining({ event: "answered", form })),
     );
   }
+});
+
+it("a retry retains the same original ask delivery ID instead of submitting another instruction", async () => {
+  api.sendSessionMessage.mockResolvedValueOnce("native_delivery_held");
+  renderPage(session({ kind: "decide", text: "Synthetic decision", options: ["Yes"] }));
+  fireEvent.click(screen.getByRole("button", { name: "Yes" }));
+  await screen.findByText("Not sent: native_delivery_held");
+  fireEvent.click(screen.getByRole("button", { name: "Yes" }));
+  await waitFor(() => expect(api.sendSessionMessage).toHaveBeenCalledTimes(2));
+  expect(api.sendSessionMessage.mock.calls[0]).toEqual(api.sendSessionMessage.mock.calls[1]);
+  expect(api.sendSessionMessage.mock.calls[1]?.[2]).toBe(`inbox-answer:s1:${POSTED}:s1`);
 });

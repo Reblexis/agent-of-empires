@@ -88,3 +88,10 @@ test('no native submission is allowed without a durable journal and pre-send fai
   const unavailable={...f.options,store:path.join(f.root,'missing-store')};fs.mkdirSync(unavailable.store);await assert.rejects(implementation().deliver({...f.packet,deliveryId:'missing-socket'},unavailable));assert.equal(f.adds,1);
  }finally{fs.fsyncSync=original;await f.close();}
 });
+
+test('the default embedded transport accepts stdin and reuses the original delivery ID', async()=>{
+ const f=await fixture();try {
+  const run=()=>new Promise((resolve,reject)=>{const child=spawn(process.execPath,['-e',fs.readFileSync(require.resolve('./codex-queue-send.cjs'),'utf8').replace(/^#![^\n]*\n/,'')+'\nmodule.exports.main(process.argv.slice(1)).catch(e=>{console.error(e.message);process.exitCode=1;});','--','--packet','-','--state-dir',f.options.stateDir,'--store',f.store,'--sessions-file',f.options.sessionsFile,'--ws-module',f.options.wsModule],{stdio:['pipe','pipe','pipe']});let stdout='',stderr='';child.stdout.on('data',b=>stdout+=b);child.stderr.on('data',b=>stderr+=b);child.on('error',reject);child.on('close',code=>code?reject(Error(stderr)):resolve(JSON.parse(stdout)));child.stdin.end(JSON.stringify(f.packet));});
+  assert.equal((await run()).disposition,'queued');assert.equal((await run()).disposition,'queued');assert.equal(f.adds,1);
+ }finally{await f.close();}
+});

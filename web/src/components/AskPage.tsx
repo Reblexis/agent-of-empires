@@ -60,7 +60,11 @@ export function AskPage({ session, followers, onOpenSession, onDone, readOnly }:
     setSending(true);
     setError(null);
     const message = `Inbox reply to "${ask.text}": ${input}`;
-    const failed = await sendSessionMessage(session.id, message);
+    const failed = await sendSessionMessage(
+      session.id,
+      message,
+      postedAt ? `inbox-answer:${session.id}:${postedAt}:${session.id}` : undefined,
+    );
     if (failed) {
       setError(`Not sent: ${failed}`);
       setSending(false);
@@ -75,7 +79,14 @@ export function AskPage({ session, followers, onOpenSession, onDone, readOnly }:
       });
     const answered = [session.id];
     for (const follower of followers) {
-      if (!(await sendSessionMessage(follower.id, message))) answered.push(follower.id);
+      if (
+        !(await sendSessionMessage(
+          follower.id,
+          message,
+          postedAt ? `inbox-answer:${session.id}:${postedAt}:${follower.id}` : undefined,
+        ))
+      )
+        answered.push(follower.id);
     }
     await Promise.all(answered.map((id) => setSessionUnread(id, false)));
     onDone(answered);

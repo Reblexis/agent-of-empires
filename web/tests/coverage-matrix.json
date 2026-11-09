@@ -33,7 +33,7 @@
         "web/src/components/Dashboard.tsx",
         "web/src/components/MobileMainPane.tsx"
       ],
-      "description": "Prompt queue: unread sessions above priority 0 as asks ordered by value per minute, Do this next on top with Go; an ask opens its ask page (sandboxed agent page, input by kind sent to the session, ask closes); home screen, dock tab and mobile pane."
+      "description": "Native Codex ask replies preserve the original ask timestamp and per-target source ID across retries without terminal input. Prompt queue: unread sessions above priority 0 as asks ordered by value per minute, Do this next on top with Go; an ask opens its ask page (sandboxed agent page, input by kind sent to the session, ask closes); home screen, dock tab and mobile pane."
     },
     {
       "id": "planner.timeline-read-only",

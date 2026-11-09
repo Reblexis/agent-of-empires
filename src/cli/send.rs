@@ -20,6 +20,10 @@ pub struct SendArgs {
     /// just works; pass this for scripts that want the previous bail-out.
     #[arg(long = "no-revive")]
     no_revive: bool,
+
+    /// Original stable source ID, required for native Codex queue delivery
+    #[arg(long)]
+    delivery_id: Option<String>,
 }
 
 #[tracing::instrument(target = "cli.send", skip_all, fields(profile = %profile))]
@@ -44,6 +48,17 @@ pub async fn run(profile: &str, args: SendArgs) -> Result<()> {
     inst.ensure_startable()?;
     if is_structured {
         return send_structured(&session_id, &session_title, &args.message, args.no_revive).await;
+    }
+
+    if crate::session::automated_delivery::is_native_codex(inst) {
+        let disposition = crate::session::automated_delivery::send(
+            inst,
+            &args.message,
+            args.delivery_id.as_deref(),
+        )
+        .await?;
+        println!("Native message {disposition} for '{session_title}'");
+        return Ok(());
     }
 
     if !args.no_revive {
@@ -132,6 +147,45 @@ mod tests {
     use crate::session::Instance;
     use serial_test::serial;
 
+    #[tokio::test]
+    #[serial]
+    async fn automated_codex_message_cannot_merge_a_human_draft_when_its_source_id_is_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let _app = crate::session::test_support::isolate_app_dir_at(temp.path());
+        let profile = "draft-safe-codex";
+        let mut instance = Instance::new("synthetic", "/tmp/synthetic");
+        instance.tool = "codex".into();
+        instance.agent_session_id = Some("11111111-1111-4111-8111-111111111111".into());
+        let id = instance.id.clone();
+        Storage::new_unwatched(profile)
+            .unwrap()
+            .update(|rows, _| {
+                rows.push(instance.clone());
+                Ok(())
+            })
+            .unwrap();
+        let error = run(
+            profile,
+            SendArgs {
+                identifier: id,
+                message: "distinct instruction".into(),
+                no_revive: true,
+                delivery_id: None,
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(
+            error.to_string().contains("stable delivery_id"),
+            "{error:#}"
+        );
+        assert!(!instance.tmux_session().unwrap().exists());
+        assert_eq!(
+            Storage::new_unwatched(profile).unwrap().load().unwrap()[0].agent_session_id,
+            instance.agent_session_id
+        );
+    }
+
     /// #4116: auto-revive refuses to start an archived or trashed session, terminal or structured.
     #[tokio::test]
     #[serial]
@@ -164,6 +218,7 @@ mod tests {
                 identifier: id.clone(),
                 message: "hello".to_string(),
                 no_revive: false,
+                delivery_id: None,
             };
             let err = run(profile, args).await.unwrap_err();
             assert_eq!(err.to_string(), message, "structured={structured}");
@@ -209,6 +264,7 @@ mod tests {
                 identifier: id.clone(),
                 message: "hello".to_string(),
                 no_revive,
+                delivery_id: None,
             };
             let err = run(profile, args).await.unwrap_err();
             let stored = Storage::new_unwatched(profile).unwrap().load().unwrap();

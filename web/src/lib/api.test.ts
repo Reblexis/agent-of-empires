@@ -1319,3 +1319,12 @@ describe("profile settings write guard", () => {
     expect(lastCall().url).toBe("/api/profiles/work/settings");
   });
 });
+
+it("native queue sends preserve the supplied original delivery ID in the request", async () => {
+  fetchSpy.mockResolvedValueOnce(json({ sent: true, queued: true }));
+  await api.sendSessionMessage("s1", "synthetic instruction", "inbox-answer:s1:original:s1");
+  expect(bodyOf(lastCall().init)).toEqual({
+    message: "synthetic instruction",
+    delivery_id: "inbox-answer:s1:original:s1",
+  });
+});

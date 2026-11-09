@@ -97,18 +97,19 @@ When `profile` is omitted, creation uses the server's selected profile or the co
 
 ## POST /api/sessions/{id}/send
 
-Types a message into the agent and presses Enter, honoring the per-agent paste-burst delay. Before delivery, the HTTP endpoint removes bracketed-paste delimiters and remaining ESC bytes, then removes only trailing CR/LF characters. Internal line breaks, spaces, and tabs are preserved by this normalization. The terminal transport adapts pasted LF to CR and adds a final Enter to submit. An empty or whitespace-only result is rejected before delivery.
+For native Codex, supply the original stable `delivery_id` alongside `message`: delivery uses the [draft-safe native queue](guides/codex-automated-delivery.md), reports `queued: true`, and never types or revives a pane. Missing IDs or unavailable queue prerequisites return `409 native_delivery_held`. Other terminal agents receive typed input and Enter, honoring the per-agent paste-burst delay. Before delivery, the HTTP endpoint removes bracketed-paste delimiters and remaining ESC bytes, then removes only trailing CR/LF characters. Internal line breaks, spaces, and tabs are preserved by this normalization. The terminal transport adapts pasted LF to CR and adds a final Enter to submit. An empty or whitespace-only result is rejected before delivery.
 
 ```bash
 curl -sS -X POST -H "Authorization: Bearer $AOE_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"message":"summarize the failing test"}' \
+  -d '{"message":"summarize the failing test","delivery_id":"original-job:123"}' \
   "http://localhost:7777/api/sessions/abc123/send"
 ```
 
 | Status | Body | When |
 | --- | --- | --- |
-| `200` | `{"sent": true}` | Keys delivered to the tmux pane |
+| `200` | `{"sent": true, "queued": true \| false}` | Native queue accepted the message, or keys delivered to another terminal agent |
+| `409` | `{"error": "native_delivery_held", "message"}` | Native Codex delivery needs its stable ID or queue prerequisite; no terminal fallback |
 | `400` | `{"error": "message_empty"}` | Empty or whitespace-only message |
 | `400` | `{"error": "acp_mode_unsupported"}` | Structured-view session, so no tmux pane |
 | `403` | `{"error": "read_only"}` | Server is read-only |

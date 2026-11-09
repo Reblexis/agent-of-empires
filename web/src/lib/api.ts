@@ -2242,9 +2242,12 @@ export async function getAskPage(id: string): Promise<string | null> {
 }
 
 /** Type one message into a terminal session. Null on success, else the error. */
-export async function sendSessionMessage(id: string, message: string): Promise<string | null> {
+export async function sendSessionMessage(id: string, message: string, deliveryId?: string): Promise<string | null> {
   try {
-    const reply = await send(`/api/sessions/${encodeURIComponent(id)}/send`, jsonInit("POST", { message }));
+    const reply = await send(
+      `/api/sessions/${encodeURIComponent(id)}/send`,
+      jsonInit("POST", { message, delivery_id: deliveryId }),
+    );
     return reply.ok ? null : (stringField(reply.payload, "error") ?? `HTTP ${reply.status}`);
   } catch {
     return "network_error";

@@ -3,6 +3,7 @@
 pub(crate) mod anchored_fs;
 pub mod artifacts;
 pub mod attach_project;
+pub(crate) mod automated_delivery;
 pub mod builder;
 pub(crate) mod capture;
 pub mod cityhall_bundle;

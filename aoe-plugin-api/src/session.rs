@@ -54,6 +54,8 @@ pub struct TurnSendRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct MessageSendRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_id: Option<String>,
     pub session_id: String,
     pub message: String,
 }

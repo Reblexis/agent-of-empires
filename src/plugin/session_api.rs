@@ -787,18 +787,23 @@ async fn deliver_message(
             "terminal sessions take no plugin input in CityHall mode",
         ));
     }
-    let revived = send_terminal_message(
+    let delivery = send_terminal_message(
         &deps.session_service,
         &deps.status_tx,
         &req.session_id,
         req.message.clone(),
         true,
+        req.delivery_id.as_deref(),
     )
     .await
     .map_err(map_terminal_error)?;
     Ok(MessageSendResponse {
-        disposition: MessageDisposition::Sent,
-        revived,
+        disposition: if delivery.native_disposition == Some("queued") {
+            MessageDisposition::Queued
+        } else {
+            MessageDisposition::Sent
+        },
+        revived: delivery.revived,
     })
 }
 
@@ -901,6 +906,9 @@ fn map_terminal_error(e: SendKeysError) -> DispatchError {
             DispatchError::internal("terminal send reached a structured session")
         }
         SendKeysError::Tmux(e) => DispatchError::internal(format!("terminal send failed: {e:#}")),
+        SendKeysError::NativeDelivery(message) => {
+            DispatchError::with_kind(codes::FAILED_PRECONDITION, "native_delivery_held", message)
+        }
         SendKeysError::Internal => DispatchError::internal("terminal send failed"),
     }
 }

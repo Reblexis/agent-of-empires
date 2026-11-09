@@ -10,6 +10,8 @@ use crate::server::session_service::SessionService;
 #[derive(Deserialize)]
 pub struct SendMessageRequest {
     pub message: String,
+    #[serde(default)]
+    pub delivery_id: Option<String>,
     /// Auto-revive a dead/stopped session before sending. Defaults to `true`;
     /// `false` is fail-loud, matching the `--no-revive` CLI flag.
     #[serde(default = "default_revive")]
@@ -31,21 +33,36 @@ pub(crate) enum SendKeysError {
     Blocked(crate::session::StartBlocked),
     Gone,
     Tmux(anyhow::Error),
+    NativeDelivery(String),
     Internal,
 }
 
 type SendKeysResult =
     Result<(EnsureReadyOutcome, Instance), Box<(Instance, EnsureReadyOutcome, SendKeysError)>>;
 
-/// Type `message` into the session's tmux pane. Returns whether a stopped or dead pane was
-/// revived first. Serializes with every other send to the same session.
+pub(crate) struct TerminalMessageDelivery {
+    pub revived: bool,
+    pub native_disposition: Option<&'static str>,
+}
+
+impl TerminalMessageDelivery {
+    fn terminal(revived: bool) -> Self {
+        Self {
+            revived,
+            native_disposition: None,
+        }
+    }
+}
+
+/// Queue native Codex input, or serialize other agents' terminal sends.
 pub(crate) async fn send_terminal_message(
     service: &SessionService,
     status_tx: &tokio::sync::broadcast::Sender<crate::server::push::StatusChange>,
     id: &str,
     message: String,
     revive: bool,
-) -> Result<bool, SendKeysError> {
+    delivery_id: Option<&str>,
+) -> Result<TerminalMessageDelivery, SendKeysError> {
     // Serialize concurrent sends (and other tmux mutations) for this id, or two
     // racing POSTs interleave their bytes inside the pane.
     let inst_lock = service.instance_lock(id).await;
@@ -65,6 +82,17 @@ pub(crate) async fn send_terminal_message(
     // Covers `revive: false` and a live pane too; an archived session takes no input.
     if let Err(blocked) = instance.ensure_startable() {
         return Err(SendKeysError::Blocked(blocked));
+    }
+
+    if crate::session::automated_delivery::is_native_codex(&instance) {
+        let disposition =
+            crate::session::automated_delivery::send(&instance, &message, delivery_id)
+                .await
+                .map_err(|e| SendKeysError::NativeDelivery(format!("{e:#}")))?;
+        return Ok(TerminalMessageDelivery {
+            revived: false,
+            native_disposition: Some(disposition),
+        });
     }
 
     let sync_base = instance.clone();
@@ -156,7 +184,7 @@ pub(crate) async fn send_terminal_message(
                 i.source_profile.clone()
             } else {
                 // Deleted between the send and the stamp; nothing to persist.
-                return Ok(revived);
+                return Ok(TerminalMessageDelivery::terminal(revived));
             };
             drop(instances);
             let id_for_save = id.to_string();
@@ -176,7 +204,7 @@ pub(crate) async fn send_terminal_message(
                     }
                 }
             });
-            Ok(revived)
+            Ok(TerminalMessageDelivery::terminal(revived))
         }
         Ok(Err(boxed)) => {
             let (started, outcome, send_err) = *boxed;
@@ -228,6 +256,7 @@ pub(crate) async fn send_terminal_message(
                 | SendKeysError::Transient(_)
                 | SendKeysError::StructuredView
                 | SendKeysError::Gone
+                | SendKeysError::NativeDelivery(_)
                 | SendKeysError::Internal => {}
             }
             Err(send_err)
@@ -274,10 +303,15 @@ pub async fn send_message(
         &id,
         req.message,
         req.revive,
+        req.delivery_id.as_deref(),
     )
     .await
     {
-        Ok(_) => (StatusCode::OK, Json(serde_json::json!({"sent": true}))).into_response(),
+        Ok(delivery) => (
+            StatusCode::OK,
+            Json(serde_json::json!({"sent": true, "queued": delivery.native_disposition == Some("queued"), "recorded": delivery.native_disposition == Some("recorded")})),
+        )
+            .into_response(),
         Err(SendKeysError::NotFound | SendKeysError::Gone) => bare_not_found(),
         Err(SendKeysError::NotRunning) => (
             StatusCode::CONFLICT,
@@ -310,6 +344,11 @@ pub async fn send_message(
         Err(SendKeysError::Tmux(_)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": "tmux_error"})),
+        )
+            .into_response(),
+        Err(SendKeysError::NativeDelivery(message)) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "native_delivery_held", "message": message})),
         )
             .into_response(),
         Err(SendKeysError::Internal) => (

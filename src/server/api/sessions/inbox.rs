@@ -36,6 +36,8 @@ pub struct AnswerRequest {
 #[derive(Debug, serde::Deserialize)]
 pub struct MessageRequest {
     #[serde(default)]
+    pub delivery_id: Option<String>,
+    #[serde(default)]
     pub text: String,
     #[serde(default)]
     pub images: Vec<MessageImage>,
@@ -448,6 +450,11 @@ pub async fn post_ask_answer(
             &target,
             message,
             false,
+            Some(&format!(
+                "inbox-answer:{id}:{}:{target}",
+                req.posted_at
+                    .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
+            )),
         )
         .await;
         match sent {
@@ -636,6 +643,7 @@ pub async fn post_inbox_message(
         &router,
         message,
         false,
+        req.delivery_id.as_deref(),
     )
     .await
     {
@@ -697,6 +705,9 @@ fn send_error(e: &SendKeysError) -> &'static str {
         SendKeysError::Transient(_) => "it is starting or stopping",
         SendKeysError::StructuredView => "structured-view sessions take no terminal messages",
         SendKeysError::Blocked(_) => "it is archived or in the trash",
+        SendKeysError::NativeDelivery(_) => {
+            "native queue delivery held; retain the original delivery ID"
+        }
         SendKeysError::Tmux(_) | SendKeysError::Internal => "tmux refused the message",
     }
 }

@@ -198,10 +198,8 @@ async function check(sessionId, options) {
   } finally { rpc.close(); }
 }
 
-module.exports = {deliver, check};
-if (require.main === module) {
-  (async () => {
-    const args = process.argv.slice(2), flags = {};
+async function main(args) {
+    const flags = {};
     for (let i = 0; i < args.length; i += 2) {
       if (!['--packet', '--check', '--store', '--state-dir', '--sessions-file', '--ws-module'].includes(args[i]) || !args[i + 1]) fail('Supply named operator arguments');
       flags[args[i]] = args[i + 1];
@@ -212,8 +210,9 @@ if (require.main === module) {
     if (flags['--check']) console.log(JSON.stringify(await check(flags['--check'], options)));
     else {
       if (!flags['--packet'] || !options.stateDir) fail('A private packet and durable state directory are required');
-      const packet = JSON.parse(fs.readFileSync(flags['--packet'], 'utf8'));
+      const packet = JSON.parse(fs.readFileSync(flags['--packet'] === '-' ? 0 : flags['--packet'], 'utf8'));
       console.log(JSON.stringify({deliveryId: packet.deliveryId, textSha256: hash(packet.text), ...await deliver(packet, options)}));
     }
-  })().catch(error => { console.error(error.message); process.exitCode = 1; });
 }
+module.exports = {deliver, check, main};
+if (require.main === module) main(process.argv.slice(2)).catch(error => { console.error(error.message); process.exitCode = 1; });

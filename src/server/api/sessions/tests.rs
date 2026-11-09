@@ -3228,6 +3228,7 @@ async fn handlers_take_instance_lock_before_snapshot() {
                     State(state.clone()),
                     Path(id.clone()),
                     Ok(Json(SendMessageRequest {
+                        delivery_id: None,
                         message: "hello".into(),
                         revive: false,
                     })),
@@ -3634,6 +3635,7 @@ async fn send_message_refreshes_instance_after_instance_lock() {
         State(state.clone()),
         Path(id.clone()),
         Ok(Json(SendMessageRequest {
+            delivery_id: None,
             message: "hello".into(),
             revive: false,
         })),
@@ -3745,6 +3747,7 @@ async fn start_paths_refuse_archived_and_trashed_sessions() {
                     State(state.clone()),
                     Path(id.clone()),
                     Ok(Json(SendMessageRequest {
+                        delivery_id: None,
                         message: "hello".into(),
                         revive: true,
                     })),
@@ -3919,6 +3922,7 @@ async fn send_strips_bracketed_paste_escape_from_captured_snippet() {
         State(state),
         Path(id),
         Ok(Json(SendMessageRequest {
+            delivery_id: None,
             message: "Captured snippet: prefix\x1b[200~code 雪\x1b[201~following text".to_string(),
             revive: false,
         })),
@@ -3984,6 +3988,7 @@ async fn send_refuses_a_live_pane_a_peer_shelved() {
             State(state.clone()),
             Path(id.clone()),
             Ok(Json(SendMessageRequest {
+                delivery_id: None,
                 message: "hello".into(),
                 revive: false,
             })),
@@ -5545,4 +5550,38 @@ async fn the_dashboard_logs_page_events_for_the_current_ask_only() {
         (lines[1].event, lines[1].form, lines[1].ms_open),
         (Event::Answered, Some(Form::Option), Some(8400))
     );
+}
+
+#[tokio::test]
+#[serial_test::serial]
+async fn automated_codex_message_without_an_original_id_cannot_merge_a_human_terminal_draft() {
+    let temp = tempfile::tempdir().unwrap();
+    let _app = crate::session::test_support::isolate_app_dir_at(temp.path());
+    let mut instance = Instance::new("synthetic", "/tmp/synthetic");
+    instance.tool = "codex".into();
+    instance.agent_session_id = Some("11111111-1111-4111-8111-111111111111".into());
+    let id = instance.id.clone();
+    let state = crate::server::test_support::build_test_app_state(vec![instance.clone()]);
+    let response = send_message(
+        State(state),
+        Path(id),
+        Ok(Json(SendMessageRequest {
+            message: "distinct instruction".into(),
+            delivery_id: None,
+            revive: false,
+        })),
+    )
+    .await
+    .into_response();
+    assert_eq!(response.status(), StatusCode::CONFLICT);
+    let body = axum::body::to_bytes(response.into_body(), 8192)
+        .await
+        .unwrap();
+    let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(value["error"], "native_delivery_held");
+    assert!(value["message"]
+        .as_str()
+        .unwrap()
+        .contains("stable delivery_id"));
+    assert!(!instance.tmux_session().unwrap().exists());
 }

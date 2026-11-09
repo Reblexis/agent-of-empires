@@ -53,7 +53,11 @@ pub fn perform_restart(request: RestartRequest) -> RestartResult {
     // With `bound_hooks`, honor the on_launch / before_start hook timeout the startup-recovery
     // worker installs (`run_recovery_for_instance`), so a hanging hook (e.g. a `mint` script
     // waiting on the network) cannot wedge this serial worker.
-    let outcome = {
+    let outcome = if let Err(error) =
+        crate::session::automated_delivery::ensure_legacy_wake_safe(&instance, &wake_message)
+    {
+        Err(error.to_string())
+    } else {
         let _scope = bound_hooks.then(|| {
             crate::session::recovery::HookTimeoutScope::new(
                 crate::session::recovery::recovery_hook_timeout(),

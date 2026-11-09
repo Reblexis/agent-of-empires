@@ -41,7 +41,7 @@ I read it already, it should obviously disappear automatically."
 
 ## Automated messages and human drafts
 
-Automated Codex deliveries must use the [native queue transport](codex-automated-delivery.md). Pasting a background message into the native composer can submit a human draft along with it. The existing raw `aoe send` terminal transport is not draft-safe; do not use it for background Codex messages while adopting the native transport.
+Automated Codex deliveries must use the [native queue transport](codex-automated-delivery.md). Pasting a background message into the native composer can submit a human draft along with it. Native Codex `aoe send` requires an original stable `--delivery-id` and uses that queue; an unavailable queue holds delivery without terminal fallback. Plain Inbox messages similarly require a source `delivery_id`.
 
 ## An ask
 

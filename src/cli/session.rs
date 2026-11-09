@@ -1374,6 +1374,7 @@ fn send_restart_wake(
     tmux_session: &crate::tmux::Session,
     wake_msg: &str,
 ) -> Result<bool> {
+    crate::session::automated_delivery::ensure_legacy_wake_safe(working, wake_msg)?;
     if !tmux_session.exists() {
         return Ok(false);
     }
@@ -1392,6 +1393,11 @@ async fn restart_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     let mut working = inst.clone();
     working.source_profile = profile.to_string();
 
+    let wake_msg = crate::session::resolve_config(profile)
+        .map(|c| c.session.restart_wake_message.clone())
+        .unwrap_or_else(|_| "wake up: pick up what you were doing".to_string());
+    crate::session::automated_delivery::ensure_legacy_wake_safe(&working, &wake_msg)?;
+
     let outcome = working.restart_with_resume_policy(
         crate::terminal::get_size(),
         false,
@@ -1400,10 +1406,6 @@ async fn restart_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     let title = working.title.clone();
     let session_id = working.id.clone();
     let tool = working.tool.clone();
-
-    let wake_msg = crate::session::resolve_config(profile)
-        .map(|c| c.session.restart_wake_message.clone())
-        .unwrap_or_else(|_| "wake up: pick up what you were doing".to_string());
 
     let mut wake_succeeded = false;
     if !wake_msg.is_empty() && !matches!(outcome, StartOutcome::ResumeFailed { .. }) {
