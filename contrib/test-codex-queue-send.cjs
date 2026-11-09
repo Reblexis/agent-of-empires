@@ -14,21 +14,21 @@ async function fixture() {
  fs.mkdirSync(path.dirname(socket),{recursive:true});
  const sessionsFile=path.join(root,'sessions.json');
  fs.writeFileSync(sessionsFile,JSON.stringify([{id:sessionsId,tool:'codex',status:'running',agent_session_id:threadId,trashed_at:null,archived_at:null}]));
- const server=http.createServer(), wss=new wsServer({server}); const queue=[],history=[];let adds=0, drop=false, rejectRead=false, hold=false, onAdd; const lockObservations=[];
+ const server=http.createServer(), wss=new wsServer({server}); const queue=[],history=[];let adds=0, drop=false, rejectRead=false, hold=false, onAdd, ackRewrite; const lockObservations=[];
  wss.on('connection', ws=>ws.on('message', b=>{const q=JSON.parse(b);if(!q.id)return;
   let result={};
   if(q.method==='initialize'){ const lock=path.join(root,`.instance-lifecycle-${sessionsId}.lock`);lockObservations.push(require('node:child_process').spawnSync('flock',['-n',lock,'true']).status);result={codexHome:store}; }
   else if(q.method==='thread/read') {if(rejectRead){ws.send(JSON.stringify({id:q.id,error:{message:'unknown thread'}}));return;} result={thread:{id:threadId,source:'cli'}};}
   else if(q.method==='thread/queue/list')result={data:queue,nextCursor:null};
   else if(q.method==='thread/turns/list')result={data:history,nextCursor:null};
-  else if(q.method==='thread/queue/add') {adds++; const item={id:'queue-'+adds,clientUserMessageId:q.params.clientUserMessageId,input:q.params.input};queue.push(item);onAdd?.();if(hold)return;if(drop){drop=false;ws.close();return;}result={queuedSubmission:item};}
+  else if(q.method==='thread/queue/add') {adds++; const item={id:'queue-'+adds,clientUserMessageId:q.params.clientUserMessageId,input:q.params.input};queue.push(item);onAdd?.();if(hold)return;if(drop){drop=false;ws.close();return;}result={queuedSubmission:ackRewrite?ackRewrite(item):item};}
   else {ws.send(JSON.stringify({id:q.id,error:{message:'unexpected method'}}));return;}
   ws.send(JSON.stringify({id:q.id,result}));
  }));
  await new Promise(r=>server.listen(socket,r));
  const options={store,stateDir:state,sessionsFile,wsModule:process.env.AOE_TEST_WS_MODULE,timeoutMs:1000};
  const packet={sessionId:sessionsId,threadId,deliveryId:'original-action-1',text:'Central agent: distinct background instruction.'};
- return {root,store,options,packet,queue,history,server,wss,lockObservations,get adds(){return adds},set drop(v){drop=v},set rejectRead(v){rejectRead=v},set hold(v){hold=v},set onAdd(v){onAdd=v},async close(){for(const c of wss.clients)c.terminate();await new Promise(r=>wss.close(r));await new Promise(r=>server.close(r));fs.rmSync(root,{recursive:true,force:true});}};
+ return {root,store,options,packet,queue,history,server,wss,lockObservations,get adds(){return adds},set drop(v){drop=v},set rejectRead(v){rejectRead=v},set hold(v){hold=v},set onAdd(v){onAdd=v},set ackRewrite(v){ackRewrite=v},async close(){for(const c of wss.clients)c.terminate();await new Promise(r=>wss.close(r));await new Promise(r=>server.close(r));fs.rmSync(root,{recursive:true,force:true});}};
 }
 async function editor(root){
  const sock=path.join(root,'tmux.sock'), out=path.join(root,'editor.json'), script=path.join(root,'editor.cjs');
@@ -146,4 +146,14 @@ test('image reconciliation refuses path-only text and accepts exact inline histo
  const f=await fixture();try{const p=imagePacket(f);f.drop=true;await assert.rejects(implementation().deliver(p,f.options));const q=f.queue.pop();f.history.push({items:[{type:'userMessage',clientId:q.clientUserMessageId,content:q.input.map(x=>x.type==='localImage'?{type:'text',text:x.path}:x)}]});await assert.rejects(implementation().deliver(p,f.options),/conflict/i);assert.equal(f.adds,1);
   f.history[0].items[0].content=q.input.map(x=>x.type==='localImage'?{type:'image',url:'data:image/png;base64,'+PNG_BYTES.toString('base64')}:x);const r=await implementation().deliver(p,f.options);assert.equal(r.disposition,'recorded');assert.deepEqual(r.imageSha256,[p.images[0].sha256]);assert.equal(f.adds,1);
  }finally{await f.close();}
+});
+
+test('typed image limits and missing or unsupported sources hold without a native add',async()=>{
+ const f=await fixture();try{const p=imagePacket(f);for(const [name,bytes] of [['empty',Buffer.alloc(0)],['oversize',Buffer.concat([PNG_BYTES,Buffer.alloc(5*1024*1024+1-PNG_BYTES.length)])],['invalid',Buffer.from('not an image')]]){const file=path.join(f.root,name+'.png');fs.writeFileSync(file,bytes);await assert.rejects(implementation().deliver({...p,deliveryId:'source:'+name,images:[{path:file,sha256:require('node:crypto').createHash('sha256').update(bytes).digest('hex')}]},f.options));}const link=path.join(f.root,'linked.png');fs.symlinkSync(p.images[0].path,link);await assert.rejects(implementation().deliver({...p,images:[{...p.images[0],path:link}]},f.options));fs.unlinkSync(p.images[0].path);await assert.rejects(implementation().deliver(p,f.options));assert.equal(f.adds,0);}finally{await f.close();}
+});
+test('an image acknowledgment cannot silently replace the typed input with a text path',async()=>{
+ const f=await fixture();try{const p=imagePacket(f);f.ackRewrite=item=>({...item,input:item.input.map(x=>x.type==='localImage'?{type:'text',text:x.path}:x)});await assert.rejects(implementation().deliver(p,f.options),/Exact native acceptance/);assert.equal(f.adds,1);const receipt=await implementation().deliver(p,f.options);assert.deepEqual(receipt.imageSha256,[p.images[0].sha256]);assert.equal(f.adds,1);}finally{await f.close();}
+});
+test('uncertain image delivery never overwrites changed retained bytes or blindly adds again',async()=>{
+ const f=await fixture();try{const p=imagePacket(f);f.drop=true;await assert.rejects(implementation().deliver(p,f.options));const image=f.queue[0].input.find(x=>x.type==='localImage');fs.chmodSync(image.path,0o600);fs.writeFileSync(image.path,'changed fixture snapshot');await assert.rejects(implementation().deliver(p,f.options),/Retained image/);assert.equal(f.adds,1);assert.deepEqual(fs.readFileSync(p.images[0].path),PNG_BYTES);}finally{await f.close();}
 });

@@ -63,6 +63,33 @@ pub(crate) async fn send_terminal_message(
     revive: bool,
     delivery_id: Option<&str>,
 ) -> Result<TerminalMessageDelivery, SendKeysError> {
+    send_terminal_message_with_images(
+        service,
+        status_tx,
+        id,
+        message,
+        revive,
+        delivery_id,
+        PreparedNativeInput::default(),
+    )
+    .await
+}
+
+#[derive(Default)]
+pub(crate) struct PreparedNativeInput<'a> {
+    pub images: &'a [std::path::PathBuf],
+    pub expected_native: Option<bool>,
+}
+
+pub(crate) async fn send_terminal_message_with_images(
+    service: &SessionService,
+    status_tx: &tokio::sync::broadcast::Sender<crate::server::push::StatusChange>,
+    id: &str,
+    message: String,
+    revive: bool,
+    delivery_id: Option<&str>,
+    prepared: PreparedNativeInput<'_>,
+) -> Result<TerminalMessageDelivery, SendKeysError> {
     // Serialize concurrent sends (and other tmux mutations) for this id, or two
     // racing POSTs interleave their bytes inside the pane.
     let inst_lock = service.instance_lock(id).await;
@@ -79,22 +106,48 @@ pub(crate) async fn send_terminal_message(
         return Err(SendKeysError::NotFound);
     };
 
+    if prepared.expected_native.is_some_and(|expected| {
+        expected != crate::session::automated_delivery::is_native_codex(&instance)
+    }) {
+        return Err(SendKeysError::NativeDelivery(
+            "Target changed while preparing attachments; original delivery held".into(),
+        ));
+    }
     // Covers `revive: false` and a live pane too; an archived session takes no input.
     if let Err(blocked) = instance.ensure_startable() {
         return Err(SendKeysError::Blocked(blocked));
     }
 
     if crate::session::automated_delivery::is_native_codex(&instance) {
-        let disposition =
-            crate::session::automated_delivery::send(&instance, &message, delivery_id)
-                .await
-                .map_err(|e| SendKeysError::NativeDelivery(format!("{e:#}")))?;
+        let paths = prepared.images.to_vec();
+        let images = tokio::task::spawn_blocking(move || {
+            paths
+                .iter()
+                .map(|path| crate::session::automated_delivery::NativeImage::from_path(path))
+                .collect::<anyhow::Result<Vec<_>>>()
+        })
+        .await
+        .map_err(|e| SendKeysError::NativeDelivery(e.to_string()))?
+        .map_err(|e| SendKeysError::NativeDelivery(e.to_string()))?;
+        let disposition = crate::session::automated_delivery::send_with_images(
+            &instance,
+            &message,
+            delivery_id,
+            &images,
+        )
+        .await
+        .map_err(|e| SendKeysError::NativeDelivery(format!("{e:#}")))?;
         return Ok(TerminalMessageDelivery {
             revived: false,
             native_disposition: Some(disposition),
         });
     }
 
+    if !prepared.images.is_empty() {
+        return Err(SendKeysError::NativeDelivery(
+            "Typed native images require a native Codex target".into(),
+        ));
+    }
     let sync_base = instance.clone();
     let tool = instance.tool.clone();
     let send_result = tokio::task::spawn_blocking(move || -> SendKeysResult {
@@ -415,6 +468,46 @@ pub(super) fn write_paste_image(
     Ok((path, file_name))
 }
 
+pub(super) fn write_delivery_image(
+    project_path: &str,
+    bytes: &[u8],
+    ext: &str,
+    delivery_id: &str,
+    index: usize,
+) -> std::io::Result<(std::path::PathBuf, String)> {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    hash.update((delivery_id.len() as u64).to_le_bytes());
+    hash.update(delivery_id.as_bytes());
+    hash.update((index as u64).to_le_bytes());
+    hash.update(bytes);
+    let key: String = hash
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
+    let name = format!("aoe-paste-{key}.{ext}");
+    let target = std::path::Path::new(project_path)
+        .join(PASTE_IMAGE_DIR)
+        .join(&name);
+    let (temporary, _) = write_paste_image(project_path, bytes, ext)?;
+    let result = (|| {
+        match std::fs::hard_link(&temporary, &target) {
+            Ok(()) => (),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => (),
+            Err(error) => return Err(error),
+        }
+        if !std::fs::symlink_metadata(&target)?.is_file() || std::fs::read(&target)? != bytes {
+            return Err(std::io::Error::other(
+                "Original delivery image conflicts with retained bytes",
+            ));
+        }
+        Ok((target, name))
+    })();
+    let _ = std::fs::remove_file(temporary);
+    result
+}
+
 /// Map the host paste-image file to the path the tmux pane reads. A sandboxed
 /// pane mounts the worktree under a container path, so `compute_volume_paths`
 /// is reused to match that mount.
@@ -672,6 +765,27 @@ mod paste_image_tests {
             "*\n",
             "dir must self-ignore so pasted blobs never reach git"
         );
+    }
+
+    #[test]
+    fn automated_image_retries_keep_the_original_bytes_and_stable_path() {
+        let dir = tempdir().unwrap();
+        let project = dir.path().to_str().unwrap();
+        let first = write_delivery_image(project, PNG_1PX, "png", "source:1", 0).unwrap();
+        assert_eq!(
+            first,
+            write_delivery_image(project, PNG_1PX, "png", "source:1", 0).unwrap()
+        );
+        assert_ne!(
+            first,
+            write_delivery_image(project, PNG_1PX, "png", "source:2", 0).unwrap()
+        );
+        assert_ne!(
+            first,
+            write_delivery_image(project, PNG_1PX, "png", "source:1", 1).unwrap()
+        );
+        std::fs::write(&first.0, "changed fixture bytes").unwrap();
+        assert!(write_delivery_image(project, PNG_1PX, "png", "source:1", 0).is_err());
     }
 
     #[test]

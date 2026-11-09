@@ -27,12 +27,49 @@ pub(crate) fn ensure_legacy_wake_safe(instance: &Instance, wake: &str) -> Result
     Ok(())
 }
 
-fn packet(instance: &Instance, text: &str, delivery_id: Option<&str>) -> Result<serde_json::Value> {
+#[derive(serde::Serialize)]
+pub(crate) struct NativeImage {
+    path: std::path::PathBuf,
+    sha256: String,
+}
+
+impl NativeImage {
+    pub(crate) fn from_path(path: &std::path::Path) -> Result<Self> {
+        let metadata = std::fs::symlink_metadata(path)?;
+        if !path.is_absolute()
+            || !metadata.is_file()
+            || metadata.len() == 0
+            || metadata.len() > 5 * 1024 * 1024
+        {
+            bail!("Native image source must be an absolute regular file of at most 5 MiB");
+        }
+        let bytes = std::fs::read(path)?;
+        Ok(Self {
+            path: path.to_path_buf(),
+            sha256: digest(&bytes),
+        })
+    }
+}
+
+fn digest(bytes: &[u8]) -> String {
+    Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn packet(
+    instance: &Instance,
+    text: &str,
+    delivery_id: Option<&str>,
+    images: &[NativeImage],
+) -> Result<serde_json::Value> {
     instance.ensure_startable()?;
     let delivery_id = delivery_id.filter(|id| !id.trim().is_empty()).context(
         "Native Codex delivery requires the original stable delivery_id; no terminal fallback",
     )?;
-    if delivery_id.len() > 256 || text.trim().is_empty() {
+    if delivery_id.len() > 256 || (text.trim().is_empty() && images.is_empty()) || images.len() > 10
+    {
         bail!("Native Codex delivery requires a nonempty message and delivery_id of at most 256 bytes");
     }
     if instance.tool != "codex" || instance.is_sandboxed() {
@@ -43,10 +80,12 @@ fn packet(instance: &Instance, text: &str, delivery_id: Option<&str>) -> Result<
         .as_deref()
         .context("Native Codex thread is not recorded; delivery held")?;
     uuid::Uuid::parse_str(thread).context("Invalid recorded native Codex thread; delivery held")?;
-    Ok(
-        serde_json::json!({"sessionId": instance.id, "threadId": thread,
-        "deliveryId": delivery_id, "text": text}),
-    )
+    let mut packet = serde_json::json!({"sessionId": instance.id, "threadId": thread,
+        "deliveryId": delivery_id, "text": text});
+    if !images.is_empty() {
+        packet["images"] = serde_json::to_value(images)?;
+    }
+    Ok(packet)
 }
 
 pub(crate) async fn send(
@@ -54,7 +93,16 @@ pub(crate) async fn send(
     text: &str,
     delivery_id: Option<&str>,
 ) -> Result<&'static str> {
-    let packet = packet(instance, text, delivery_id)?;
+    send_with_images(instance, text, delivery_id, &[]).await
+}
+
+pub(crate) async fn send_with_images(
+    instance: &Instance,
+    text: &str,
+    delivery_id: Option<&str>,
+    images: &[NativeImage],
+) -> Result<&'static str> {
+    let packet = packet(instance, text, delivery_id, images)?;
     let store = instance
         .declared_agent_config_dir_for("codex")
         .context("Native Codex store must be explicitly declared; delivery held")?;
@@ -107,14 +155,17 @@ pub(crate) async fn send(
     }
     let receipt: serde_json::Value = serde_json::from_slice(&output.stdout)
         .context("Native Codex queue receipt invalid; retain the original delivery ID")?;
-    let text_hash: String = Sha256::digest(text.as_bytes())
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
+    let text_hash = digest(text.as_bytes());
     if receipt["deliveryId"] != packet["deliveryId"]
         || receipt["textSha256"].as_str() != Some(text_hash.as_str())
     {
         bail!("Native Codex queue acceptance unconfirmed; retain the original delivery ID");
+    }
+    if !images.is_empty()
+        && receipt["imageSha256"]
+            != serde_json::json!(images.iter().map(|image| &image.sha256).collect::<Vec<_>>())
+    {
+        bail!("Exact native image acceptance unconfirmed; retain original source and delivery ID");
     }
     match receipt["disposition"].as_str() {
         Some("queued") => Ok("queued"),
@@ -208,18 +259,18 @@ console.log(JSON.stringify({deliveryId:packet.text==='invalid-receipt'?'wrong-so
         instance.tool = "codex".into();
         instance.agent_session_id = Some("11111111-1111-4111-8111-111111111111".into());
         for id in [None, Some(""), Some(" ")] {
-            assert!(packet(&instance, "distinct instruction", id).is_err());
+            assert!(packet(&instance, "distinct instruction", id, &[]).is_err());
         }
-        let first = packet(&instance, "distinct instruction", Some("source:123")).unwrap();
+        let first = packet(&instance, "distinct instruction", Some("source:123"), &[]).unwrap();
         assert_eq!(
             first,
-            packet(&instance, "distinct instruction", Some("source:123")).unwrap()
+            packet(&instance, "distinct instruction", Some("source:123"), &[]).unwrap()
         );
         assert_eq!(first["deliveryId"], "source:123");
-        assert!(packet(&instance, " ", Some("source:123")).is_err());
+        assert!(packet(&instance, " ", Some("source:123"), &[]).is_err());
         instance.agent_session_id = None;
-        assert!(packet(&instance, "distinct instruction", Some("source:123")).is_err());
+        assert!(packet(&instance, "distinct instruction", Some("source:123"), &[]).is_err());
         instance.tool = "codex-alias".into();
-        assert!(packet(&instance, "distinct instruction", Some("source:123")).is_err());
+        assert!(packet(&instance, "distinct instruction", Some("source:123"), &[]).is_err());
     }
 }

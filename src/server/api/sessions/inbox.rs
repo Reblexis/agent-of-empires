@@ -416,31 +416,23 @@ pub async fn post_ask_answer(
         Ok(found) => found,
         Err(resp) => return resp,
     };
-    if !images.is_empty()
-        && crate::session::inbox::answer_targets(&instances, &id)
-            .iter()
-            .any(|target| {
-                instances
-                    .iter()
-                    .find(|instance| &instance.id == target)
-                    .is_some_and(crate::session::automated_delivery::is_native_codex)
-            })
-    {
-        release_claim(&state, &id, req.posted_at).await;
-        return api_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "native_image_delivery_held",
-            "Native image delivery is held; retain the original image payload and source ID",
-        );
-    }
     let mut answered = Vec::new();
     let mut kept = Vec::new();
     for (i, target) in crate::session::inbox::answer_targets(&instances, &id)
         .into_iter()
         .enumerate()
     {
+        let delivery_id = format!(
+            "inbox-answer:{id}:{}:{target}",
+            req.posted_at
+                .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
+        );
+        let native = instances
+            .iter()
+            .find(|inst| inst.id == target)
+            .is_some_and(crate::session::automated_delivery::is_native_codex);
         let saved = match instances.iter().find(|inst| inst.id == target) {
-            Some(inst) => save_images(inst, &images).await,
+            Some(inst) => save_images(inst, &images, Some(&delivery_id)).await,
             None => Err(std::io::Error::other("session not found")),
         };
         let (host_paths, paths) = match saved {
@@ -459,19 +451,20 @@ pub async fn post_ask_answer(
                 continue;
             }
         };
-        let message = crate::session::inbox::reply_message(&text, input, &paths);
+        let message =
+            crate::session::inbox::reply_message(&text, input, if native { &[] } else { &paths });
         // Never revive a pane to deliver an answer: a stopped session gets 502.
-        let sent = send_terminal_message(
+        let sent = send_terminal_message_with_images(
             &state.session_service,
             &state.status_tx,
             &target,
             message,
             false,
-            Some(&format!(
-                "inbox-answer:{id}:{}:{target}",
-                req.posted_at
-                    .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true)
-            )),
+            Some(&delivery_id),
+            PreparedNativeInput {
+                images: if native { &host_paths } else { &[] },
+                expected_native: Some(native),
+            },
         )
         .await;
         match sent {
@@ -480,8 +473,10 @@ pub async fn post_ask_answer(
                 kept.extend(host_paths);
             }
             Err(e) => {
-                for p in &host_paths {
-                    let _ = std::fs::remove_file(p);
+                if !native {
+                    for p in &host_paths {
+                        let _ = std::fs::remove_file(p);
+                    }
                 }
                 if i == 0 {
                     release_claim(&state, &id, req.posted_at).await;
@@ -556,17 +551,38 @@ fn decode_images(images: &[MessageImage]) -> Result<Vec<Image>, axum::response::
 async fn save_images(
     inst: &Instance,
     images: &[Image],
+    delivery_id: Option<&str>,
 ) -> std::io::Result<(Vec<std::path::PathBuf>, Vec<String>)> {
     if images.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
+    let native = crate::session::automated_delivery::is_native_codex(inst);
+    if native && delivery_id.is_none() {
+        return Err(std::io::Error::other(
+            "Original image delivery ID is required",
+        ));
+    }
+    let delivery_id = delivery_id.map(str::to_owned);
     let project = inst.project_path.clone();
     let sandboxed = inst.is_sandboxed();
     let images = images.to_vec();
     let written = tokio::task::spawn_blocking(move || {
         images
             .iter()
-            .map(|(bytes, ext)| super::send::write_paste_image(&project, bytes, ext))
+            .enumerate()
+            .map(|(index, (bytes, ext))| {
+                if native {
+                    super::send::write_delivery_image(
+                        &project,
+                        bytes,
+                        ext,
+                        delivery_id.as_deref().expect("validated"),
+                        index,
+                    )
+                } else {
+                    super::send::write_paste_image(&project, bytes, ext)
+                }
+            })
             .collect::<std::io::Result<Vec<_>>>()
     })
     .await
@@ -645,44 +661,48 @@ pub async fn post_inbox_message(
             "The Inbox router is not a session",
         );
     };
-    if !images.is_empty() && crate::session::automated_delivery::is_native_codex(&inst) {
-        return api_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "native_image_delivery_held",
-            "Native image delivery is held; retain the original image payload and source ID",
-        );
-    }
-    let Ok((host_paths, paths)) = save_images(&inst, &images).await else {
+    let native = crate::session::automated_delivery::is_native_codex(&inst);
+    let Ok((host_paths, paths)) = save_images(&inst, &images, req.delivery_id.as_deref()).await
+    else {
         return api_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "write_failed",
             "An image could not be saved",
         );
     };
-    let message = crate::session::inbox::message_text(&req.text, &paths);
+    let message = crate::session::inbox::message_text(&req.text, if native { &[] } else { &paths });
     // Never revive a pane to deliver a message, like an answer.
-    if let Err(e) = send_terminal_message(
+    let delivery = match send_terminal_message_with_images(
         &state.session_service,
         &state.status_tx,
         &router,
         message,
         false,
         req.delivery_id.as_deref(),
+        PreparedNativeInput {
+            images: if native { &host_paths } else { &[] },
+            expected_native: Some(native),
+        },
     )
     .await
     {
-        for p in &host_paths {
-            let _ = std::fs::remove_file(p);
+        Ok(delivery) => delivery,
+        Err(e) => {
+            if !native {
+                for p in &host_paths {
+                    let _ = std::fs::remove_file(p);
+                }
+            }
+            return api_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "not_delivered",
+                format!("The router could not take the message: {}", send_error(&e)),
+            );
         }
-        return api_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "not_delivered",
-            format!("The router could not take the message: {}", send_error(&e)),
-        );
-    }
+    };
     let n = host_paths.len();
     expire_images(host_paths);
-    Json(serde_json::json!({ "delivered_to": router, "images": n })).into_response()
+    Json(serde_json::json!({ "delivered_to": router, "images": n, "queued": delivery.native_disposition == Some("queued"), "recorded": delivery.native_disposition == Some("recorded") })).into_response()
 }
 
 pub async fn get_inbox_log(
@@ -1358,12 +1378,38 @@ mod tests {
 
     #[tokio::test]
     #[serial_test::serial]
-    async fn automated_native_image_message_is_held_instead_of_becoming_path_only_text() {
+    async fn automated_native_images_remain_typed_and_original_attachments_survive_uncertain_delivery(
+    ) {
         let _app = crate::session::test_support::isolate_app_dir();
         let project = tempfile::tempdir().unwrap();
+        let helper = project.path().join("fixture.cjs");
+        std::fs::write(&helper, r#"
+const fs=require('fs'),path=require('path'),crypto=require('crypto');
+const p=JSON.parse(fs.readFileSync(0,'utf8'));
+fs.writeFileSync(path.join(__dirname,'packet.json'),JSON.stringify(p));
+if(fs.existsSync(path.join(__dirname,'uncertain'))) { console.error('synthetic uncertain delivery');process.exitCode=1; }
+else console.log(JSON.stringify({deliveryId:p.deliveryId,textSha256:crypto.createHash('sha256').update(p.text).digest('hex'),imageSha256:(p.images||[]).map(i=>i.sha256),disposition:'queued'}));
+"#).unwrap();
+        let _env = crate::session::test_support::EnvGuard::set(&[(
+            "AOE_CODEX_QUEUE_HELPER",
+            helper.as_os_str(),
+        )]);
+        let config =
+            crate::session::config::profile_config::get_profile_config_path("default").unwrap();
+        std::fs::create_dir_all(config.parent().unwrap()).unwrap();
+        std::fs::write(
+            config,
+            format!(
+                "[session.agent_config_dir]\ncodex = {:?}\n",
+                project.path().to_str().unwrap()
+            ),
+        )
+        .unwrap();
         let mut router = Instance::new("synthetic", &project.path().to_string_lossy());
         router.id = "1111111111111111".into();
         router.tool = "codex".into();
+        router.source_profile = "default".into();
+        router.agent_session_id = Some("11111111-1111-4111-8111-111111111111".into());
         let state = seeded(vec![router]);
         std::fs::write(
             crate::session::get_app_dir()
@@ -1372,11 +1418,40 @@ mod tests {
             "1111111111111111\n",
         )
         .unwrap();
-        let request = serde_json::from_value(serde_json::json!({"text":"synthetic image", "delivery_id":"synthetic:image:1", "images":[{"data":PNG}]})).unwrap();
-        let (status, value) = body(post_inbox_message(State(state), Json(request)).await).await;
+        let request = || {
+            serde_json::from_value(serde_json::json!({"text":"synthetic image", "delivery_id":"synthetic:image:1", "images":[{"data":PNG}]})).unwrap()
+        };
+        std::fs::write(project.path().join("uncertain"), "fixture").unwrap();
+        let (status, _) =
+            body(post_inbox_message(State(state.clone()), Json(request())).await).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(value["error"], "native_image_delivery_held");
-        assert!(!project.path().join(".aoe-pasted-images").exists());
+        let read_packet = || {
+            serde_json::from_slice::<serde_json::Value>(
+                &std::fs::read(project.path().join("packet.json")).unwrap(),
+            )
+            .unwrap()
+        };
+        let first = read_packet();
+        let path = first["images"][0]["path"].as_str().unwrap();
+        assert!(
+            std::path::Path::new(path).exists(),
+            "uncertain acceptance must retain the genuine original"
+        );
+        assert!(
+            !first["text"]
+                .as_str()
+                .unwrap()
+                .contains(".aoe-pasted-images"),
+            "an image is not a text path"
+        );
+        std::fs::remove_file(project.path().join("uncertain")).unwrap();
+        let (status, _) = body(post_inbox_message(State(state), Json(request())).await).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(
+            first,
+            read_packet(),
+            "retry retains the original delivery ID, bytes and path"
+        );
     }
 
     const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
