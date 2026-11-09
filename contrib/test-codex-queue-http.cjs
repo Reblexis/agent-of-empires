@@ -25,6 +25,7 @@ const storeSocket = path.join(native,'app-server-control/app-server-control.sock
 const name = `${release?'aoe_':'aoe_dev_'}Synthetic_11111111`;
 let child, keeper, wss, rpc;
 let drop = false;
+let nativeStatus = "active", queueStarts = 0;
 const queue = [];
 const history = [];
 let adds = 0;
@@ -59,9 +60,12 @@ async function until(predicate, description, timeout=15000) {
   wss.on('connection',ws=>ws.on('message',raw=>{
    const q=JSON.parse(raw);if(!q.id)return;let result;
    if(q.method==='initialize')result={codexHome:native};
-   else if(q.method==='thread/read')result={thread:{id:tid,source:'cli'}};
+   else if(q.method==='thread/read')result={thread:{id:tid,source:'cli',status:{type:nativeStatus}}};
    else if(q.method==='thread/queue/list')result={data:queue,nextCursor:null};
    else if(q.method==='thread/turns/list')result={data:history,nextCursor:null};
+   else if(q.method==='thread/queue/start'){
+    assert.equal(q.params.threadId,tid);const i=queue.findIndex(x=>x.id===q.params.queuedSubmissionId);assert.ok(i>=0);const item=queue.splice(i,1)[0];assert.equal(item.clientUserMessageId,'fixture:idle:1');history.push({items:[{type:'userMessage',clientId:item.clientUserMessageId,content:item.input}]});queueStarts++;nativeStatus='active';result={turn:{id:'fixture-idle-turn',status:'inProgress'}};
+   }
    else if(q.method==='thread/queue/add'){
     const item={id:'fixture-'+(++adds),clientUserMessageId:q.params.clientUserMessageId,input:q.params.input};queue.push(item);result={queuedSubmission:item};
     if(drop){drop=false;ws.close();return;}
@@ -94,8 +98,9 @@ async function until(predicate, description, timeout=15000) {
   const cli=['send',sid,'CLI automated input','--no-revive','--delivery-id','fixture:cli:1'];
   assert.match((await run(binary,cli,{env})).stdout,/queued/);await run(binary,cli,{env});assert.equal(queue.length,4);
   const imageOnly=await post('/api/inbox/message',{text:'',delivery_id:'fixture:image-only:1',images:body.images});assert.equal(imageOnly.status,200);assert.equal(imageOnly.json.queued,true);assert.equal(queue.length,5);assert.ok(queue[4].input.some(x=>x.type==='localImage'));
+  nativeStatus='idle';const idle={text:'Actual idle dispatch fixture',delivery_id:'fixture:idle:1',expected_owner:sid};assert.equal((await post('/api/inbox/message',idle)).status,200);assert.equal(queueStarts,1,'idle queue must start exact accepted submission');assert.equal(queue.length,5,'foreign queued submissions remain untouched');assert.equal((await post('/api/inbox/message',idle)).status,200);assert.equal(queueStarts,1,'repeated source never starts twice');
   assert.deepEqual(JSON.parse(fs.readFileSync(editorFile)),{draft:'Unfinished human question',submitted:[]});
-  const receipt={result:'passed',candidateSha256:sha(fs.readFileSync(binary)),adds,queueItems:queue.length,recordedItems:history.length,imageSha256:sha(png),receipts,draftUntouched:true,modelCalls:0,realOwnersTouched:0,fixtureRoot:root};
+  const receipt={result:'passed',candidateSha256:sha(fs.readFileSync(binary)),adds,queueStarts,queueItems:queue.length,recordedItems:history.length,imageSha256:sha(png),receipts,draftUntouched:true,modelCalls:0,realOwnersTouched:0,fixtureRoot:root};
   fs.writeFileSync(path.join(root,'receipt.json'),JSON.stringify(receipt,null,2));console.log(JSON.stringify(receipt));
  } finally {
   if(child&&child.exitCode===null){child.kill('SIGTERM');await once(child,'exit');}
