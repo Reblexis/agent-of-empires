@@ -95,3 +95,7 @@ test('the default embedded transport accepts stdin and reuses the original deliv
   assert.equal((await run()).disposition,'queued');assert.equal((await run()).disposition,'queued');assert.equal(f.adds,1);
  }finally{await f.close();}
 });
+
+test('native images are visibly held before any text-only queue downgrade',async()=>{
+ const f=await fixture();try{await assert.rejects(implementation().deliver({...f.packet,images:[{path:'/synthetic/input.png',sha256:'0'.repeat(64)}]},f.options),/image.*held/i);assert.equal(f.adds,0);}finally{await f.close();}
+});

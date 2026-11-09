@@ -140,6 +140,7 @@ async function reconcile(rpc, packet) {
 }
 
 async function deliver(packet, options) {
+  if (packet.images !== undefined && (!Array.isArray(packet.images) || packet.images.length)) fail('Native image delivery held; original image source retained');
   for (const key of ['sessionId', 'threadId', 'deliveryId', 'text']) {
     if (typeof packet[key] !== 'string' || !packet[key].trim()) fail(`Missing ${key}`);
   }

@@ -55,6 +55,10 @@ pub(crate) async fn send(
     delivery_id: Option<&str>,
 ) -> Result<&'static str> {
     let packet = packet(instance, text, delivery_id)?;
+    let target = instance.clone();
+    let _lifecycle_lock = tokio::task::spawn_blocking(move || target.lock_for_input())
+        .await
+        .context("Native Codex lifecycle guard unavailable; delivery held")??;
     let store = instance
         .declared_agent_config_dir_for("codex")
         .context("Native Codex store must be explicitly declared; delivery held")?;
@@ -107,7 +111,10 @@ pub(crate) async fn send(
     }
     let receipt: serde_json::Value = serde_json::from_slice(&output.stdout)
         .context("Native Codex queue receipt invalid; retain the original delivery ID")?;
-    let text_hash = format!("{:x}", Sha256::digest(text.as_bytes()));
+    let text_hash: String = Sha256::digest(text.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect();
     if receipt["deliveryId"] != packet["deliveryId"]
         || receipt["textSha256"].as_str() != Some(text_hash.as_str())
     {
@@ -133,9 +140,10 @@ mod tests {
         assert!(ensure_legacy_wake_safe(&instance, "configured wake").is_ok());
     }
 
+    #[cfg(target_os = "linux")]
     #[tokio::test]
     #[serial_test::serial]
-    async fn automated_native_delivery_preserves_source_identity_shared_journal_and_actual_receipt_kind(
+    async fn automated_native_delivery_keeps_identity_and_archived_or_trashed_sessions_take_no_input(
     ) {
         let temp = tempfile::tempdir().unwrap();
         let _app = crate::session::test_support::isolate_app_dir_at(temp.path());
@@ -164,6 +172,7 @@ assert.equal(path.basename(value('--sessions-file')),'sessions.json');
 const packet=JSON.parse(fs.readFileSync(0,'utf8'));
 assert.equal(packet.deliveryId,'source:123');
 assert.equal(packet.threadId,'11111111-1111-4111-8111-111111111111');
+assert.equal(require('node:child_process').spawnSync('flock',['-n',path.join(path.dirname(value('--sessions-file')),`.instance-lifecycle-${packet.sessionId}.lock`),'true']).status,1,'lifecycle lock must remain held through native acceptance');
 console.log(JSON.stringify({deliveryId:packet.text==='invalid-receipt'?'wrong-source':packet.deliveryId,
   textSha256:require('node:crypto').createHash('sha256').update(packet.text).digest('hex'),
   disposition:packet.text==='recorded'?'recorded':'queued'}));
@@ -176,6 +185,13 @@ console.log(JSON.stringify({deliveryId:packet.text==='invalid-receipt'?'wrong-so
         instance.tool = "codex".into();
         instance.source_profile = profile.into();
         instance.agent_session_id = Some("11111111-1111-4111-8111-111111111111".into());
+        let storage = super::super::Storage::new_unwatched(profile).unwrap();
+        storage
+            .update(|rows, _| {
+                rows.push(instance.clone());
+                Ok(())
+            })
+            .unwrap();
         assert_eq!(
             send(&instance, "queued", Some("source:123")).await.unwrap(),
             "queued"
@@ -189,6 +205,22 @@ console.log(JSON.stringify({deliveryId:packet.text==='invalid-receipt'?'wrong-so
         assert!(send(&instance, "invalid-receipt", Some("source:123"))
             .await
             .is_err());
+        for shelve in [Instance::archive as fn(&mut Instance), Instance::trash] {
+            storage
+                .update(|rows, _| {
+                    rows[0] = instance.clone();
+                    shelve(&mut rows[0]);
+                    Ok(())
+                })
+                .unwrap();
+            let error = send(&instance, "queued", Some("source:123"))
+                .await
+                .unwrap_err();
+            assert!(
+                error.to_string().contains("archived") || error.to_string().contains("trash"),
+                "{error:#}"
+            );
+        }
     }
 
     #[test]

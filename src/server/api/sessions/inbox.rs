@@ -416,6 +416,23 @@ pub async fn post_ask_answer(
         Ok(found) => found,
         Err(resp) => return resp,
     };
+    if !images.is_empty()
+        && crate::session::inbox::answer_targets(&instances, &id)
+            .iter()
+            .any(|target| {
+                instances
+                    .iter()
+                    .find(|instance| &instance.id == target)
+                    .is_some_and(crate::session::automated_delivery::is_native_codex)
+            })
+    {
+        release_claim(&state, &id, req.posted_at).await;
+        return api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "native_image_delivery_held",
+            "Native image delivery is held; retain the original image payload and source ID",
+        );
+    }
     let mut answered = Vec::new();
     let mut kept = Vec::new();
     for (i, target) in crate::session::inbox::answer_targets(&instances, &id)
@@ -628,6 +645,13 @@ pub async fn post_inbox_message(
             "The Inbox router is not a session",
         );
     };
+    if !images.is_empty() && crate::session::automated_delivery::is_native_codex(&inst) {
+        return api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "native_image_delivery_held",
+            "Native image delivery is held; retain the original image payload and source ID",
+        );
+    }
     let Ok((host_paths, paths)) = save_images(&inst, &images).await else {
         return api_error(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -1330,6 +1354,29 @@ mod tests {
             .ask
             .answered_at
             .is_some());
+    }
+
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn automated_native_image_message_is_held_instead_of_becoming_path_only_text() {
+        let _app = crate::session::test_support::isolate_app_dir();
+        let project = tempfile::tempdir().unwrap();
+        let mut router = Instance::new("synthetic", &project.path().to_string_lossy());
+        router.id = "1111111111111111".into();
+        router.tool = "codex".into();
+        let state = seeded(vec![router]);
+        std::fs::write(
+            crate::session::get_app_dir()
+                .unwrap()
+                .join(crate::session::inbox::ROUTER_FILE),
+            "1111111111111111\n",
+        )
+        .unwrap();
+        let request = serde_json::from_value(serde_json::json!({"text":"synthetic image", "delivery_id":"synthetic:image:1", "images":[{"data":PNG}]})).unwrap();
+        let (status, value) = body(post_inbox_message(State(state), Json(request)).await).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(value["error"], "native_image_delivery_held");
+        assert!(!project.path().join(".aoe-pasted-images").exists());
     }
 
     const PNG: &str = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
