@@ -20,6 +20,6 @@ The tool emits only receipt metadata and hashes. It never prints message bodies,
 
 ## Evidence and limits
 
-On 2026-11-09, one successful central ranking action was pasted into the unfinished human draft `how is the outreachc `, then concurrent typing appended `go` before Enter. This is a composer race, not a proven duplicate ranking send. Synthetic editor tests reproduce that symptom with the old tmux primitive and verify the native queue leaves drafts and concurrent typing untouched.
+A successful background message can be pasted into an unfinished human question, with further human typing appended before Enter. This is a composer race, independent of whether the background message is a duplicate. Synthetic editor tests reproduce that symptom with the old tmux primitive and verify the native queue leaves drafts and concurrent typing untouched.
 
 Protocol evidence: the installed Codex 0.162.1 generated schema and upstream [thread queue processor](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/app-server/src/request_processors/thread_queue_processor.rs), [queue service](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/ext/queue/src/service.rs) and [queue storage](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/state/src/runtime/queued_items.rs). Unloaded persisted root threads may accept queue items; existing native queue watchers discover external changes. That is not proof of when a particular message will execute, and no real model message is sent during verification.

@@ -42,11 +42,11 @@ async function editor(root){
 }
 test('an automated message never submits or merges a human draft while the human keeps typing',async()=>{
  const f=await fixture();const e=await editor(f.root);
- try {e.send('how is the outreachc ');await new Promise(r=>setTimeout(r,20));
-  if(process.env.AOE_TEST_OLD_TRANSPORT==='1') {e.send(f.packet.text);e.send('go');execFileSync('tmux',['-S',e.sock,'send-keys','-t','qa-editor','Enter']);}
-  else {const deliver=implementation().deliver;await Promise.all([deliver(f.packet,f.options),(async()=>{e.send('go');})()]);}
+ try {e.send('What is the status of ');await new Promise(r=>setTimeout(r,20));
+  if(process.env.AOE_TEST_OLD_TRANSPORT==='1') {e.send(f.packet.text);e.send('this work?');execFileSync('tmux',['-S',e.sock,'send-keys','-t','qa-editor','Enter']);}
+  else {const deliver=implementation().deliver;await Promise.all([deliver(f.packet,f.options),(async()=>{e.send('this work?');})()]);}
   await new Promise(r=>setTimeout(r,30));
-  assert.deepEqual(e.read(),{draft:'how is the outreachc go',submitted:[]});assert.equal(f.adds,1);
+  assert.deepEqual(e.read(),{draft:'What is the status of this work?',submitted:[]});assert.equal(f.adds,1);
  } finally {e.close();await f.close();}
 });
 test('empty and busy editors use the same queue without terminal input',async()=>{
