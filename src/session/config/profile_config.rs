@@ -778,22 +778,22 @@ mod tests {
     fn profile_read_batch_reuses_snapshot_and_releases_it_after_unwind() {
         let _guard = crate::session::test_support::isolate_app_dir();
         let mut profile = ProfileConfig::default();
-        set_leaf(&mut profile, "theme", "name", json!("rose-pine"));
+        set_leaf(&mut profile, "worktree", "enabled", json!(true));
         save_profile_config("batch", &profile).unwrap();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             with_profile_read_batch(|| {
-                assert_eq!(resolve_config("batch").unwrap().theme.name, "rose-pine");
-                set_leaf(&mut profile, "theme", "name", json!("nord"));
+                assert!(resolve_config("batch").unwrap().worktree.enabled);
+                set_leaf(&mut profile, "worktree", "enabled", json!(false));
                 save_profile_config("batch", &profile).unwrap();
-                assert_eq!(resolve_config("batch").unwrap().theme.name, "rose-pine");
+                assert!(resolve_config("batch").unwrap().worktree.enabled);
                 panic!("exercise batch cleanup");
             })
         }));
         assert!(result.is_err());
         with_profile_read_batch(|| {
-            assert_eq!(resolve_config("batch").unwrap().theme.name, "nord");
+            assert!(!resolve_config("batch").unwrap().worktree.enabled);
         });
-        assert_eq!(resolve_config("batch").unwrap().theme.name, "nord");
+        assert!(!resolve_config("batch").unwrap().worktree.enabled);
     }
 
     fn set_leaf(profile: &mut ProfileConfig, section: &str, field: &str, value: serde_json::Value) {
