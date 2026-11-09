@@ -1,0 +1,9 @@
+# AoE dashboard latency observation, 2026-11-09
+
+Observed on aoe-cloud using the existing authenticated session and device binding. Requests targeted the local production daemon at `127.0.0.1:8082`; no new session was created.
+
+Before repair, a loaded `/api/sessions` response contained about 969 rows and 1.4 MB and took 4.2 to 7.0 seconds. An idle comparison immediately before deployment on the previous binary took 0.127 to 0.165 seconds for the full list. The first candidate omitted a separate live profile-read optimization and regressed to 0.58 to 0.81 seconds; it was rolled back. The final build combines that live baseline with this dashboard change. After warm-up its full-list reads took 0.074 to 0.113 seconds (five sequential requests); live-only reads took 0.017 to 0.029 seconds, trash-only 0.031 to 0.051 seconds, and recent-project records 0.009 seconds. These measurements describe the server endpoint, not a loaded browser page under the earlier host pressure.
+
+A headless Chrome visit to the live dashboard loaded the session list once. Opening New session and then Project showed Recent projects, including their session counts, without another full-list request. No session was launched. The browser was driven through the production service with the existing authenticated cookie and device binding.
+
+The web build, 4,066 web unit tests, web lint, formatting, and coverage-matrix validation passed. Dashboard-specific Rust tests passed, including a mutation check that fails when trash-row enrichment is restored. A full Rust library run produced 4,289 passes and 31 unrelated host path-trust/passkey failures; those were not attributed to this change. The final merged build passed compilation and Rust formatting, but the full Rust suite was not rerun after merging the separately tested live baseline.
