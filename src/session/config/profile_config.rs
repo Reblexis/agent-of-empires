@@ -173,8 +173,34 @@ pub fn apply_cityhall_overrides(config: &mut Config) {
     config.worktree.enabled = true;
 }
 
+thread_local! {
+    static READ_BATCH: std::cell::RefCell<Option<std::collections::HashMap<String, Config>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Reuse profile reads within a synchronous read-only projection. The cache is
+/// discarded on return, including unwinding, so the next request sees edits.
+pub(crate) fn with_profile_read_batch<R>(f: impl FnOnce() -> R) -> R {
+    struct Restore(Option<std::collections::HashMap<String, Config>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            READ_BATCH.with(|cache| *cache.borrow_mut() = self.0.take());
+        }
+    }
+    let _restore = Restore(READ_BATCH.with(|cache| cache.replace(Some(Default::default()))));
+    f()
+}
+
 /// Load effective config for a profile (global + profile overrides merged)
 pub fn resolve_config(profile: &str) -> Result<Config> {
+    if let Some(config) = READ_BATCH.with(|cache| {
+        cache
+            .borrow()
+            .as_ref()
+            .and_then(|entries| entries.get(profile).cloned())
+    }) {
+        return Ok(config);
+    }
     let global = Config::load()?;
     let profile_config = load_profile_config(profile)?;
     let mut config = merge_configs(global, &profile_config);
@@ -184,6 +210,11 @@ pub fn resolve_config(profile: &str) -> Result<Config> {
     // which every polling surface passes through at startup, is where
     // `[[agents.<name>.status_rules]]` edits become visible.
     crate::tmux::status_rules::install_from_config(profile, &config);
+    READ_BATCH.with(|cache| {
+        if let Some(entries) = cache.borrow_mut().as_mut() {
+            entries.insert(profile.to_string(), config.clone());
+        }
+    });
     Ok(config)
 }
 
@@ -742,6 +773,29 @@ mod tests {
         assert!(!config.session.confirm_before_quit);
         assert_eq!(config.theme.name, "rose-pine");
     }
+    #[test]
+    #[serial_test::serial]
+    fn profile_read_batch_reuses_snapshot_and_releases_it_after_unwind() {
+        let _guard = crate::session::test_support::isolate_app_dir();
+        let mut profile = ProfileConfig::default();
+        set_leaf(&mut profile, "theme", "name", json!("rose-pine"));
+        save_profile_config("batch", &profile).unwrap();
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            with_profile_read_batch(|| {
+                assert_eq!(resolve_config("batch").unwrap().theme.name, "rose-pine");
+                set_leaf(&mut profile, "theme", "name", json!("nord"));
+                save_profile_config("batch", &profile).unwrap();
+                assert_eq!(resolve_config("batch").unwrap().theme.name, "rose-pine");
+                panic!("exercise batch cleanup");
+            })
+        }));
+        assert!(result.is_err());
+        with_profile_read_batch(|| {
+            assert_eq!(resolve_config("batch").unwrap().theme.name, "nord");
+        });
+        assert_eq!(resolve_config("batch").unwrap().theme.name, "nord");
+    }
+
     fn set_leaf(profile: &mut ProfileConfig, section: &str, field: &str, value: serde_json::Value) {
         profile
             .overrides
