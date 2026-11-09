@@ -71,3 +71,20 @@ test('bad identity, archived owner, unavailable socket and invalid input never t
 test('the existing user-owned Codex control-socket symlink needs no daemon startup',async()=>{
  const f=await fixture();try {const original=path.join(f.store,'app-server-control','app-server-control.sock'),target=path.join(f.root,'existing.sock');fs.renameSync(original,target);fs.symlinkSync(target,original);const r=await implementation().check(sessionsId,f.options);assert.equal(r.nativeStoreVerified,true);assert.equal(r.sends,0);assert.equal(f.adds,0);}finally{await f.close();}
 });
+
+test('concurrent callers with one original ID queue once and stale locks preserve the instruction',async()=>{
+ const f=await fixture();try {
+  const {deliver}=implementation();const results=await Promise.allSettled([deliver(f.packet,f.options),deliver(f.packet,f.options)]);
+  assert.equal(results.filter(r=>r.status==='fulfilled').length,1);assert.equal(f.adds,1);
+  const crypto=require('node:crypto');const p={...f.packet,deliveryId:'stale-owner'};
+  const lock=path.join(f.options.stateDir,crypto.createHash('sha256').update(p.deliveryId).digest('hex')+'.json.lock');fs.writeFileSync(lock,'retained');
+  await assert.rejects(deliver(p,f.options),/locked/);assert.equal(f.adds,1);assert.equal(fs.readFileSync(lock,'utf8'),'retained');
+ }finally{await f.close();}
+});
+test('no native submission is allowed without a durable journal and pre-send failures are safely retryable',async()=>{
+ const f=await fixture();const original=fs.fsyncSync;
+ try {fs.fsyncSync=()=>{const e=Error('disk full');e.code='ENOSPC';throw e;};await assert.rejects(implementation().deliver(f.packet,f.options),/disk full/);assert.equal(f.adds,0);
+  fs.fsyncSync=original;await implementation().deliver(f.packet,f.options);assert.equal(f.adds,1);
+  const unavailable={...f.options,store:path.join(f.root,'missing-store')};fs.mkdirSync(unavailable.store);await assert.rejects(implementation().deliver({...f.packet,deliveryId:'missing-socket'},unavailable));assert.equal(f.adds,1);
+ }finally{fs.fsyncSync=original;await f.close();}
+});
