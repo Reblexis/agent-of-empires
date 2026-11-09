@@ -2594,6 +2594,8 @@ function AppContent({
             }}
             prefill={wizardPrefill}
             nameOnly={caps.nameOnlyWizard}
+            sessions={sessions}
+            sessionsLoaded={sessionsLoaded}
           />
         )}
 

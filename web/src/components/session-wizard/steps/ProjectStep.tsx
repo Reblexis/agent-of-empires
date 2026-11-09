@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { AgentInfo, ImportableSession, ProjectOverrides } from "../../../lib/types";
+import type { AgentInfo, ImportableSession, ProjectOverrides, SessionResponse } from "../../../lib/types";
 import { DirectoryBrowser } from "../../DirectoryBrowser";
 import { ImportSessionPicker } from "./ImportSessionPicker";
 import { ProjectSearchList } from "./ProjectSearchList";
@@ -15,6 +15,7 @@ interface Props {
   initialTab?: Tab;
   /** Only used to offer agents on the import tab. */
   agents?: AgentInfo[];
+  sessions?: SessionResponse[];
   /** Called on every path selection with the saved project's overrides, `undefined` when the path is
    *  unregistered or has none, or `null` when the registry could not be loaded (unknown). */
   onSelectSavedProject?: (overrides: ProjectOverrides | undefined | null, path: string) => void;
@@ -23,11 +24,19 @@ interface Props {
 }
 
 /** The wizard's project panel: recent and saved projects, browse, clone, import, or scratch. */
-export function ProjectStep({ data, onChange, initialTab, agents = [], onSelectSavedProject, onPicked }: Props) {
+export function ProjectStep({
+  data,
+  onChange,
+  initialTab,
+  agents = [],
+  sessions,
+  onSelectSavedProject,
+  onPicked,
+}: Props) {
   // Until a tab is picked, show Recent while loading or when there are picks, else Browse.
   const [manualTab, setManualTab] = useState<Tab | null>(initialTab ?? (data.scratch ? "scratch" : null));
   const { loading, registryAvailable, saved, query, setQuery, filteredSaved, filteredRecent, hasPicks } =
-    useProjectPicker([], data.profile || undefined);
+    useProjectPicker([], data.profile || undefined, sessions);
   const activeTab: Tab = manualTab ?? (!loading && !hasPicks ? "browse" : "recent");
 
   const normalizePath = (p: string) => p.replace(/\/+$/, "") || "/";

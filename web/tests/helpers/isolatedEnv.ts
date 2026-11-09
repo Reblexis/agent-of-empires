@@ -24,6 +24,8 @@ export const HOST_STATE_VARS = new Set([
   "AGENT_OF_EMPIRES_PROFILE",
   "AOE_ACP_AGENT_ENV", // the daemon -> runner env carrier, decoded into agents
   "AOE_ACP_NODE", // an arbitrary host Node executable for the ACP runner
+  "AOE_CODEX_QUEUE_HELPER", // host native delivery executable
+  "AOE_CODEX_WS_MODULE", // host native delivery WebSocket module
   "AOE_CITYHALL_MODE", // serves the daemon as a client of a host CityHall
   // Would skip the v027 sandbox store migration.
   "AOE_DEFER_SANDBOX_MIGRATION",

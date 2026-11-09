@@ -163,9 +163,30 @@ interface Props {
   prefill?: WizardPrefill;
   /** CityHall client mode: only a title is asked; the server derives the rest. */
   nameOnly?: boolean;
+  sessions?: SessionResponse[];
+  sessionsLoaded?: boolean;
 }
 
-export function SessionWizard({ onClose, onCreated, onCreatedInBackground, prefill, nameOnly = false }: Props) {
+export function SessionWizard({
+  onClose,
+  onCreated,
+  onCreatedInBackground,
+  prefill,
+  nameOnly = false,
+  sessions,
+  sessionsLoaded,
+}: Props) {
+  const [sessionSnapshot, setSessionSnapshot] = useState(sessions);
+  const awaitingFirstList = useRef(sessionsLoaded === false);
+  // The wizard captures a mount-time list, except when it opened before the first list arrived.
+  /* eslint-disable react-you-might-not-need-an-effect/no-event-handler, react-you-might-not-need-an-effect/no-derived-state */
+  useEffect(() => {
+    if (awaitingFirstList.current && sessionsLoaded) {
+      setSessionSnapshot(sessions);
+      awaitingFirstList.current = false;
+    }
+  }, [sessions, sessionsLoaded]);
+  /* eslint-enable react-you-might-not-need-an-effect/no-event-handler, react-you-might-not-need-an-effect/no-derived-state */
   const [state, dispatch] = useReducer(reducer, {
     data: initialWizardData(prefill, nameOnly),
     isSubmitting: false,
@@ -577,6 +598,7 @@ export function SessionWizard({ onClose, onCreated, onCreatedInBackground, prefi
             onChange={handleChange}
             initialTab={prefill?.initialTab}
             agents={state.agents}
+            sessions={sessionSnapshot}
             onSelectSavedProject={(overrides, path) => {
               const key = normalizeProjectPathKey(path);
               if (overrides === null) {
@@ -606,6 +628,7 @@ export function SessionWizard({ onClose, onCreated, onCreatedInBackground, prefi
             repoBases={d.repoBases}
             onRepoBasesChange={(bases) => handleChange("repoBases", bases)}
             basesEnabled={d.useWorktree && !d.attachExisting}
+            sessions={sessionSnapshot}
           />
         );
       case "profile":

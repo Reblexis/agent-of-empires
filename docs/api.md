@@ -40,6 +40,8 @@ Background daemon maintenance can recover missing native session IDs from valida
 
 Lists sessions, including trashed and archived ones. Pass `state` to filter server-side: `live` excludes trashed and archived sessions, `trashed` returns only trashed ones, and `all` (the default) filters nothing. An unrecognized value is rejected with `400` rather than ignored.
 
+A session-list read preserves ordering without rewriting the ordering file when no new workspace appears. Trashed rows retain their identity and restore information but do not require per-session configuration or repository enrichment on each read.
+
 ```bash
 curl -sS -H "Authorization: Bearer $AOE_TOKEN" \
   "http://localhost:7777/api/sessions?state=live"

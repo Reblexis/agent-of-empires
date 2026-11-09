@@ -29,6 +29,8 @@ const NON_SUFFIX_HOST_STATE: Record<string, string> = {
   INVOCATION_ID: "host-invocation",
   AOE_ACP_AGENT_ENV: '[["ANTHROPIC_API_KEY","host-key"]]',
   AOE_ACP_NODE: `${HOST}/.nvm/versions/node/v22.0.0/bin/node`,
+  AOE_CODEX_QUEUE_HELPER: `${HOST}/native/codex-queue-send.cjs`,
+  AOE_CODEX_WS_MODULE: `${HOST}/native/ws/index.js`,
   AOE_CAPTURED_SESSION_ID: "host-captured",
   AOE_CITYHALL_BUNDLE_TOKEN: "host-bundle-token",
   AOE_CITYHALL_BUNDLE_URL: "https://host.invalid/bundle",

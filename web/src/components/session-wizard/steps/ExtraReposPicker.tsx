@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useBranchSuggestions } from "./branchSuggestions";
 import { ProjectSearchList } from "./ProjectSearchList";
 import { useProjectPicker } from "./projectPicker";
+import type { SessionResponse } from "../../../lib/types";
 
 interface Props {
   primaryPath: string;
@@ -12,6 +13,7 @@ interface Props {
   onRepoBasesChange: (bases: Record<string, string>) => void;
   /** False when attaching to an existing branch. */
   basesEnabled: boolean;
+  sessions?: SessionResponse[];
 }
 
 /** Base-branch typeahead listing branches from this repo's own path; free text is accepted. */
@@ -76,13 +78,16 @@ export function ExtraReposPicker({
   repoBases,
   onRepoBasesChange,
   basesEnabled,
+  sessions,
 }: Props) {
   const [freeText, setFreeText] = useState("");
 
   // The builder rejects duplicate repo names.
-  const { loading, saved, recent, query, setQuery, filteredSaved, filteredRecent, hasAnyProjects } = useProjectPicker([
-    primaryPath,
-  ]);
+  const { loading, saved, recent, query, setQuery, filteredSaved, filteredRecent, hasAnyProjects } = useProjectPicker(
+    [primaryPath],
+    undefined,
+    sessions,
+  );
 
   const setRepoBase = (path: string, base: string) => {
     const next = { ...repoBases };

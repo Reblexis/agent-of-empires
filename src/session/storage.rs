@@ -1752,8 +1752,12 @@ where
     let app_dir = get_app_dir()?;
     let _flock = acquire_storage_flock(&app_dir, WORKSPACE_LOCK_FILENAME)?;
     let mut ordering = load_workspace_ordering()?;
+    let prior_order = ordering.order.clone();
+    let path_exists = workspace_ordering_path()?.exists();
     let result = f(&mut ordering)?;
-    save_workspace_ordering(&ordering)?;
+    if !path_exists || ordering.order != prior_order {
+        save_workspace_ordering(&ordering)?;
+    }
     Ok(result)
 }
 

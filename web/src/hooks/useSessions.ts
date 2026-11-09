@@ -14,7 +14,7 @@ export function useSessions() {
   const [loaded, setLoaded] = useState(false);
   const [appliedRead, setAppliedRead] = useState(0);
   const lastReadRef = useRef(0);
-  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastLocalOrderingAtRef = useRef<number>(0);
 
   const injectSession = useCallback((session: SessionResponse) => {
@@ -55,14 +55,21 @@ export function useSessions() {
   }, [appliedRead]);
 
   useEffect(() => {
+    let cancelled = false;
     const poll = () => {
       const read = beginRead();
-      void fetchSessions().then((data) => applyResult(data, read));
+      void fetchSessions()
+        .then((data) => {
+          if (!cancelled) applyResult(data, read);
+        })
+        .finally(() => {
+          if (!cancelled) timeoutRef.current = setTimeout(poll, POLL_INTERVAL);
+        });
     };
     poll();
-    intervalRef.current = setInterval(poll, POLL_INTERVAL);
     return () => {
-      if (intervalRef.current) clearInterval(intervalRef.current);
+      cancelled = true;
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
     };
   }, [applyResult]);
 

@@ -55,6 +55,9 @@ Choosing a profile (the **Profile** row, shown when there is more than one) seed
 
 A plain New session opens on the project you launched last; pick another from Recent or Browse to change it.
 
+Opening the project picker uses the session snapshot already loaded by the dashboard; saved projects and projects retained after their last session was deleted come from their own current records. The picker does not wait for another full session-list request. If it opens before the first dashboard list completes, session-derived recent projects appear when that list arrives.
+The dashboard starts its next session-list poll only after the previous poll completes, so a slow server cannot build a queue of duplicate requests.
+
 ## Command palette
 
 The palette (top-bar button or keyboard shortcut) is a fuzzy launcher for global actions: jump to a session, open settings, start a session, toggle the right panel.

@@ -22,6 +22,10 @@ pub async fn get_recent_projects() -> Json<RecentProjectsResponse> {
     Json(RecentProjectsResponse { projects })
 }
 
+fn needs_session_enrichment(inst: &Instance) -> bool {
+    !inst.is_trashed()
+}
+
 pub async fn list_sessions(
     State(state): State<Arc<AppState>>,
     axum::extract::Query(query): axum::extract::Query<ListSessionsQuery>,
@@ -179,7 +183,7 @@ pub(crate) async fn list_sessions_envelope(
     // constructor. Distinct `(profile, project_path)` pairs resolve once via
     // the shared cache.
     for (resp, inst) in sessions.iter_mut().zip(scoped_instances.iter().copied()) {
-        if resp.acp_capable {
+        if resp.acp_capable || !needs_session_enrichment(inst) {
             continue;
         }
         let cfg = session_cfg_cache.resolve(&inst.source_profile, &inst.project_path);
@@ -227,7 +231,7 @@ pub(crate) async fn list_sessions_envelope(
         use std::collections::HashMap;
         let mut tie_cache: HashMap<String, bool> = HashMap::new();
         for session in &mut sessions {
-            if !session.has_managed_worktree {
+            if !session.has_managed_worktree || session.trashed_at.is_some() {
                 continue;
             }
             let tied = *tie_cache.entry(session.profile.clone()).or_insert_with(|| {
@@ -277,6 +281,9 @@ pub(crate) async fn list_sessions_envelope(
             .unwrap_or_default();
         for (resp, inst) in sessions.iter_mut().zip(scoped_instances.iter().copied()) {
             resp.default_name = crate::session::civilizations::is_default_civ_name(&inst.title);
+            if !needs_session_enrichment(inst) {
+                continue;
+            }
             if inflight.contains(&inst.id) {
                 resp.smart_rename = SmartRenameState::Running;
                 continue;
@@ -369,6 +376,9 @@ pub(crate) async fn list_sessions_envelope(
             if let Some(defaults) = defaults_map.get(&session.profile) {
                 session.cleanup_defaults = defaults.clone();
             }
+            if session.trashed_at.is_some() {
+                continue;
+            }
             let repo_path = session
                 .main_repo_path
                 .as_deref()
@@ -383,7 +393,7 @@ pub(crate) async fn list_sessions_envelope(
     // Fill any uncached repo paths
     let uncached: Vec<String> = sessions
         .iter()
-        .filter(|s| s.remote_owner.is_none())
+        .filter(|s| s.remote_owner.is_none() && s.trashed_at.is_none())
         .map(|s| {
             s.main_repo_path
                 .clone()
@@ -402,6 +412,9 @@ pub(crate) async fn list_sessions_envelope(
             }
         }
         for session in &mut sessions {
+            if session.trashed_at.is_some() {
+                continue;
+            }
             let repo_path = session
                 .main_repo_path
                 .as_deref()
@@ -704,6 +717,15 @@ mod workspace_ordering_tests {
     }
 
     #[test]
+    fn trashed_sessions_skip_per_session_list_enrichment() {
+        let live = Instance::new("live", "/tmp/repo");
+        let mut trashed = Instance::new("trash", "/tmp/repo");
+        trashed.trash();
+        assert!(needs_session_enrichment(&live));
+        assert!(!needs_session_enrichment(&trashed));
+    }
+
+    #[test]
     fn workspace_id_keys_on_repo_and_branch() {
         let mut worktree = mock_response("s1", "/tmp/worktree", Some("main"));
         worktree.main_repo_path = Some("/tmp/repo".to_string());
@@ -761,6 +783,25 @@ mod workspace_ordering_tests {
         let on_disk = crate::session::load_workspace_ordering()?;
         assert_eq!(on_disk.order, merged);
 
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn unchanged_session_list_does_not_rewrite_workspace_ordering() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        let _guard = setup_test_home(temp.path());
+        let sessions = vec![mock_response("sa", "/tmp/repo", Some("a"))];
+        merge_workspace_ordering(&sessions, false)?;
+        let path = crate::session::get_app_dir()?.join("workspace-ordering.json");
+        let before = std::fs::metadata(&path)?.modified()?;
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        merge_workspace_ordering(&sessions, false)?;
+        let after = std::fs::metadata(&path)?.modified()?;
+        assert_eq!(
+            before, after,
+            "unchanged list polling must not rewrite ordering"
+        );
         Ok(())
     }
 

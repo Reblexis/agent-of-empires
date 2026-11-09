@@ -582,9 +582,11 @@ async fn list_sessions_shares_config_resolution_across_overlays() {
     let a = mk("default", "/tmp/repo-a-2603");
     let a2 = mk("default", "/tmp/repo-a-2603");
     let b = mk("default", "/tmp/repo-b-2603");
+    let mut trashed = mk("default", "/tmp/repo-trashed-2603");
+    trashed.trash();
 
     // The counter lives on this state, so no concurrent test can bump it.
-    let state = crate::server::test_support::build_test_app_state(vec![a, a2, b]);
+    let state = crate::server::test_support::build_test_app_state(vec![a, a2, b, trashed]);
 
     let _envelope = list_sessions(
         axum::extract::State(state.clone()),
@@ -595,7 +597,7 @@ async fn list_sessions_shares_config_resolution_across_overlays() {
 
     assert_eq!(
         misses, 2,
-        "shared cache must resolve once per unique (profile, project_path) across both overlays; got {misses}",
+        "list polling must skip trashed config and resolve once per live profile/project pair; got {misses}",
     );
 }
 

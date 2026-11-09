@@ -61,7 +61,8 @@ impl SessionResponse {
             base_branch_override: inst.base_branch_override.clone(),
             is_sandboxed: inst.is_sandboxed(),
             // Worktree and workspace creation refuse a path that is not a Repository.
-            outside_repository: inst.worktree_info.is_none()
+            outside_repository: !inst.is_trashed()
+                && inst.worktree_info.is_none()
                 && inst.workspace_info.is_none()
                 && outside_repository_cached(&inst.project_path),
             scratch: inst.scratch,
@@ -192,6 +193,19 @@ impl SessionResponse {
             monitor_active,
             monitor_description,
         }
+    }
+}
+
+#[cfg(test)]
+mod list_projection_performance_tests {
+    use super::*;
+
+    #[test]
+    fn trashed_session_does_not_probe_repository_presence() {
+        let mut inst = Instance::new("trash", "/nonexistent/aoe-test-repo");
+        inst.trash();
+        let row = SessionResponse::from_instance(&inst, false);
+        assert!(!row.outside_repository);
     }
 }
 

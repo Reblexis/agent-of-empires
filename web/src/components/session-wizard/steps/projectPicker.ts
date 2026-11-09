@@ -76,7 +76,7 @@ export function splitSavedAndRecent(
 }
 
 /** Saved and recent project lists with search, shared by ProjectStep and ExtraReposPicker. */
-export function useProjectPicker(excludePaths: string[] = [], profile?: string) {
+export function useProjectPicker(excludePaths: string[] = [], profile?: string, sessions?: SessionResponse[]) {
   const [recent, setRecent] = useState<RecentProject[]>([]);
   const [saved, setSaved] = useState<ProjectInfo[]>([]);
   // The profile the lists were loaded for, so a profile change reads as loading, not as stale data.
@@ -88,22 +88,24 @@ export function useProjectPicker(excludePaths: string[] = [], profile?: string) 
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([fetchSessions(), fetchRecentProjects(), fetchProjectRegistry(undefined, profile)]).then(
-      ([envelope, recentEnvelope, savedProjects]) => {
-        if (cancelled) return;
-        const sessionDerived = envelope ? collectRecentProjects(envelope.sessions) : [];
-        const merged = mergeRecentProjects(sessionDerived, recentEnvelope?.projects ?? []);
-        const split = splitSavedAndRecent(savedProjects ?? [], merged);
-        setSaved(split.saved);
-        setRecent(split.recent);
-        setRegistryAvailable(savedProjects !== null);
-        setLoadedFor({ profile });
-      },
-    );
+    Promise.all([
+      sessions ? Promise.resolve({ sessions }) : fetchSessions(),
+      fetchRecentProjects(),
+      fetchProjectRegistry(undefined, profile),
+    ]).then(([envelope, recentEnvelope, savedProjects]) => {
+      if (cancelled) return;
+      const sessionDerived = envelope ? collectRecentProjects(envelope.sessions) : [];
+      const merged = mergeRecentProjects(sessionDerived, recentEnvelope?.projects ?? []);
+      const split = splitSavedAndRecent(savedProjects ?? [], merged);
+      setSaved(split.saved);
+      setRecent(split.recent);
+      setRegistryAvailable(savedProjects !== null);
+      setLoadedFor({ profile });
+    });
     return () => {
       cancelled = true;
     };
-  }, [profile]);
+  }, [profile, sessions]);
 
   const excluded = useMemo(() => new Set(excludePaths.map(normalizePath)), [excludePaths]);
   const visibleSaved = useMemo(() => saved.filter((s) => !excluded.has(normalizePath(s.path))), [saved, excluded]);

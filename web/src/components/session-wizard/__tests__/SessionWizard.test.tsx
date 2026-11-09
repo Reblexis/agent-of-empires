@@ -12,8 +12,9 @@ import {
   fetchIsGitRepo,
   fetchProfiles,
   fetchSettings,
+  fetchSessions,
 } from "../../../lib/api";
-import { agent } from "./fixtures";
+import { agent, mockSession } from "./fixtures";
 import { toastBus } from "../../../lib/toastBus";
 import { startPendingCreates } from "../../../lib/pendingCreates";
 
@@ -76,6 +77,20 @@ const launch = async () => {
   fireEvent.click(button);
 };
 const payload = (call = 0) => createSession.mock.calls[call]![0];
+
+describe("SessionWizard initial session-list arrival", () => {
+  it("shows recent projects after a slow first dashboard list without refetching the list", async () => {
+    const onClose = vi.fn();
+    const onCreated = vi.fn();
+    const props = { onClose, onCreated, prefill: { path: "" } };
+    const { rerender } = render(<SessionWizard {...props} sessions={[]} sessionsLoaded={false} />);
+    rerender(
+      <SessionWizard {...props} sessions={[mockSession({ project_path: "/repo/quick" })]} sessionsLoaded={true} />,
+    );
+    expect(await screen.findByText("quick")).toBeTruthy();
+    expect(fetchSessions).not.toHaveBeenCalled();
+  });
+});
 
 describe("SessionWizard structured view payload", () => {
   it.each([

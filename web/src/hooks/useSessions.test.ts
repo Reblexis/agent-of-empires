@@ -37,27 +37,24 @@ describe("useSessions / loaded sentinel", () => {
   );
 });
 
-describe("useSessions / out-of-order responses", () => {
+describe("useSessions / slow session-list polling", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
-  it("ignores a response from an older poll after a newer one applied", async () => {
+  it("does not overlap session-list requests when the server is slower than the poll interval", async () => {
     vi.useFakeTimers();
     const resolvers: ((value: api.SessionsEnvelope | null) => void)[] = [];
-    vi.spyOn(api, "fetchSessions").mockImplementation(() => new Promise((r) => resolvers.push(r)));
-    const envelope = (id: string): api.SessionsEnvelope => ({
-      sessions: [{ id } as SessionResponse],
-      workspace_ordering: [],
-    });
-
+    const fetch = vi.spyOn(api, "fetchSessions").mockImplementation(() => new Promise((r) => resolvers.push(r)));
     const { result } = renderHook(() => useSessions());
-    await act(async () => void vi.advanceTimersByTime(3000));
-    expect(resolvers).toHaveLength(2);
 
-    await act(async () => resolvers[1]!(envelope("new")));
-    await act(async () => resolvers[0]!(envelope("old")));
-    expect(result.current.sessions.map((s) => s.id)).toEqual(["new"]);
+    await act(async () => void vi.advanceTimersByTime(9000));
+    expect(fetch).toHaveBeenCalledTimes(1);
+
+    await act(async () => resolvers[0]!({ sessions: [{ id: "latest" } as SessionResponse], workspace_ordering: [] }));
+    expect(result.current.sessions.map((s) => s.id)).toEqual(["latest"]);
+    await act(async () => void vi.advanceTimersByTime(3000));
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 });

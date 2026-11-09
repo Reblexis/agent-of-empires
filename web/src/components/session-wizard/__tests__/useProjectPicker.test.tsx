@@ -5,6 +5,8 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 
 import { useProjectPicker } from "../steps/projectPicker";
 import type { ProjectInfo } from "../../../lib/types";
+import { fetchSessions } from "../../../lib/api";
+import { mockSession } from "./fixtures";
 
 const fetchProjectRegistry = vi.fn();
 
@@ -19,6 +21,18 @@ const project = (name: string): ProjectInfo => ({ name, path: `/repo/${name}`, s
 describe("useProjectPicker profile", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(fetchSessions).mockResolvedValue({ sessions: [], workspace_ordering: [] });
+  });
+
+  it("new-session project choices do not wait for another full session-list request", async () => {
+    vi.mocked(fetchSessions).mockImplementation(() => new Promise(() => {}));
+    fetchProjectRegistry.mockResolvedValue([]);
+    const { result } = renderHook(() =>
+      useProjectPicker([], undefined, [mockSession({ project_path: "/repo/quick" })]),
+    );
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(result.current.recent.map((p) => p.path)).toContain("/repo/quick");
+    expect(fetchSessions).not.toHaveBeenCalled();
   });
 
   it("reports loading, not the previous profile's projects, until the new profile's list lands", async () => {

@@ -1337,6 +1337,29 @@
       ]
     },
     {
+      "id": "dashboard.session-list-polls-do-not-overlap",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/hooks/useSessions.test.ts"],
+      "components": ["web/src/hooks/useSessions.ts"]
+    },
+    {
+      "id": "wizard.project-picker-uses-loaded-sessions",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": [
+        "src/components/session-wizard/__tests__/useProjectPicker.test.tsx",
+        "src/components/session-wizard/__tests__/SessionWizard.test.tsx"
+      ],
+      "components": [
+        "web/src/App.tsx",
+        "web/src/components/session-wizard/SessionWizard.tsx",
+        "web/src/components/session-wizard/steps/ProjectStep.tsx",
+        "web/src/components/session-wizard/steps/ExtraReposPicker.tsx",
+        "web/src/components/session-wizard/steps/projectPicker.ts"
+      ]
+    },
+    {
       "id": "wizard.agent-lifecycle",
       "kind": "vitest",
       "risk": "low",
