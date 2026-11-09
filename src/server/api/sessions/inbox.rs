@@ -35,12 +35,31 @@ pub struct AnswerRequest {
 
 #[derive(Debug, serde::Deserialize)]
 pub struct MessageRequest {
+    #[serde(default, deserialize_with = "deserialize_expected_owner")]
+    pub expected_owner: Option<String>,
     #[serde(default)]
     pub delivery_id: Option<String>,
     #[serde(default)]
     pub text: String,
     #[serde(default)]
     pub images: Vec<MessageImage>,
+}
+
+fn deserialize_expected_owner<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let owner = <String as serde::Deserialize>::deserialize(deserializer)?;
+    if owner.len() != 16
+        || !owner
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(serde::de::Error::custom(
+            "expected_owner must be an exact 16 lowercase hexadecimal AoE session ID",
+        ));
+    }
+    Ok(Some(owner))
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -647,6 +666,20 @@ pub async fn post_inbox_message(
             );
         }
     };
+    if req
+        .expected_owner
+        .as_deref()
+        .is_some_and(|expected| expected != router)
+    {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": {
+                "code": "owner_mismatch",
+                "message": "Inbox router changed after owner binding; original delivery held"
+            }})),
+        )
+            .into_response();
+    }
     let Some(inst) = state
         .instances
         .read()
@@ -1376,6 +1409,34 @@ mod tests {
             .is_some());
     }
 
+    #[test]
+    fn a_provided_inbox_owner_pin_is_never_silently_ignored() {
+        for owner in [
+            serde_json::Value::Null,
+            7.into(),
+            "".into(),
+            "111111111111111".into(),
+            "11111111111111111".into(),
+            "AAAAAAAAAAAAAAAA".into(),
+            "../1111111111111".into(),
+        ] {
+            assert!(serde_json::from_value::<MessageRequest>(
+                serde_json::json!({"expected_owner": owner})
+            )
+            .is_err());
+        }
+        let request: MessageRequest =
+            serde_json::from_value(serde_json::json!({"expected_owner":"1111111111111111"}))
+                .unwrap();
+        assert_eq!(request.expected_owner.as_deref(), Some("1111111111111111"));
+        assert!(
+            serde_json::from_value::<MessageRequest>(serde_json::json!({}))
+                .unwrap()
+                .expected_owner
+                .is_none()
+        );
+    }
+
     #[tokio::test]
     #[serial_test::serial]
     async fn automated_native_images_remain_typed_and_original_attachments_survive_uncertain_delivery(
@@ -1422,6 +1483,17 @@ else console.log(JSON.stringify({deliveryId:p.deliveryId,textSha256:crypto.creat
             serde_json::from_value(serde_json::json!({"text":"synthetic image", "delivery_id":"synthetic:image:1", "images":[{"data":PNG}]})).unwrap()
         };
         std::fs::write(project.path().join("uncertain"), "fixture").unwrap();
+        let wrong_owner = serde_json::from_value(serde_json::json!({
+            "text":"synthetic pinned image", "delivery_id":"synthetic:owner:1",
+            "expected_owner":"2222222222222222", "images":[{"data":PNG}]
+        }))
+        .unwrap();
+        let (status, json) =
+            body(post_inbox_message(State(state.clone()), Json(wrong_owner)).await).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(json["error"]["code"], "owner_mismatch");
+        assert!(!project.path().join("packet.json").exists());
+        assert!(!project.path().join(".aoe-pasted-images").exists());
         let (status, _) =
             body(post_inbox_message(State(state.clone()), Json(request())).await).await;
         assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);

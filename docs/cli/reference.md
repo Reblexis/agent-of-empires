@@ -382,6 +382,7 @@ Send a message to a running agent session
 ###### **Options:**
 
 * `--no-revive` — Fail loud on dead/stopped sessions instead of auto-respawning. Default behavior is to revive the session so a `send` after a crash or stop just works; pass this for scripts that want the previous bail-out
+* `--delivery-id <DELIVERY_ID>` — Original stable source ID, required for native Codex queue delivery
 
 
 

@@ -240,12 +240,12 @@ bearer token of its own, separate from the login, the passphrase and
   clears the unread marker, without sending anything, like Done on the list.
 - `GET /api/inbox/log?since=<rfc3339>`: the lines of `inbox-log.jsonl` stamped
   after `since` (all of them without it), as a JSON array.
-- `POST /api/inbox/message`: `{text, images}`, the user's free input from the
+- `POST /api/inbox/message`: `{text, images, delivery_id?, expected_owner?}`, the user's free input from the
   queue's input box (Viktor, 2026-10-29: "i would also like an input field
   there where i can tell it anything at any time.. thats the input.. pasting
   of pccitures shouold work just like it works int erminal claude session
   etc."). It goes only to the **router session**, whose id is the one line of
-  `<app_dir>/inbox-router`, never to a session the caller names. Each of
+  `<app_dir>/inbox-router`, never to a session the caller names. A caller that already pinned an owner must supply `expected_owner` as its exact 16 lowercase hexadecimal AoE ID. A malformed provided pin, including null, is rejected. Compare a provided pin to the freshly selected router before staging attachments or queueing input; a mismatch returns `503` with `error.code="owner_mismatch"` and holds the original delivery without fallback. Omitting the field keeps fresh global routing semantics. Each of
   `images` (`{data}`, base64, at most 10) is checked and saved exactly like a
   dashboard paste (`POST /api/sessions/{id}/paste-image`: an image, at most
   5 MB, into the router's gitignored `.aoe-pasted-images/`), kept 24 hours
