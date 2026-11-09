@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml" lang="" xml:lang="">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Draft-safe automated Codex delivery</title>
+  <style>
+    html {
+      color: #1a1a1a;
+      background-color: #fdfdfd;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        background-color: white;
+      }
+      body {
+        background-color: transparent;
+        color: black;
+        font-size: 12pt;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a {
+      color: #1a1a1a;
+    }
+    a:visited {
+      color: #1a1a1a;
+    }
+    img {
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid #e6e6e6;
+      color: #606060;
+    }
+    code {
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      background-color: #1a1a1a;
+      border: none;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid #1a1a1a;
+      border-bottom: 1px solid #1a1a1a;
+    }
+    th {
+      border-top: 1px solid #1a1a1a;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    code{white-space: pre-wrap;}
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: min(4vw, 1.5em);}
+    div.column{flex: auto; overflow-x: auto;}
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+    .display.math{display: block; text-align: center; margin: 0.5rem auto;}
+  </style>
+</head>
+<body>
+<header id="title-block-header">
+<h1 class="title">Draft-safe automated Codex delivery</h1>
+</header>
+<h1 id="draft-safe-automated-codex-delivery">Draft-safe automated Codex
+delivery</h1>
+<h2 id="contract">Contract</h2>
+<p>A background message is a distinct user submission. It never pastes
+into, clears, reads and restores, submits or otherwise changes the
+native editor. This holds with an empty editor, an existing draft,
+concurrent human typing and an active model turn.</p>
+<p>Use Codex’s existing <code>thread/queue/add</code> and exact-item
+<code>thread/queue/start</code> over its already-running local control
+socket. Connect only: never start, resume or interrupt a thread, start a
+daemon, change a model/permission, or fall back to tmux input. The exact
+current AoE owner and recorded native UUID must agree with the supplied
+delivery packet, and the owner must be live and unarchived. The selected
+native store is explicit. The canonical helper holds the existing
+cross-process lifecycle lock through native acceptance for both default
+and standalone callers. It rechecks the stored row under that lock, so
+an archive, trash or target replacement that already won takes no input.
+Lock order is lifecycle first, then original delivery-ID journal. Rust
+callers do not acquire a second lifecycle lock. Codex’s standard
+user-owned control-socket symlink is supported only when its resolved
+target is an existing user-owned socket; initialization must also
+confirm the selected native store. A missing socket, thread, supported
+method or valid identity is a visible failure; preserve the original
+work and retry state.</p>
+<p>Every caller supplies its original stable delivery ID. Different
+instructions with identical text retain different IDs. A successful
+result means the native queue accepted the exact text, not that an agent
+acted on it or completed the work. Preserve the original source IDs,
+authority, holds and schedule outside this transport. Queue
+acknowledgment is not an owner receipt: an active long turn can delay
+actual role=user delivery. The transport does not steer or interrupt
+that turn, and urgency never permits terminal fallback.</p>
+<p>The native queue’s <code>clientUserMessageId</code> is a correlation
+ID, not an idempotency guarantee in Codex 0.162.1. Its queue inserts a
+fresh row on each add. A durable local journal therefore records the
+exact packet before an attempt, holds a per-ID exclusive lock and
+records <code>sending</code> before the add. A repeated ID with changed
+text, owner, store or native thread is refused. Confirmed
+acknowledgments are reused without another add. For an acknowledged
+queued packet, reconcile its exact source and inputs, read the current
+thread status, and when it is idle call <code>thread/queue/start</code>
+with that exact <code>queuedSubmissionId</code>. This starts the
+accepted submission, never starts or resumes a thread. Active, unloaded
+or unknown states remain queued. The native start-if-idle operation
+refuses a concurrent active turn; no steering or interruption is
+allowed. Persist queue acceptance before activation. A lost activation
+acknowledgment is reconciled against queue/history on retry, never by
+adding again or starting a different queued item. A confirmed start
+records its turn ID, but does not claim completion. After an ambiguous
+failure, reconcile the same ID and text against the native queue or
+paginated history. Positive evidence confirms delivery; absent or
+inaccessible evidence leaves an explicit uncertain hold and never
+re-adds blindly. Definite failures before the add remain safely
+retryable. A stale journal lock is a visible maintenance blocker, never
+automatically discarded.</p>
+<h2 id="operator-transport">Operator transport</h2>
+<p>Native Codex CLI, HTTP and plugin message sends use the same
+connect-only transport in <code>contrib/codex-queue-send.cjs</code>. The
+CLI requires <code>--delivery-id</code>; HTTP and plugin callers supply
+<code>delivery_id</code>. Missing IDs fail before any terminal input or
+revival. Structured sessions retain their existing daemon transport;
+other terminal agents retain their current behavior. Inbox answers
+derive a stable ID from the original ask timestamp and target; plain
+Inbox messages require their source delivery ID. A producer that pinned
+its Inbox recipient also supplies <code>expected_owner</code>; a changed
+router holds the original request before staging images or queueing.
+Native queue acceptance is reported as <code>queued</code>; positive
+history reconciliation is reported as <code>recorded</code>. Neither
+means execution completion.</p>
+<p>The transport is embedded in the binary.
+<code>AOE_CODEX_QUEUE_HELPER</code> may explicitly select a reviewed
+installed helper instead. <code>AOE_CODEX_QUEUE_STATE_DIR</code> selects
+the shared durable journal (default: the AoE application directory under
+<code>native-deliveries</code>); all producers must share it.
+<code>AOE_CODEX_WS_MODULE</code> selects an already-installed WebSocket
+module (default: <code>ws</code>). Missing Node, Python 3, Linux lock
+attestation, WebSocket module, native store, metadata or socket holds
+delivery. No dependency installation, daemon start, sandbox crossing or
+terminal fallback occurs. Native Codex aliases and sandboxed sessions
+are held until their exact supported store mapping is available. Keep
+existing automation paused until callers propagate stable IDs and these
+runtime prerequisites are installed and reviewed. Legacy restart wake
+requests have no original delivery ID: when a nonempty configured wake
+targets native Codex, refuse that restart before lifecycle changes.
+Preserve its configured wake text and report the held wake; do not
+invent an ID, silently drop it or paste it into the restarted editor. An
+explicitly empty configured wake retains its documented opt-out.
+Dashboard ask answers derive their source ID from the original ask
+timestamp and target, reusing it on retry.</p>
+<p>The operator supplies a private JSON packet with
+<code>sessionId</code>, <code>threadId</code>, <code>deliveryId</code>
+and <code>text</code>, a native store, a persistent journal directory,
+the current profile’s sessions file and an existing local WebSocket
+module. <code>--check SESSION</code> performs only initialization,
+metadata and queue reads. Normal invocation requires
+<code>--packet FILE</code> or <code>--packet -</code> with a private
+packet on stdin; it never creates a packet or invents new execution
+authority.</p>
+<p>The tool emits only receipt metadata and hashes. It never prints
+message bodies, login material or history. Journal files are private and
+durably written; journal capacity failure prevents an untracked
+submission. Test and scratch state belong in the explicitly provided
+test directory.</p>
+<h2 id="steering-is-separate">Steering is separate</h2>
+<p>Codex 0.162.1 also exposes <code>turn/steer</code> with
+<code>threadId</code>, required <code>expectedTurnId</code>,
+<code>input</code> and optional <code>clientUserMessageId</code>. It
+changes an active turn and returns its <code>turnId</code>; review and
+compact turns can refuse steering. This transport never calls it. Using
+it would require explicit in-turn authority, exact active-turn
+verification and its own journal/reconciliation contract. A queue
+acknowledgment alone cannot authorize steering or interruption.</p>
+<h2 id="evidence-and-limits">Evidence and limits</h2>
+<p>A successful background message can be pasted into an unfinished
+human question, with further human typing appended before Enter. This is
+a composer race, independent of whether the background message is a
+duplicate. Synthetic editor tests reproduce that symptom with the old
+tmux primitive and verify the native queue leaves drafts and concurrent
+typing untouched.</p>
+<p>Protocol evidence: the installed Codex 0.162.1 generated schema and
+upstream <a
+href="https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/app-server/src/request_processors/thread_queue_processor.rs">thread
+queue processor</a>, <a
+href="https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/ext/queue/src/service.rs">queue
+service</a> and <a
+href="https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/state/src/runtime/queued_items.rs">queue
+storage</a>. Unloaded persisted root threads may accept queue items;
+existing native queue watchers discover external changes. That is not
+proof of when a particular message will execute, and no real model
+message is sent during verification.</p>
+<p>The controlled HTTP fixture
+<code>contrib/test-codex-queue-http.cjs</code> takes a candidate binary
+path, plus <code>release</code> for the installed-state namespace. Set
+<code>AOE_TEST_WS_MODULE</code> to an existing WebSocket module. It
+creates only isolated application metadata, a synthetic tmux editor and
+a fake native control socket under RAM scratch. It checks missing-ID
+refusal on Inbox, ordinary HTTP and CLI input, typed image bytes,
+confirmed and lost-ack retries, source conflicts and the unchanged human
+draft. No real owner or model is contacted.</p>
+<h2 id="activation-hold">Activation hold</h2>
+<p>Activation stays held until the operator reviews the exact helper,
+caller and binary artifacts and validates the runtime prerequisites.
+Controlled protocol tests do not authorize installation or a live model
+probe. An image caller that has not adopted typed packets must hold the
+original source and delivery ID, never substitute path-only text or
+remove files referenced by uncertain acceptance.</p>
+<h2 id="shared-lifecycle-worker">Shared lifecycle worker</h2>
+<p>All RPC and journal operations run in the same lock-owning Node
+worker. The parent passes a private packet on stdin and an already-open
+lifecycle descriptor to a Python standard-library
+<code>fcntl</code>/<code>exec</code> launcher. No shell is involved. The
+worker verifies the descriptor against the exact existing profile lock
+inode and its own Linux FLOCK ownership before reading owner metadata or
+connecting. Unsupported lock attestation, missing launcher, busy lock or
+missing IPC holds delivery. The worker exits if its parent disconnects;
+a bounded worker timeout preserves uncertain journal state. No lifecycle
+lock file is removed. This Linux worker is the single gate for
+standalone and embedded invocation, with no caller flag that skips
+it.</p>
+<h2 id="image-packet-and-retained-bytes">Image packet and retained
+bytes</h2>
+<p>An optional <code>images</code> array contains at most ten
+<code>{path, sha256}</code> entries in source order. Paths are absolute
+regular image files, each at most 5 MiB, and hashes are lowercase
+SHA-256 of the exact original bytes. An image-only packet may have empty
+text. Unknown packet fields and unsupported image data fail before
+submission. The original delivery ID and exact source image paths/hashes
+remain pinned in the journal identity.</p>
+<p>Before the first native attempt, verify the original bytes and retain
+read-only, atomically published, durably written snapshots under the
+shared private journal. Content hashes deduplicate image snapshots,
+never instructions. Submit text as <code>text</code> and every snapshot
+as a separate native <code>localImage</code> input. Persist the exact
+native input array before sending. Queue acknowledgment must match
+source ID, text and every image path/hash; receipts include ordered
+<code>imageSha256</code>. A text path never counts as an image.</p>
+<p>Uncertain retries use the retained snapshot and original packet even
+if an original attachment expired. Queue/history reconciliation checks
+the exact ordered inputs; inline history image data may match by the
+original byte hash. Changed, inaccessible or transformed bytes without
+exact evidence stay held, never re-enqueued blindly. Snapshot files are
+retained through uncertainty and queue delay; this repair does not
+delete them automatically. Inbox callers keep stable per-delivery
+attachment paths and retain genuine files on uncertain native
+errors.</p>
+</body>
+</html>

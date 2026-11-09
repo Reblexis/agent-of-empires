@@ -213,6 +213,24 @@ async function reconcile(rpc, packet, input) {
   });
 }
 
+async function activateQueued(rpc, packet, input, receipt) {
+  if (receipt.disposition !== 'queued' || receipt.startedTurnId) return receipt;
+  const current = await reconcile(rpc, packet, input);
+  if (!current) fail('Accepted delivery remains uncertain; no blind re-enqueue or activation is allowed');
+  if (current.disposition !== 'queued') return current;
+  if (!current.nativeQueueId || current.nativeQueueId !== receipt.nativeQueueId) fail('Native queue identity changed; activation held');
+  const result = await rpc.request('thread/read', {threadId: packet.threadId, includeTurns: false});
+  if (result.thread?.id !== packet.threadId) fail('Native thread identity does not match');
+  if (result.thread.status?.type !== 'idle') return current;
+  // Native start-if-idle rejects an intervening active turn atomically. Always
+  // name our exact accepted submission, never the queue's default next item.
+  const started = await rpc.request('thread/queue/start', {
+    threadId: packet.threadId, queuedSubmissionId: current.nativeQueueId,
+  });
+  if (!started.turn?.id) fail('Native queue start acknowledgment unavailable; reconcile original source');
+  return {...current, startedTurnId: started.turn.id};
+}
+
 function lifecyclePath(packet, options) {
   if (!/^[a-f0-9]{16}$/.test(packet.sessionId || '')) fail('Invalid lifecycle identity');
   return path.join(path.dirname(fs.realpathSync(options.sessionsFile)), `.instance-lifecycle-${packet.sessionId}.lock`);
@@ -294,17 +312,25 @@ async function deliverLocked(packet, options) {
   try {
     let journal = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {identity, state: 'ready'};
     if (JSON.stringify(journal.identity) !== JSON.stringify(identity)) fail('Delivery ID conflict; original instruction retained');
-    if (journal.state === 'acknowledged') return {...journal.receipt, duplicate: true};
+    if (journal.state === 'acknowledged' &&
+        (journal.receipt.disposition !== 'queued' || journal.receipt.startedTurnId)) return {...journal.receipt, duplicate: true};
     const input = nativeInput(packet, options, journal);
     journal = {...journal, nativeInput: input};
     writeJournal(file, journal);
     rpc = await connect(options, packet.threadId);
+    if (journal.state === 'acknowledged') {
+      const receipt = await activateQueued(rpc, packet, input, journal.receipt);
+      writeJournal(file, {...journal, receipt});
+      return {...receipt, duplicate: true};
+    }
     if (journal.state === 'sending') {
       const receipt = await reconcile(rpc, packet, input);
       if (!receipt) fail('Delivery remains uncertain; no blind re-enqueue is allowed');
       journal = {...journal, state: 'acknowledged', receipt};
       writeJournal(file, journal);
-      return {...receipt, reconciled: true};
+      const activated = await activateQueued(rpc, packet, input, receipt);
+      writeJournal(file, {...journal, receipt: activated});
+      return {...activated, reconciled: true};
     }
     journal = {...journal, state: 'sending', attemptedAt: new Date().toISOString()};
     writeJournal(file, journal);
@@ -314,7 +340,9 @@ async function deliverLocked(packet, options) {
     if (!accepted?.id || accepted.clientUserMessageId !== packet.deliveryId || !inputMatches(accepted.input, input, packet)) fail('Exact native acceptance was not confirmed');
     const receipt = {disposition: 'queued', nativeQueueId: accepted.id, ...imageReceipt(packet)};
     writeJournal(file, {...journal, state: 'acknowledged', receipt});
-    return receipt;
+    const activated = await activateQueued(rpc, packet, input, receipt);
+    writeJournal(file, {...journal, state: 'acknowledged', receipt: activated});
+    return activated;
   } finally {
     rpc?.close();
     const held = fs.fstatSync(lockFd);
