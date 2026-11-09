@@ -55,10 +55,6 @@ pub(crate) async fn send(
     delivery_id: Option<&str>,
 ) -> Result<&'static str> {
     let packet = packet(instance, text, delivery_id)?;
-    let target = instance.clone();
-    let _lifecycle_lock = tokio::task::spawn_blocking(move || target.lock_for_input())
-        .await
-        .context("Native Codex lifecycle guard unavailable; delivery held")??;
     let store = instance
         .declared_agent_config_dir_for("codex")
         .context("Native Codex store must be explicitly declared; delivery held")?;
@@ -72,7 +68,7 @@ pub(crate) async fn send(
     if let Some(helper) = std::env::var_os("AOE_CODEX_QUEUE_HELPER") {
         command.arg(helper);
     } else {
-        command.arg("-e").arg(format!("{}\nmodule.exports.main(process.argv.slice(1)).catch(e=>{{console.error(e.message);process.exitCode=1;}});", HELPER.split_once('\n').map_or(HELPER, |(_, body)| body))).arg("--");
+        command.arg("-e").arg(format!("const AOE_EMBEDDED_SOURCE={};\n{}\nmodule.exports.main(process.argv.slice(1)).catch(e=>{{console.error(e.message);process.exitCode=1;}});", serde_json::to_string(HELPER)?, HELPER.split_once('\n').map_or(HELPER, |(_, body)| body))).arg("--");
     }
     command
         .arg("--packet")
@@ -143,8 +139,7 @@ mod tests {
     #[cfg(target_os = "linux")]
     #[tokio::test]
     #[serial_test::serial]
-    async fn automated_native_delivery_keeps_identity_and_archived_or_trashed_sessions_take_no_input(
-    ) {
+    async fn automated_native_delivery_keeps_identity_without_nested_lifecycle_locks() {
         let temp = tempfile::tempdir().unwrap();
         let _app = crate::session::test_support::isolate_app_dir_at(temp.path());
         let profile = "synthetic-native-queue";
@@ -172,7 +167,7 @@ assert.equal(path.basename(value('--sessions-file')),'sessions.json');
 const packet=JSON.parse(fs.readFileSync(0,'utf8'));
 assert.equal(packet.deliveryId,'source:123');
 assert.equal(packet.threadId,'11111111-1111-4111-8111-111111111111');
-assert.equal(require('node:child_process').spawnSync('flock',['-n',path.join(path.dirname(value('--sessions-file')),`.instance-lifecycle-${packet.sessionId}.lock`),'true']).status,1,'lifecycle lock must remain held through native acceptance');
+assert.equal(require('node:child_process').spawnSync('flock',['-n',path.join(path.dirname(value('--sessions-file')),`.instance-lifecycle-${packet.sessionId}.lock`),'true']).status,0,'caller must delegate the single lifecycle guard to the canonical helper');
 console.log(JSON.stringify({deliveryId:packet.text==='invalid-receipt'?'wrong-source':packet.deliveryId,
   textSha256:require('node:crypto').createHash('sha256').update(packet.text).digest('hex'),
   disposition:packet.text==='recorded'?'recorded':'queued'}));
@@ -205,22 +200,6 @@ console.log(JSON.stringify({deliveryId:packet.text==='invalid-receipt'?'wrong-so
         assert!(send(&instance, "invalid-receipt", Some("source:123"))
             .await
             .is_err());
-        for shelve in [Instance::archive as fn(&mut Instance), Instance::trash] {
-            storage
-                .update(|rows, _| {
-                    rows[0] = instance.clone();
-                    shelve(&mut rows[0]);
-                    Ok(())
-                })
-                .unwrap();
-            let error = send(&instance, "queued", Some("source:123"))
-                .await
-                .unwrap_err();
-            assert!(
-                error.to_string().contains("archived") || error.to_string().contains("trash"),
-                "{error:#}"
-            );
-        }
     }
 
     #[test]

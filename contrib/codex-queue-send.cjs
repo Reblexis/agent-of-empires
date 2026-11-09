@@ -5,6 +5,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
+const {spawn} = require('node:child_process');
+const SELF_SOURCE = typeof AOE_EMBEDDED_SOURCE === 'string' ? AOE_EMBEDDED_SOURCE : fs.readFileSync(__filename, 'utf8');
 const hash = text => crypto.createHash('sha256').update(text).digest('hex');
 const fail = text => { throw new Error(text); };
 
@@ -102,12 +104,84 @@ function writeJournal(file, value) {
   }
 }
 
-function inputText(input) {
-  if (!Array.isArray(input) || input.some(item => item.type !== 'text')) return null;
-  return input.map(item => item.text).join('');
+function imageFormat(bytes) {
+  if (bytes.subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) return 'png';
+  if (bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) return 'jpg';
+  if (/^GIF8[79]a$/.test(bytes.subarray(0,6).toString())) return 'gif';
+  if (bytes.subarray(0,4).toString() === 'RIFF' && bytes.subarray(8,12).toString() === 'WEBP') return 'webp';
+  fail('Unsupported original image data; delivery held');
 }
 
-async function reconcile(rpc, packet) {
+function retainImage(image, options) {
+  const st = fs.lstatSync(image.path);
+  if (!st.isFile() || st.size === 0 || st.size > 5 * 1024 * 1024) fail('Image must be a regular file of at most 5 MiB');
+  const bytes = fs.readFileSync(image.path);
+  if (hash(bytes) !== image.sha256) fail('Original image hash changed; delivery held');
+  const ext = imageFormat(bytes), directory = path.resolve(options.stateDir, 'image-inputs');
+  fs.mkdirSync(directory, {recursive: true, mode: 0o700});
+  const target = path.join(directory, image.sha256 + '.' + ext);
+  if (fs.existsSync(target)) {
+    if (hash(fs.readFileSync(target)) !== image.sha256) fail('Retained image snapshot changed; delivery held');
+    return target;
+  }
+  const temporary = path.join(directory, '.image-' + crypto.randomUUID() + '.tmp');
+  let fd;
+  try {
+    fd = fs.openSync(temporary, 'wx', 0o400);
+    fs.writeFileSync(fd, bytes); fs.fsyncSync(fd); fs.closeSync(fd); fd = undefined;
+    try { fs.linkSync(temporary, target); } catch (error) { if (error.code !== 'EEXIST') throw error; }
+    if (hash(fs.readFileSync(target)) !== image.sha256) fail('Retained image snapshot conflict');
+    const dir = fs.openSync(directory, 'r'); try { fs.fsyncSync(dir); } finally { fs.closeSync(dir); }
+    return target;
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd);
+    if (fs.existsSync(temporary)) fs.unlinkSync(temporary);
+  }
+}
+
+function nativeInput(packet, options, journal) {
+  const images = packet.images || [];
+  if (journal.nativeInput) {
+    const expectedLength = (packet.text ? 1 : 0) + images.length;
+    if (journal.nativeInput.length !== expectedLength) fail('Retained native input conflict');
+    let offset = 0;
+    if (packet.text) {
+      if (journal.nativeInput[0].type !== 'text' || journal.nativeInput[0].text !== packet.text) fail('Retained native text conflict');
+      offset++;
+    }
+    for (let i = 0; i < images.length; i++) {
+      const item = journal.nativeInput[i + offset];
+      if (item.type !== 'localImage' || path.dirname(item.path) !== path.resolve(options.stateDir,'image-inputs') ||
+          hash(fs.readFileSync(item.path)) !== images[i].sha256) fail('Retained image input conflict');
+    }
+    return journal.nativeInput;
+  }
+  return [...(packet.text ? [{type:'text',text:packet.text,text_elements:[]}] : []),
+    ...images.map(image => ({type:'localImage',path:retainImage(image,options)}))];
+}
+
+function inputMatches(actual, expected, packet) {
+  if (!Array.isArray(actual) || actual.length !== expected.length) return false;
+  let imageIndex = 0;
+  return expected.every((item, index) => {
+    const seen = actual[index];
+    if (item.type === 'text') return seen?.type === 'text' && seen.text === item.text;
+    const image = packet.images[imageIndex++];
+    if (hash(fs.readFileSync(item.path)) !== image.sha256) fail('Retained image bytes changed; delivery held');
+    if (seen?.type === 'localImage') return seen.path === item.path;
+    if (seen?.type === 'image' && typeof seen.url === 'string') {
+      const match = /^data:image\/(?:png|jpeg|gif|webp);base64,([A-Za-z0-9+/]*={0,2})$/.exec(seen.url);
+      return !!match && hash(Buffer.from(match[1], 'base64')) === image.sha256;
+    }
+    return false;
+  });
+}
+
+function imageReceipt(packet) {
+  return packet.images?.length ? {imageSha256:packet.images.map(image => image.sha256)} : {};
+}
+
+async function reconcile(rpc, packet, input) {
   const scan = async (method, field, itemMatch) => {
     let cursor; const seen = new Set();
     for (let page = 0; page < 50; page++) {
@@ -125,23 +199,81 @@ async function reconcile(rpc, packet) {
   };
   const queued = await scan('thread/queue/list', 'data', item => {
     if (item.clientUserMessageId !== packet.deliveryId) return null;
-    if (inputText(item.input) !== packet.text) fail('Native delivery ID conflict');
-    return {disposition: 'queued', nativeQueueId: item.id};
+    if (!inputMatches(item.input, input, packet)) fail('Native delivery ID conflict');
+    return {disposition: 'queued', nativeQueueId: item.id, ...imageReceipt(packet)};
   });
   if (queued) return queued;
   return scan('thread/turns/list', 'data', turn => {
     for (const item of turn.items || []) {
       if (item.type !== 'userMessage' || item.clientId !== packet.deliveryId) continue;
-      if (inputText(item.content) !== packet.text) fail('Native delivery ID conflict');
-      return {disposition: 'recorded', nativeItemId: item.id || null};
+      if (!inputMatches(item.content, input, packet)) fail('Native delivery ID conflict');
+      return {disposition: 'recorded', nativeItemId: item.id || null, ...imageReceipt(packet)};
     }
     return null;
   });
 }
 
+function lifecyclePath(packet, options) {
+  if (!/^[a-f0-9]{16}$/.test(packet.sessionId || '')) fail('Invalid lifecycle identity');
+  return path.join(path.dirname(fs.realpathSync(options.sessionsFile)), `.instance-lifecycle-${packet.sessionId}.lock`);
+}
+
 async function deliver(packet, options) {
-  if (packet.images !== undefined && (!Array.isArray(packet.images) || packet.images.length)) fail('Native image delivery held; original image source retained');
-  for (const key of ['sessionId', 'threadId', 'deliveryId', 'text']) {
+  const lock = lifecyclePath(packet, options);
+  const fd = fs.openSync(lock, fs.constants.O_RDWR | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);
+  const source = 'const AOE_EMBEDDED_SOURCE=' + JSON.stringify(SELF_SOURCE) + ';\n' +
+    SELF_SOURCE.replace(/^#![^\n]*\n/, '') +
+    '\nmodule.exports.workerMain().catch(e=>{console.error(e.message);process.exitCode=1;});';
+  const launcher = 'import fcntl,os,sys; fcntl.flock(3,fcntl.LOCK_EX|fcntl.LOCK_NB); os.execv(sys.argv[1],sys.argv[1:])';
+  let child;
+  try { child = spawn('python3', ['-c', launcher, process.execPath, '-e', source],
+    {stdio: ['pipe', 'pipe', 'pipe', fd, 'ipc']}); }
+  finally { fs.closeSync(fd); }
+  return new Promise((resolve, reject) => {
+    let stdout = '', stderr = '', timedOut = false;
+    const timer = setTimeout(() => { timedOut = true; child.kill('SIGTERM'); }, 30000);
+    child.stdout.on('data', bytes => { stdout += bytes; if (stdout.length > 65536) child.kill('SIGTERM'); });
+    child.stderr.on('data', bytes => { stderr += bytes; if (stderr.length > 8192) child.kill('SIGTERM'); });
+    child.stdin.on('error', () => {});
+    child.once('error', () => { clearTimeout(timer); reject(new Error('Lifecycle delivery launcher unavailable; no native fallback')); });
+    child.once('close', code => {
+      clearTimeout(timer);
+      if (timedOut) { reject(new Error('Lifecycle delivery timed out; retain original ID and uncertain journal')); return; }
+      if (code !== 0) { reject(new Error('Lifecycle delivery locked or unavailable: ' + stderr.trim())); return; }
+      try { resolve(JSON.parse(stdout)); } catch { reject(new Error('Lifecycle delivery receipt unavailable; retain original ID')); }
+    });
+    child.stdin.end(JSON.stringify({packet, options}));
+  });
+}
+
+async function workerMain() {
+  const {packet, options} = JSON.parse(fs.readFileSync(0, 'utf8'));
+  if (process.platform !== 'linux' || !process.connected) fail('Verified lifecycle worker unavailable');
+  const held = fs.fstatSync(3), expected = fs.statSync(lifecyclePath(packet, options));
+  const info = fs.readFileSync('/proc/self/fdinfo/3', 'utf8');
+  const exclusive = new RegExp('FLOCK\\s+ADVISORY\\s+WRITE\\s+' + process.pid + '\\s');
+  if (!held.isFile() || held.dev !== expected.dev || held.ino !== expected.ino ||
+      (process.getuid && held.uid !== process.getuid()) || !exclusive.test(info)) fail('Lifecycle descriptor does not prove exclusive ownership');
+  const disconnected = () => process.exit(75);
+  process.on('disconnect', disconnected);
+  try {
+    const receipt = await deliverLocked(packet, options);
+    await new Promise(resolve => process.stdout.write(JSON.stringify(receipt), resolve));
+  } finally {
+    process.removeListener('disconnect', disconnected);
+    if (process.connected) process.disconnect();
+  }
+}
+
+async function deliverLocked(packet, options) {
+  if (Object.keys(packet).some(key => !['sessionId','threadId','deliveryId','text','images'].includes(key))) fail('Unknown delivery packet field');
+  const images = packet.images || [];
+  if (!Array.isArray(images) || images.length > 10) fail('At most ten original images are supported');
+  for (const image of images) {
+    if (!image || Object.keys(image).sort().join(',') !== 'path,sha256' || !path.isAbsolute(image.path || '') || !/^[a-f0-9]{64}$/.test(image.sha256 || '')) fail('Invalid original image identity');
+  }
+  if (typeof packet.text !== 'string' || (!packet.text.trim() && !images.length)) fail('Missing text or original image');
+  for (const key of ['sessionId', 'threadId', 'deliveryId']) {
     if (typeof packet[key] !== 'string' || !packet[key].trim()) fail(`Missing ${key}`);
   }
   if (!/^[a-f0-9]{16}$/.test(packet.sessionId) ||
@@ -149,7 +281,7 @@ async function deliver(packet, options) {
   const row = owner(packet.sessionId, options);
   if (row.agent_session_id !== packet.threadId) fail('Recorded native identity does not match packet');
   const identity = {sessionId: packet.sessionId, threadId: packet.threadId, deliveryId: packet.deliveryId,
-    text: packet.text, store: fs.realpathSync(options.store)};
+    text: packet.text, store: fs.realpathSync(options.store), ...(images.length ? {images} : {})};
   fs.mkdirSync(options.stateDir, {recursive: true, mode: 0o700});
   const file = path.join(options.stateDir, hash(packet.deliveryId) + '.json');
   const lock = file + '.lock';
@@ -163,10 +295,12 @@ async function deliver(packet, options) {
     let journal = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {identity, state: 'ready'};
     if (JSON.stringify(journal.identity) !== JSON.stringify(identity)) fail('Delivery ID conflict; original instruction retained');
     if (journal.state === 'acknowledged') return {...journal.receipt, duplicate: true};
+    const input = nativeInput(packet, options, journal);
+    journal = {...journal, nativeInput: input};
     writeJournal(file, journal);
     rpc = await connect(options, packet.threadId);
     if (journal.state === 'sending') {
-      const receipt = await reconcile(rpc, packet);
+      const receipt = await reconcile(rpc, packet, input);
       if (!receipt) fail('Delivery remains uncertain; no blind re-enqueue is allowed');
       journal = {...journal, state: 'acknowledged', receipt};
       writeJournal(file, journal);
@@ -175,10 +309,10 @@ async function deliver(packet, options) {
     journal = {...journal, state: 'sending', attemptedAt: new Date().toISOString()};
     writeJournal(file, journal);
     const result = await rpc.request('thread/queue/add', {threadId: packet.threadId,
-      clientUserMessageId: packet.deliveryId, input: [{type: 'text', text: packet.text, text_elements: []}]});
+      clientUserMessageId: packet.deliveryId, input});
     const accepted = result.queuedSubmission;
-    if (!accepted?.id || accepted.clientUserMessageId !== packet.deliveryId || inputText(accepted.input) !== packet.text) fail('Exact native acceptance was not confirmed');
-    const receipt = {disposition: 'queued', nativeQueueId: accepted.id};
+    if (!accepted?.id || accepted.clientUserMessageId !== packet.deliveryId || !inputMatches(accepted.input, input, packet)) fail('Exact native acceptance was not confirmed');
+    const receipt = {disposition: 'queued', nativeQueueId: accepted.id, ...imageReceipt(packet)};
     writeJournal(file, {...journal, state: 'acknowledged', receipt});
     return receipt;
   } finally {
@@ -215,5 +349,5 @@ async function main(args) {
       console.log(JSON.stringify({deliveryId: packet.deliveryId, textSha256: hash(packet.text), ...await deliver(packet, options)}));
     }
 }
-module.exports = {deliver, check, main};
+module.exports = {deliver, check, main, workerMain};
 if (require.main === module) main(process.argv.slice(2)).catch(error => { console.error(error.message); process.exitCode = 1; });
