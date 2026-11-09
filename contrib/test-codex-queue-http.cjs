@@ -26,6 +26,8 @@ const name = `${release?'aoe_':'aoe_dev_'}Synthetic_11111111`;
 let child, keeper, wss, rpc;
 let drop = false;
 const queue = [];
+const history = [];
+let adds = 0;
 const receipts = [];
 const env = {PATH:'/usr/bin:/bin',HOME:root,XDG_CONFIG_HOME:xdg,XDG_DATA_HOME:path.join(root,'share'),TMPDIR:root,TMUX_TMPDIR:root,AOE_TMUX_SOCKET:tmux,DO_NOT_TRACK:'1',AOE_LOG_LEVEL:'warn',GIT_CONFIG_GLOBAL:path.join(root,'.gitconfig'),GIT_CONFIG_SYSTEM:'/dev/null',AOE_CODEX_QUEUE_STATE_DIR:path.join(root,'journal'),AOE_CODEX_WS_MODULE:process.env.AOE_TEST_WS_MODULE};
 if (process.env.AOE_TEST_QUEUE_HELPER) env.AOE_CODEX_QUEUE_HELPER=process.env.AOE_TEST_QUEUE_HELPER;
@@ -59,9 +61,9 @@ async function until(predicate, description, timeout=15000) {
    if(q.method==='initialize')result={codexHome:native};
    else if(q.method==='thread/read')result={thread:{id:tid,source:'cli'}};
    else if(q.method==='thread/queue/list')result={data:queue,nextCursor:null};
-   else if(q.method==='thread/turns/list')result={data:[],nextCursor:null};
+   else if(q.method==='thread/turns/list')result={data:history,nextCursor:null};
    else if(q.method==='thread/queue/add'){
-    const item={id:'fixture-'+(queue.length+1),clientUserMessageId:q.params.clientUserMessageId,input:q.params.input};queue.push(item);result={queuedSubmission:item};
+    const item={id:'fixture-'+(++adds),clientUserMessageId:q.params.clientUserMessageId,input:q.params.input};queue.push(item);result={queuedSubmission:item};
     if(drop){drop=false;ws.close();return;}
    } else {ws.send(JSON.stringify({id:q.id,error:{message:'unsupported fixture method'}}));return;}
    ws.send(JSON.stringify({id:q.id,result}));
@@ -84,6 +86,7 @@ async function until(predicate, description, timeout=15000) {
   const repeat=await post('/api/inbox/message',body);assert.equal(repeat.status,200);assert.equal(queue.length,1,'confirmed retry never adds');
   const conflict=await post('/api/inbox/message',{...body,text:'Changed instruction'});assert.equal(conflict.status,503);assert.equal(queue.length,1);
   drop=true;const lost={...body,delivery_id:'fixture:source:2'};assert.equal((await post('/api/inbox/message',lost)).status,503);assert.equal(queue.length,2);assert.equal((await post('/api/inbox/message',lost)).status,200);assert.equal(queue.length,2,'lost acknowledgment reconciles exact original');
+  drop=true;const historic={...body,delivery_id:'fixture:source:3'};assert.equal((await post('/api/inbox/message',historic)).status,503);const consumed=queue.pop();history.push({items:[{type:'userMessage',clientId:consumed.clientUserMessageId,content:consumed.input}]});const beforeRecorded=adds;const recorded=await post('/api/inbox/message',historic);assert.equal(recorded.status,200);assert.equal(recorded.json.recorded,true);assert.equal(recorded.json.queued,false);assert.equal(adds,beforeRecorded);assert.equal(queue.length,2);
   assert.equal((await post(`/api/sessions/${sid}/send`,{message:'Ordinary automated input',revive:false})).status,409);assert.equal(queue.length,2);
   const apiBody={message:'Ordinary automated input',revive:false,delivery_id:'fixture:api:1'};
   assert.equal((await post(`/api/sessions/${sid}/send`,apiBody)).json.queued,true);assert.equal((await post(`/api/sessions/${sid}/send`,apiBody)).status,200);assert.equal(queue.length,3);
@@ -92,7 +95,7 @@ async function until(predicate, description, timeout=15000) {
   assert.match((await run(binary,cli,{env})).stdout,/queued/);await run(binary,cli,{env});assert.equal(queue.length,4);
   const imageOnly=await post('/api/inbox/message',{text:'',delivery_id:'fixture:image-only:1',images:body.images});assert.equal(imageOnly.status,200);assert.equal(imageOnly.json.queued,true);assert.equal(queue.length,5);assert.ok(queue[4].input.some(x=>x.type==='localImage'));
   assert.deepEqual(JSON.parse(fs.readFileSync(editorFile)),{draft:'Unfinished human question',submitted:[]});
-  const receipt={result:'passed',candidateSha256:sha(fs.readFileSync(binary)),adds:queue.length,imageSha256:sha(png),receipts,draftUntouched:true,modelCalls:0,realOwnersTouched:0,fixtureRoot:root};
+  const receipt={result:'passed',candidateSha256:sha(fs.readFileSync(binary)),adds,queueItems:queue.length,recordedItems:history.length,imageSha256:sha(png),receipts,draftUntouched:true,modelCalls:0,realOwnersTouched:0,fixtureRoot:root};
   fs.writeFileSync(path.join(root,'receipt.json'),JSON.stringify(receipt,null,2));console.log(JSON.stringify(receipt));
  } finally {
   if(child&&child.exitCode===null){child.kill('SIGTERM');await once(child,'exit');}
