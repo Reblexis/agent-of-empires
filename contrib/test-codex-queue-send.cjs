@@ -5,7 +5,8 @@ const os = require('node:os');
 const path = require('node:path');
 const http = require('node:http');
 const {execFileSync, spawn} = require('node:child_process');
-const {wsServer} = require(process.env.AOE_TEST_WS_MODULE);
+const wsBundle = require(process.env.AOE_TEST_WS_MODULE);
+const wsServer = wsBundle.wsServer || wsBundle.WebSocketServer;
 const sessionsId='1111111111111111', threadId='11111111-1111-4111-8111-111111111111';
 const tmp=()=>fs.mkdtempSync(path.join(process.env.TMPDIR || os.tmpdir(),'aoe-queue-'));
 const implementation=()=>require('./codex-queue-send.cjs');
@@ -14,13 +15,14 @@ async function fixture() {
  fs.mkdirSync(path.dirname(socket),{recursive:true});
  const sessionsFile=path.join(root,'sessions.json');
  fs.writeFileSync(sessionsFile,JSON.stringify([{id:sessionsId,tool:'codex',status:'running',agent_session_id:threadId,trashed_at:null,archived_at:null}]));
- const server=http.createServer(), wss=new wsServer({server}); const queue=[],history=[];let adds=0, drop=false, rejectRead=false, hold=false, onAdd, ackRewrite; const lockObservations=[];
+ const server=http.createServer(), wss=new wsServer({server}); const queue=[],history=[];let adds=0, drop=false, rejectRead=false, hold=false, onAdd, ackRewrite; const lockObservations=[];let status="active",starts=[],dropStart=false,busyStart=false;
  wss.on('connection', ws=>ws.on('message', b=>{const q=JSON.parse(b);if(!q.id)return;
   let result={};
   if(q.method==='initialize'){ const lock=path.join(root,`.instance-lifecycle-${sessionsId}.lock`);lockObservations.push(require('node:child_process').spawnSync('flock',['-n',lock,'true']).status);result={codexHome:store}; }
-  else if(q.method==='thread/read') {if(rejectRead){ws.send(JSON.stringify({id:q.id,error:{message:'unknown thread'}}));return;} result={thread:{id:threadId,source:'cli'}};}
+  else if(q.method==='thread/read') {if(rejectRead){ws.send(JSON.stringify({id:q.id,error:{message:'unknown thread'}}));return;} result={thread:{id:threadId,source:'cli',status:{type:status}}};}
   else if(q.method==='thread/queue/list')result={data:queue,nextCursor:null};
   else if(q.method==='thread/turns/list')result={data:history,nextCursor:null};
+  else if(q.method==='thread/queue/start') {starts.push(q.params);if(busyStart){status='active';ws.send(JSON.stringify({id:q.id,error:{message:'active turn'}}));return;}const index=queue.findIndex(x=>x.id===q.params.queuedSubmissionId);if(index<0)throw Error('foreign queue start');const item=queue.splice(index,1)[0];history.push({items:[{type:'userMessage',clientId:item.clientUserMessageId,content:item.input}]});status='active';if(dropStart){dropStart=false;ws.close();return;}result={turn:{id:'turn-started',status:'inProgress'}};}
   else if(q.method==='thread/queue/add') {adds++; const item={id:'queue-'+adds,clientUserMessageId:q.params.clientUserMessageId,input:q.params.input};queue.push(item);onAdd?.();if(hold)return;if(drop){drop=false;ws.close();return;}result={queuedSubmission:ackRewrite?ackRewrite(item):item};}
   else {ws.send(JSON.stringify({id:q.id,error:{message:'unexpected method'}}));return;}
   ws.send(JSON.stringify({id:q.id,result}));
@@ -28,7 +30,7 @@ async function fixture() {
  await new Promise(r=>server.listen(socket,r));
  const options={store,stateDir:state,sessionsFile,wsModule:process.env.AOE_TEST_WS_MODULE,timeoutMs:1000};
  const packet={sessionId:sessionsId,threadId,deliveryId:'original-action-1',text:'Central agent: distinct background instruction.'};
- return {root,store,options,packet,queue,history,server,wss,lockObservations,get adds(){return adds},set drop(v){drop=v},set rejectRead(v){rejectRead=v},set hold(v){hold=v},set onAdd(v){onAdd=v},set ackRewrite(v){ackRewrite=v},async close(){for(const c of wss.clients)c.terminate();await new Promise(r=>wss.close(r));await new Promise(r=>server.close(r));fs.rmSync(root,{recursive:true,force:true});}};
+ return {root,store,options,packet,queue,history,server,wss,lockObservations,starts,set status(v){status=v},set dropStart(v){dropStart=v},set busyStart(v){busyStart=v},get adds(){return adds},set drop(v){drop=v},set rejectRead(v){rejectRead=v},set hold(v){hold=v},set onAdd(v){onAdd=v},set ackRewrite(v){ackRewrite=v},async close(){for(const c of wss.clients)c.terminate();await new Promise(r=>wss.close(r));await new Promise(r=>server.close(r));fs.rmSync(root,{recursive:true,force:true});}};
 }
 async function editor(root){
  const sock=path.join(root,'tmux.sock'), out=path.join(root,'editor.json'), script=path.join(root,'editor.cjs');
@@ -156,4 +158,17 @@ test('an image acknowledgment cannot silently replace the typed input with a tex
 });
 test('uncertain image delivery never overwrites changed retained bytes or blindly adds again',async()=>{
  const f=await fixture();try{const p=imagePacket(f);f.drop=true;await assert.rejects(implementation().deliver(p,f.options));const image=f.queue[0].input.find(x=>x.type==='localImage');fs.chmodSync(image.path,0o600);fs.writeFileSync(image.path,'changed fixture snapshot');await assert.rejects(implementation().deliver(p,f.options),/Retained image/);assert.equal(f.adds,1);assert.deepEqual(fs.readFileSync(p.images[0].path),PNG_BYTES);}finally{await f.close();}
+});
+
+test('an accepted idle native message executes only its own queued submission',async()=>{
+ const f=await fixture();try {f.status='idle';f.queue.push({id:'foreign',clientUserMessageId:'foreign',input:[]});const r=await implementation().deliver(f.packet,f.options);assert.deepEqual(f.starts,[{threadId,queuedSubmissionId:'queue-1'}]);assert.equal(r.startedTurnId,'turn-started');assert.equal(f.queue[0].id,'foreign');await implementation().deliver(f.packet,f.options);assert.equal(f.starts.length,1);assert.equal(f.adds,1);}finally{await f.close();}
+});
+test('an acknowledged busy packet starts once after idle without another add',async()=>{
+ const f=await fixture();try {await implementation().deliver(f.packet,f.options);assert.equal(f.starts.length,0);f.status='idle';await implementation().deliver(f.packet,f.options);assert.equal(f.starts.length,1);assert.equal(f.adds,1);}finally{await f.close();}
+});
+test('lost queue-start acknowledgment reconciles history and never adds or starts again',async()=>{
+ const f=await fixture();try {f.status='idle';f.dropStart=true;await assert.rejects(implementation().deliver(f.packet,f.options));const r=await implementation().deliver(f.packet,f.options);assert.equal(r.disposition,'recorded');assert.equal(f.starts.length,1);assert.equal(f.adds,1);}finally{await f.close();}
+});
+test('active race and unknown states never steer or start a foreign packet',async()=>{
+ for(const status of ['idle','notLoaded','systemError','unknown']){const f=await fixture();try {f.status=status;f.busyStart=true;if(status==='idle')await assert.rejects(implementation().deliver(f.packet,f.options));else await implementation().deliver(f.packet,f.options);assert.equal(f.starts.length,status==='idle'?1:0);await implementation().deliver(f.packet,f.options);assert.equal(f.starts.length,status==='idle'?1:0);assert.equal(f.adds,1);}finally{await f.close();}}
 });

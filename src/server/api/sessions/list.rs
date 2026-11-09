@@ -91,74 +91,79 @@ pub(crate) async fn list_sessions_envelope(
         .filter(|inst| !state.cityhall_mode || inst.is_structured())
         .filter(|inst| filter.matches(inst))
         .collect();
-    let mut sessions: Vec<SessionResponse> = scoped_instances
-        .iter()
-        .copied()
-        .map(|inst| {
-            let plan_summary = if inst.is_structured() {
-                state
-                    .acp_event_store
-                    .latest_plan(&inst.id)
-                    .map(plan_summary_from_plan)
-            } else {
-                None
-            };
-            // An archived session is sunk, so its wakeup/monitor badge is
-            // meaningless and the per-poll SQLite lookups are skipped.
-            // latest_plan stays ungated: a collapsed archived row may still
-            // show a plan summary.
-            let structured_live = inst.is_structured() && !inst.is_archived() && !inst.is_trashed();
-            let (next_wakeup_at, next_wakeup_reason) = if structured_live {
-                match state.acp_event_store.latest_pending_wakeup(&inst.id) {
-                    Some((at, reason)) => (Some(at.to_rfc3339()), reason),
-                    None => (None, None),
-                }
-            } else {
-                (None, None)
-            };
-            let active_monitor = if structured_live {
-                state.acp_event_store.latest_active_monitor(&inst.id)
-            } else {
-                None
-            };
-            let (acp_worker_state, acp_worker_start) = worker_states
-                .get(&inst.id)
-                .cloned()
-                .unwrap_or((crate::daemon::AcpWorkerState::Absent, None));
-            let mut session = SessionResponse::from_instance_with_plan(
-                inst,
-                claude_fullscreen,
-                plan_summary,
-                acp_worker_state,
-                next_wakeup_at,
-                next_wakeup_reason,
-                active_monitor,
-            );
-            session.acp_worker_start = acp_worker_start;
-            if structured_live && acp_worker_state == crate::daemon::AcpWorkerState::Running {
-                // Gate on a live worker: a pending nonce only exists on a
-                // running worker, and spawn/attach sweep orphaned nonces out of
-                // the durable log, so projecting a non-running row would surface
-                // a phantom approval the resolver can only 404 on.
-                session.pending_approvals = state
-                    .acp_event_store
-                    .pending_approval_requests(&inst.id)
-                    .into_iter()
-                    .map(|approval| PendingApproval {
-                        nonce: approval.nonce.0,
-                        target: crate::acp::approvals::summarize_target(
-                            &approval.tool_call.kind,
-                            &approval.tool_call.args_preview,
-                        ),
-                        tool_name: approval.tool_call.name,
-                        destructive: approval.destructive,
-                        choice: approval.choice,
-                    })
-                    .collect();
-            }
-            session
-        })
-        .collect();
+    let mut sessions: Vec<SessionResponse> =
+        crate::session::config::profile_config::with_profile_read_batch(|| {
+            scoped_instances
+                .iter()
+                .copied()
+                .map(|inst| {
+                    let plan_summary = if inst.is_structured() {
+                        state
+                            .acp_event_store
+                            .latest_plan(&inst.id)
+                            .map(plan_summary_from_plan)
+                    } else {
+                        None
+                    };
+                    // An archived session is sunk, so its wakeup/monitor badge is
+                    // meaningless and the per-poll SQLite lookups are skipped.
+                    // latest_plan stays ungated: a collapsed archived row may still
+                    // show a plan summary.
+                    let structured_live =
+                        inst.is_structured() && !inst.is_archived() && !inst.is_trashed();
+                    let (next_wakeup_at, next_wakeup_reason) = if structured_live {
+                        match state.acp_event_store.latest_pending_wakeup(&inst.id) {
+                            Some((at, reason)) => (Some(at.to_rfc3339()), reason),
+                            None => (None, None),
+                        }
+                    } else {
+                        (None, None)
+                    };
+                    let active_monitor = if structured_live {
+                        state.acp_event_store.latest_active_monitor(&inst.id)
+                    } else {
+                        None
+                    };
+                    let (acp_worker_state, acp_worker_start) = worker_states
+                        .get(&inst.id)
+                        .cloned()
+                        .unwrap_or((crate::daemon::AcpWorkerState::Absent, None));
+                    let mut session = SessionResponse::from_instance_with_plan(
+                        inst,
+                        claude_fullscreen,
+                        plan_summary,
+                        acp_worker_state,
+                        next_wakeup_at,
+                        next_wakeup_reason,
+                        active_monitor,
+                    );
+                    session.acp_worker_start = acp_worker_start;
+                    if structured_live && acp_worker_state == crate::daemon::AcpWorkerState::Running
+                    {
+                        // Gate on a live worker: a pending nonce only exists on a
+                        // running worker, and spawn/attach sweep orphaned nonces out of
+                        // the durable log, so projecting a non-running row would surface
+                        // a phantom approval the resolver can only 404 on.
+                        session.pending_approvals = state
+                            .acp_event_store
+                            .pending_approval_requests(&inst.id)
+                            .into_iter()
+                            .map(|approval| PendingApproval {
+                                nonce: approval.nonce.0,
+                                target: crate::acp::approvals::summarize_target(
+                                    &approval.tool_call.kind,
+                                    &approval.tool_call.args_preview,
+                                ),
+                                tool_name: approval.tool_call.name,
+                                destructive: approval.destructive,
+                                choice: approval.choice,
+                            })
+                            .collect();
+                    }
+                    session
+                })
+                .collect()
+        });
 
     // Forecast chips: one directory scan per poll, a file read only per
     // session that has a card. A card whose session is gone is never shown.
