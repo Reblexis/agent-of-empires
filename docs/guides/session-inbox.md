@@ -39,6 +39,10 @@ like, able to tell, okay, this session needs your attention, this session needs
 your attention, go here, go here, go here now", and "once I go to a session and
 I read it already, it should obviously disappear automatically."
 
+## Automated messages and human drafts
+
+Automated Codex deliveries must use the [native queue transport](codex-automated-delivery.md). Pasting a background message into the native composer can submit a human draft along with it. The existing raw `aoe send` terminal transport is not draft-safe; do not use it for background Codex messages while adopting the native transport.
+
 ## An ask
 
 A session posts its ask with its priority score, at the end of its turn. With an
