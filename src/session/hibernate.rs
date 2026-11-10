@@ -39,7 +39,7 @@ pub struct HibernateCandidate {
     pub profile: String,
 }
 
-/// The per-profile trigger for count or memory-pressure hibernation.
+/// The per-profile triggers for count and memory-pressure hibernation.
 #[derive(Clone, Copy, Default)]
 pub struct HibernatePolicy {
     pub max_live: u32,
@@ -47,14 +47,17 @@ pub struct HibernatePolicy {
 }
 
 impl HibernatePolicy {
-    /// Whether the current sample permits this profile's hibernation mode.
-    /// In pressure mode memory is short when RAM plus swap in use reaches the
-    /// percent of RAM: the kernel swaps idle agents out before RAM reads full.
+    /// Whether a sweep has anything to decide for this profile: a cap is set,
+    /// or the memory trigger is enabled and memory is short.
     pub(crate) fn should_check(self, memory: &MemorySample) -> bool {
-        if self.memory_pressure_percent == 0 {
-            return self.max_live > 0;
-        }
-        memory.total_bytes > 0
+        self.max_live > 0 || self.memory_is_short(memory)
+    }
+
+    /// Memory is short when RAM plus swap in use reaches the percent of RAM:
+    /// the kernel swaps idle agents out before RAM reads full.
+    fn memory_is_short(self, memory: &MemorySample) -> bool {
+        self.memory_pressure_percent > 0
+            && memory.total_bytes > 0
             && (u128::from(memory.used_bytes()) + u128::from(memory.swap_used_bytes)) * 100
                 >= u128::from(memory.total_bytes) * u128::from(self.memory_pressure_percent)
     }
@@ -79,11 +82,12 @@ fn recency(inst: &Instance) -> DateTime<Utc> {
 
 /// Select idle, unattached plain sessions eligible for hibernation.
 ///
-/// Count mode keeps the most recent `max_live` sessions per profile, with
-/// working sessions deliberately overflowing the cap. Pressure mode ignores
-/// that cap and selects at most one oldest eligible session across all
-/// pressure-enabled profiles, only when the supplied memory sample reaches
-/// the profile's threshold. The caller supplies a fresh sample each sweep.
+/// The cap keeps the most recent `max_live` sessions per profile, with
+/// working sessions deliberately overflowing it. The memory trigger works
+/// beside the cap: when the supplied sample reaches a profile's threshold it
+/// selects at most one oldest eligible session across those profiles, and
+/// only in a sweep where the cap selected nothing, since the cap's teardowns
+/// change the next sample. The caller supplies a fresh sample each sweep.
 /// The protection callback runs last because checking scheduled work does I/O.
 /// It can also protect sessions with other obligations, such as a standing role.
 pub fn hibernate_candidates(
@@ -115,15 +119,11 @@ pub fn hibernate_candidates(
     let mut pressure_candidates = Vec::new();
     for (profile, mut live) in by_profile {
         let policy = resolve_policy(&profile);
-        if !policy.should_check(memory) {
-            continue;
-        }
-        if policy.memory_pressure_percent > 0 {
-            pressure_candidates.extend(live);
-            continue;
+        if policy.memory_is_short(memory) {
+            pressure_candidates.extend(live.iter().copied());
         }
         let cap = policy.max_live as usize;
-        if live.len() <= cap {
+        if cap == 0 || live.len() <= cap {
             continue;
         }
         // Most recent first; ties break on created_at then id so the order
@@ -149,6 +149,9 @@ pub fn hibernate_candidates(
             .then(a.created_at.cmp(&b.created_at))
             .then(a.id.cmp(&b.id))
     });
+    if !candidates.is_empty() {
+        return candidates;
+    }
     if let Some(inst) = pressure_candidates.iter().find(|inst| eligible(inst)) {
         candidates.push(HibernateCandidate {
             session_id: inst.id.clone(),
@@ -287,35 +290,42 @@ mod tests {
                 ..MemorySample::default()
             };
             assert_eq!(
-                policy.should_check(&memory),
+                policy.memory_is_short(&memory),
                 short,
                 "total {total_bytes} available {available_bytes} swap {swap_used_bytes}"
             );
         }
     }
     #[test]
-    fn healthy_memory_does_not_restart_sessions_above_the_live_cap() {
+    fn the_live_cap_applies_beside_the_memory_trigger() {
         let instances = [
             plain("newest", Status::Idle, 10),
             plain("older", Status::Idle, 100),
             plain("oldest", Status::Idle, 1000),
         ];
         let cases = [
-            ("healthy above cap", 1000, 600, 2, 85, 0),
-            ("just below threshold", 1000, 151, 2, 85, 0),
-            ("exact threshold above cap", 1000, 150, 2, 85, 1),
+            // The cap parks its excess whatever the memory reading says.
+            ("healthy above cap", 1000, 600, 2, 85, 1),
+            ("healthy far above cap", 1000, 600, 1, 85, 2),
+            ("unavailable memory above cap", 0, 0, 1, 85, 2),
+            ("memory trigger off", 1000, 600, 1, 0, 2),
+            // Short memory adds nothing in a sweep where the cap already parks.
+            ("short memory above cap", 1000, 100, 2, 85, 1),
+            ("short memory far above cap", 1000, 100, 1, 85, 2),
+            // Under the cap, or with no cap, only short memory parks, one a sweep.
+            ("healthy under cap", 1000, 600, 5, 85, 0),
+            ("just below threshold", 1000, 151, 5, 85, 0),
+            ("exact threshold", 1000, 150, 5, 85, 1),
             ("pressure below cap", 1000, 100, 5, 85, 1),
             ("pressure without count cap", 1000, 100, 0, 85, 1),
-            ("pressure reclaims only one", 1000, 100, 1, 85, 1),
-            ("unavailable memory", 0, 0, 1, 85, 0),
-            ("invalid memory reading", 1000, 1200, 1, 85, 0),
-            ("lowest threshold", 1000, 990, 1, 1, 1),
-            ("full occupancy threshold", 1000, 0, 1, 100, 1),
-            ("almost full occupancy", 1000, 1, 1, 100, 0),
-            ("large memory arithmetic", u64::MAX, 0, 1, 100, 1),
-            ("zero preserves count mode", 1000, 600, 1, 0, 2),
+            ("unavailable memory", 0, 0, 0, 85, 0),
+            ("invalid memory reading", 1000, 1200, 0, 85, 0),
+            ("lowest threshold", 1000, 990, 0, 1, 1),
+            ("full occupancy threshold", 1000, 0, 0, 100, 1),
+            ("almost full occupancy", 1000, 1, 0, 100, 0),
+            ("large memory arithmetic", u64::MAX, 0, 0, 100, 1),
             ("both disabled", 1000, 0, 0, 0, 0),
-            ("invalid pressure threshold", 1000, 0, 1, 101, 0),
+            ("invalid pressure threshold", 1000, 0, 0, 101, 0),
         ];
         let mut failures = Vec::new();
         for (label, total_bytes, available_bytes, max_live, memory_pressure_percent, expected) in
@@ -491,8 +501,9 @@ mod tests {
                 let got = hibernate_candidates(
                     &instances,
                     &HashSet::new(),
+                    // The memory trigger is checked alone: a cap of 1 would park first.
                     |_| HibernatePolicy {
-                        max_live: 1,
+                        max_live: u32::from(memory_pressure_percent == 0),
                         memory_pressure_percent,
                     },
                     |inst| config.protects_from_automatic_stop(&inst.id),

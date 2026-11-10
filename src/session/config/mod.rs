@@ -1499,8 +1499,8 @@ pub struct SessionConfig {
     /// selected. Working sessions (`Running`/`Waiting`/...) and sessions
     /// with an attached tmux client are never hibernated, so the live count
     /// may exceed the cap while agents are busy. `0` disables (default).
-    /// Checked about once a minute alongside the idle reaper. An enabled
-    /// `hibernate_memory_pressure_percent` replaces this count trigger.
+    /// Checked about once a minute alongside the idle reaper. The cap applies
+    /// whether or not `hibernate_memory_pressure_percent` is enabled.
     #[serde(default = "default_hibernate_max_live")]
     #[setting(
         label = "Max live sessions (LRU)",
@@ -1512,13 +1512,13 @@ pub struct SessionConfig {
     pub hibernate_max_live: u32,
 
     /// Host memory occupancy that triggers pressure-based hibernation (1 to 100).
-    /// Replaces the live-count cap: when RAM plus swap in use reaches this
+    /// Works beside the live-count cap: when RAM plus swap in use reaches this
     /// percentage of RAM, reclaim
     /// at most one oldest eligible idle session per minute, even below the cap.
-    /// Healthy or unavailable memory readings never park sessions in this mode.
+    /// A healthy or unavailable memory reading never triggers it.
     /// Working, attached and scheduled-work sessions remain protected. Memory
     /// is sampled again each sweep; PSI does not trigger it.
-    /// `0` retains count-based hibernation (default).
+    /// `0` disables the memory trigger (default).
     #[serde(default)]
     #[setting(
         label = "Hibernate at RAM plus swap used (%)",

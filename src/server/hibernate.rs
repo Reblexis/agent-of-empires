@@ -7,8 +7,8 @@ use super::state::AppState;
 use crate::session::hibernate::HibernatePolicy;
 
 /// Hibernate least-recently-used plain sessions past the per-profile
-/// `session.hibernate_max_live` cap, or one eligible idle session when an
-/// enabled memory threshold is reached. Same cadence, claim
+/// `session.hibernate_max_live` cap, and one eligible idle session when an
+/// enabled memory threshold is reached and the cap parked nothing. Same cadence, claim
 /// discipline and bounded-concurrency teardown as
 /// [`super::idle_reap::reap_idle_sessions`]; the difference is the outcome: a
 /// hibernated row keeps `Status::Idle` plus the dormant marker (persisted
