@@ -501,11 +501,12 @@ fn is_agent_session_name(name: &str, marker: Option<&str>) -> bool {
 
 /// The agent pane's pid for `name`.
 fn agent_pid(
-    _meta: &std::collections::HashMap<String, crate::tmux::PaneMetadata>,
+    meta: &std::collections::HashMap<String, crate::tmux::PaneMetadata>,
     name: &str,
     lookup: impl Fn(&str) -> Option<u32>,
 ) -> Option<u32> {
-    lookup(name)
+    let pane = meta.get(name)?;
+    pane.pane_pid.or_else(|| lookup(name))
 }
 
 fn collect_tmux_states(instances: &mut [Instance]) -> Vec<TmuxState> {
