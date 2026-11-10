@@ -2,6 +2,7 @@ import { lazy, Suspense } from "react";
 
 import { TerminalSessionStack } from "./TerminalSessionStack";
 import { ForecastBand } from "./ForecastBand";
+import { RootBudgetFrame } from "./OwnerBudget";
 import { PairedShellPane } from "./PairedTerminal";
 import { BackgroundAgentsPanel } from "./acp/BackgroundAgentsPanel";
 import { TimelinePane } from "./TimelinePane";
@@ -136,38 +137,40 @@ export function MobileMainPane({
       )}
       <div className="relative flex-1 flex flex-col min-h-0 overflow-hidden">
         <div className={layerClass(view === "agent")} inert={view !== "agent"}>
-          {activeSession?.view === "structured" ? (
-            <Suspense fallback={null}>
-              <StructuredView
-                key={activeSessionId}
-                sessionId={activeSessionId!}
-                acpWorkerState={activeSession.acp_worker_state ?? "absent"}
-                rateLimitAutoResume={activeSession.rate_limit_auto_resume}
-                tool={activeSession.tool}
-                acpAgent={activeSession.acp_agent ?? null}
-                acpProvider={activeSession.acp_provider ?? null}
-                clearAliases={activeSession.clear_aliases}
-                archivedAt={activeSession.archived_at ?? null}
-                snoozedUntil={activeSession.snoozed_until ?? null}
-                trashedAt={activeSession.trashed_at ?? null}
-                onOpenFileRef={onOpenFileRef}
-                fileRefSession={activeSession}
-                onOpenAgentsPane={onOpenAgentsPane}
-                isSandboxed={activeSession.is_sandboxed}
-              />
-            </Suspense>
-          ) : (
-            // Clear the home indicator without changing the keyboard-open lift.
-            <div className="home-indicator-clearance flex-1 flex flex-col min-h-0 overflow-hidden">
-              <TerminalSessionStack
-                active={view === "agent"}
-                activeSessionId={activeSessionId!}
-                sessions={sessions.filter((session) => session.view !== "structured")}
-                persistent={webSettings.persistentTerminals}
-                maxPersistentTerminals={webSettings.maxPersistentTerminals}
-              />
-            </div>
-          )}
+          <RootBudgetFrame session={activeSession} sessions={sessions}>
+            {activeSession?.view === "structured" ? (
+              <Suspense fallback={null}>
+                <StructuredView
+                  key={activeSessionId}
+                  sessionId={activeSessionId!}
+                  acpWorkerState={activeSession.acp_worker_state ?? "absent"}
+                  rateLimitAutoResume={activeSession.rate_limit_auto_resume}
+                  tool={activeSession.tool}
+                  acpAgent={activeSession.acp_agent ?? null}
+                  acpProvider={activeSession.acp_provider ?? null}
+                  clearAliases={activeSession.clear_aliases}
+                  archivedAt={activeSession.archived_at ?? null}
+                  snoozedUntil={activeSession.snoozed_until ?? null}
+                  trashedAt={activeSession.trashed_at ?? null}
+                  onOpenFileRef={onOpenFileRef}
+                  fileRefSession={activeSession}
+                  onOpenAgentsPane={onOpenAgentsPane}
+                  isSandboxed={activeSession.is_sandboxed}
+                />
+              </Suspense>
+            ) : (
+              // Clear the home indicator without changing the keyboard-open lift.
+              <div className="home-indicator-clearance flex-1 flex flex-col min-h-0 overflow-hidden">
+                <TerminalSessionStack
+                  active={view === "agent"}
+                  activeSessionId={activeSessionId!}
+                  sessions={sessions.filter((session) => session.view !== "structured")}
+                  persistent={webSettings.persistentTerminals}
+                  maxPersistentTerminals={webSettings.maxPersistentTerminals}
+                />
+              </div>
+            )}
+          </RootBudgetFrame>
         </div>
 
         {pairedMounted && (

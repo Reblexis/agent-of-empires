@@ -16,6 +16,11 @@ pub const ARCHIVED_SECTION_NAME: &str = "Archived";
 pub const TRASH_SECTION_PATH: &str = "__aoe_trash_section__";
 pub const TRASH_SECTION_NAME: &str = "Trash";
 
+/// Synthetic group path for the Favorites section that holds an owner's core
+/// (docs/guides/session-owners.md), pinned above every group.
+pub const OWNERS_SECTION_PATH: &str = "__aoe_owners_section__";
+pub const OWNERS_SECTION_NAME: &str = "Favorites";
+
 /// Synthetic group identity for the scratch bucket in project mode.
 pub const SCRATCH_GROUP_PATH: &str = "__aoe_scratch_group__";
 /// Capitalized so the bucket reads as a system group rather than a repo basename, matching the web
@@ -58,11 +63,19 @@ pub fn archived_project_sub_path(project_name: &str) -> String {
     format!("{}/{}", ARCHIVED_SECTION_PATH, project_name)
 }
 
+#[inline]
+pub fn is_owners_section_path(path: &str) -> bool {
+    path == OWNERS_SECTION_PATH
+}
+
 /// True for any project-mode header that is synthetic rather than a real, pinnable repo: the
 /// Archived/Trash shelves (and anything nested under them) and the scratch bucket.
 #[inline]
 pub fn is_synthetic_project_header(path: &str) -> bool {
-    is_within_archived_section(path) || is_within_trash_section(path) || is_scratch_group_path(path)
+    is_within_archived_section(path)
+        || is_within_trash_section(path)
+        || is_scratch_group_path(path)
+        || is_owners_section_path(path)
 }
 
 /// Map a project-mode group identity key to its human display label, for the sites that render a
@@ -1020,6 +1033,55 @@ fn append_section(
     }));
 }
 
+/// An owner's core in favorites order: the root, then its modules by Claude
+/// grant (largest first), then title. Snoozed, archived and trashed sessions
+/// are left out, as with favorites.
+pub fn owners_core<'a>(
+    instances: &'a [Instance],
+    marks: &std::collections::HashMap<String, super::owners::OwnerMark>,
+) -> Vec<&'a Instance> {
+    use super::owners::Role;
+    let mut core: Vec<(&Instance, &super::owners::OwnerMark)> = instances
+        .iter()
+        .filter(|i| !i.is_archived() && !i.is_trashed() && !i.is_snoozed())
+        .filter_map(|i| marks.get(&i.id).map(|m| (i, m)))
+        .filter(|(_, m)| matches!(m.role, Role::Root | Role::Module))
+        .collect();
+    core.sort_by(|(a, am), (b, bm)| {
+        (am.role != Role::Root)
+            .cmp(&(bm.role != Role::Root))
+            .then(
+                bm.granted
+                    .claude
+                    .unwrap_or(0.0)
+                    .total_cmp(&am.granted.claude.unwrap_or(0.0)),
+            )
+            .then_with(|| a.title.cmp(&b.title))
+    });
+    core.into_iter().map(|(i, _)| i).collect()
+}
+
+/// The Favorites section for `core`: its header, then each core session.
+pub fn owners_section(core: &[&Instance]) -> Vec<Item> {
+    if core.is_empty() {
+        return Vec::new();
+    }
+    let mut items = vec![Item::Group {
+        path: OWNERS_SECTION_PATH.to_string(),
+        name: OWNERS_SECTION_NAME.to_string(),
+        depth: 0,
+        collapsed: false,
+        session_count: core.len(),
+        profile: None,
+        archived_at: None,
+    }];
+    items.extend(core.iter().map(|inst| Item::Session {
+        id: inst.id.clone(),
+        depth: 1,
+    }));
+    items
+}
+
 pub fn append_archived_section(items: &mut Vec<Item>, instances: &[Instance], collapsed: bool) {
     let archived: Vec<&Instance> = instances
         .iter()
@@ -1688,29 +1750,45 @@ mod tests {
     }
 
     #[test]
-    fn owned_session_pins_as_a_favorite_without_the_favorite_flag() {
-        let mut owned = inst("owned", "work");
-        let mut plain = inst("plain", "work");
-        plain.created_at = owned.created_at + chrono::Duration::seconds(1);
-        crate::session::owners::set_marks_for_test(std::collections::HashMap::from([(
-            owned.id.clone(),
-            crate::session::owners::OwnerMark {
-                owner: "central".into(),
-                usage: None,
-                limit: None,
-            },
-        )]));
-        assert!(!owned.is_favorited(), "the mark never sets the person's flag");
-        assert!(is_live_favorite(&owned));
-        assert!(!is_live_favorite(&plain));
+    fn owners_core_is_root_then_modules_by_claude_limit() {
+        let e = |parent: Option<&str>, claude: f64| {
+            serde_json::json!({ "owner": "central", "parent": parent,
+                                "granted": { "claude": claude, "codex": 0.0 } })
+        };
+        let marks = crate::session::owners::test_file(serde_json::json!({
+            "root": e(None, 0.25),
+            "small": e(Some("root"), 0.01),
+            "big": e(Some("root"), 0.08),
+            "tie_b": e(Some("root"), 0.04),
+            "tie_a": e(Some("root"), 0.04),
+            "worker": e(Some("big"), 0.5),
+            "snoozed": e(Some("root"), 0.9),
+        }));
+        let mut instances: Vec<Instance> = [
+            "worker", "small", "tie_b", "big", "tie_a", "root", "snoozed", "plain",
+        ]
+        .iter()
+        .map(|id| {
+            let mut i = inst(id, "");
+            i.id = id.to_string();
+            i
+        })
+        .collect();
+        instances[6].snooze(60);
+        let core: Vec<&str> = owners_core(&instances, &marks)
+            .iter()
+            .map(|i| i.id.as_str())
+            .collect();
+        assert_eq!(core, ["root", "big", "tie_a", "tie_b", "small"]);
 
-        // `owned` is the older row, so only the pin can put it first.
-        let mut sessions = vec![&plain, &owned];
-        sort_sessions_inner(&mut sessions, SortOrder::Newest, true);
-        assert_eq!(sessions[0].id, owned.id, "owned rows pin first");
-
-        owned.snooze(60);
-        assert!(!is_live_favorite(&owned), "a snoozed owned session does not pin");
+        let section = owners_section(&owners_core(&instances, &marks));
+        assert!(
+            matches!(&section[0], Item::Group { path, session_count: 5, .. } if is_owners_section_path(path))
+        );
+        assert!(section[1..]
+            .iter()
+            .all(|i| matches!(i, Item::Session { depth: 1, .. })));
+        assert!(owners_section(&[]).is_empty(), "no core, no section");
     }
 
     #[test]

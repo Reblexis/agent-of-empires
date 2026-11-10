@@ -236,15 +236,35 @@ impl HomeView {
         })
     }
 
+    /// The owner's core in its Favorites section on top, then every other row.
     fn build_flat_items_hiding(&self, hide_stopped: bool) -> Vec<Item> {
+        let pool = self.cloned_instances_in_active_view();
+        let core = owners_core(&pool, &crate::session::owners::marks());
+        let mut items = owners_section(&core);
+        let core_ids: HashSet<String> = core.iter().map(|i| i.id.clone()).collect();
+        items.extend(self.build_group_items(hide_stopped, &core_ids));
+        items
+    }
+
+    /// The active view's instances without the owner's core, which only its
+    /// Favorites section shows.
+    fn instances_outside_core(&self, core_ids: &HashSet<String>) -> Vec<Instance> {
+        let mut pool = self.cloned_instances_in_active_view();
+        pool.retain(|i| !core_ids.contains(&i.id));
+        pool
+    }
+
+    fn build_group_items(&self, hide_stopped: bool, core_ids: &HashSet<String>) -> Vec<Item> {
         // Project/org grouping keeps headers under every sort order, Attention included.
         match self.group_by {
-            GroupByMode::Project => return self.build_flat_items_by_project(hide_stopped),
-            GroupByMode::Org => return self.build_flat_items_by_org(hide_stopped),
+            GroupByMode::Project => {
+                return self.build_flat_items_by_project(hide_stopped, core_ids);
+            }
+            GroupByMode::Org => return self.build_flat_items_by_org(hide_stopped, core_ids),
             GroupByMode::Manual => {}
         }
 
-        let pool = self.cloned_instances_in_active_view();
+        let pool = self.instances_outside_core(core_ids);
         // Manual grouping under Attention sort is flat, so it has no groups to hide in.
         let pool = if self.sort_order == SortOrder::Attention {
             pool
@@ -279,9 +299,10 @@ impl HomeView {
         &self,
         key: impl Fn(&Instance) -> String,
         hide_stopped: bool,
+        core_ids: &HashSet<String>,
     ) -> (Vec<Instance>, Vec<Instance>) {
         let grouped: Vec<Instance> = self
-            .cloned_instances_in_active_view()
+            .instances_outside_core(core_ids)
             .into_iter()
             .map(|mut inst| {
                 inst.group_path = key(&inst);
@@ -322,8 +343,13 @@ impl HomeView {
         items
     }
 
-    fn build_flat_items_by_project(&self, hide_stopped: bool) -> Vec<Item> {
-        let (grouped, tree_seed) = self.regrouped_instances(project_group_key, hide_stopped);
+    fn build_flat_items_by_project(
+        &self,
+        hide_stopped: bool,
+        core_ids: &HashSet<String>,
+    ) -> Vec<Item> {
+        let (grouped, tree_seed) =
+            self.regrouped_instances(project_group_key, hide_stopped, core_ids);
         let populated_labels: HashSet<String> = tree_seed
             .iter()
             .map(|i| i.group_path.clone())
@@ -377,9 +403,9 @@ impl HomeView {
         self.resolve_org(inst).1
     }
 
-    fn build_flat_items_by_org(&self, hide_stopped: bool) -> Vec<Item> {
+    fn build_flat_items_by_org(&self, hide_stopped: bool, core_ids: &HashSet<String>) -> Vec<Item> {
         let (grouped, tree_seed) =
-            self.regrouped_instances(|inst| self.org_group_key(inst), hide_stopped);
+            self.regrouped_instances(|inst| self.org_group_key(inst), hide_stopped, core_ids);
         // The key is not a display name, so seed each group with its owner name.
         let mut seen_keys = HashSet::new();
         let org_groups: Vec<Group> = tree_seed

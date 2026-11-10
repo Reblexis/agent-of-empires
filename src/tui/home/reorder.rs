@@ -263,6 +263,7 @@ impl HomeView {
             };
             if crate::session::is_within_archived_section(&path)
                 || crate::session::is_within_trash_section(&path)
+                || crate::session::is_owners_section_path(&path)
             {
                 continue;
             }

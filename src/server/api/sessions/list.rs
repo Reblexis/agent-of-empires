@@ -174,6 +174,14 @@ pub(crate) async fn list_sessions_envelope(
         }
     }
 
+    // Owner tree entries: the owners file is reread only when it changes.
+    {
+        let mut marks = crate::session::owners::marks();
+        for session in &mut sessions {
+            session.owner = marks.remove(&session.id);
+        }
+    }
+
     // Share resolved config between the ACP-capability and smart-rename
     // overlays, halving disk reads when a profile/project pair repeats in the
     // 3s sidebar poll (#2603). Monotonic, so the delta below is this request's
@@ -670,6 +678,7 @@ mod workspace_ordering_tests {
             smart_rename: crate::session::smart_rename::SmartRenameState::Inactive,
             default_name: false,
             forecast: None,
+            owner: None,
             has_terminal: false,
             profile: "default".to_string(),
             cleanup_defaults: CleanupDefaults {

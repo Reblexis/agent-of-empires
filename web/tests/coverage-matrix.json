@@ -4858,6 +4858,20 @@
       "risk": "high",
       "specs": ["tests/active-sessions.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx", "web/src/components/Dashboard.tsx"]
+    },
+    {
+      "id": "sidebar.owner-core",
+      "kind": "vitest",
+      "risk": "medium",
+      "description": "An outside agent's session tree: root and modules at the top of Favorites with left-of-grant meters, nested workers, the worker chip on other rows, and the root's Budget tab (docs/guides/session-owners.md).",
+      "specs": ["src/components/__tests__/OwnerCore.test.tsx", "src/lib/__tests__/sessionOwners.test.ts"],
+      "components": [
+        "web/src/components/sidebar/OwnerCore.tsx",
+        "web/src/components/OwnerBudget.tsx",
+        "web/src/components/WorkspaceSidebar.tsx",
+        "web/src/components/sidebar/RowBadges.tsx",
+        "web/src/lib/sessionOwners.ts"
+      ]
     }
   ]
 }

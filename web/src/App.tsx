@@ -126,6 +126,7 @@ import { TopBar } from "./components/TopBar";
 import { AppShellSkeleton, MainPaneSkeleton } from "./components/AppShellSkeleton";
 import { ContentSplit } from "./components/ContentSplit";
 import { ForecastBand } from "./components/ForecastBand";
+import { RootBudgetFrame } from "./components/OwnerBudget";
 import { TerminalSessionStack } from "./components/TerminalSessionStack";
 // Lazy-load the acp surface so non-acp users never download
 // the @assistant-ui/react, shiki, and in-house StringDiff/DiffLine
@@ -2006,39 +2007,41 @@ function AppContent({
                   <ForecastBand key={activeSessionId} sessionId={activeSessionId} summary={activeSession?.forecast} />
                 )}
                 <div className={selectedFilePath ? "hidden" : "flex-1 flex flex-col min-h-0 overflow-hidden"}>
-                  {activeSession?.view === "structured" ? (
-                    <Suspense fallback={<AcpLoadingFallback />}>
-                      <StructuredView
-                        key={activeSessionId}
-                        sessionId={activeSessionId!}
-                        acpWorkerState={activeSession.acp_worker_state ?? "absent"}
-                        rateLimitAutoResume={activeSession.rate_limit_auto_resume}
-                        tool={activeSession.tool}
-                        acpAgent={activeSession.acp_agent ?? null}
-                        acpProvider={activeSession.acp_provider ?? null}
-                        clearAliases={activeSession.clear_aliases}
-                        archivedAt={activeSession.archived_at ?? null}
-                        snoozedUntil={activeSession.snoozed_until ?? null}
-                        trashedAt={activeSession.trashed_at ?? null}
-                        onRestore={
-                          activeSession.trashed_at
-                            ? () => handleRestoreSession(trashedWorkspaceRestoreIds(workspaces, activeSessionId!))
-                            : undefined
-                        }
-                        onOpenFileRef={handleOpenFileRef}
-                        fileRefSession={activeSession}
-                        onOpenAgentsPane={openAgentsPane}
-                        isSandboxed={activeSession.is_sandboxed}
+                  <RootBudgetFrame session={activeSession} sessions={sessions}>
+                    {activeSession?.view === "structured" ? (
+                      <Suspense fallback={<AcpLoadingFallback />}>
+                        <StructuredView
+                          key={activeSessionId}
+                          sessionId={activeSessionId!}
+                          acpWorkerState={activeSession.acp_worker_state ?? "absent"}
+                          rateLimitAutoResume={activeSession.rate_limit_auto_resume}
+                          tool={activeSession.tool}
+                          acpAgent={activeSession.acp_agent ?? null}
+                          acpProvider={activeSession.acp_provider ?? null}
+                          clearAliases={activeSession.clear_aliases}
+                          archivedAt={activeSession.archived_at ?? null}
+                          snoozedUntil={activeSession.snoozed_until ?? null}
+                          trashedAt={activeSession.trashed_at ?? null}
+                          onRestore={
+                            activeSession.trashed_at
+                              ? () => handleRestoreSession(trashedWorkspaceRestoreIds(workspaces, activeSessionId!))
+                              : undefined
+                          }
+                          onOpenFileRef={handleOpenFileRef}
+                          fileRefSession={activeSession}
+                          onOpenAgentsPane={openAgentsPane}
+                          isSandboxed={activeSession.is_sandboxed}
+                        />
+                      </Suspense>
+                    ) : (
+                      <TerminalSessionStack
+                        activeSessionId={activeSessionId!}
+                        sessions={sessions.filter((session) => session.view !== "structured")}
+                        persistent={webSettings.persistentTerminals}
+                        maxPersistentTerminals={webSettings.maxPersistentTerminals}
                       />
-                    </Suspense>
-                  ) : (
-                    <TerminalSessionStack
-                      activeSessionId={activeSessionId!}
-                      sessions={sessions.filter((session) => session.view !== "structured")}
-                      persistent={webSettings.persistentTerminals}
-                      maxPersistentTerminals={webSettings.maxPersistentTerminals}
-                    />
-                  )}
+                    )}
+                  </RootBudgetFrame>
                 </div>
 
                 {selectedFilePath &&

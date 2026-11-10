@@ -219,6 +219,11 @@ pub struct SessionResponse {
     /// `null`. See docs/guides/session-forecast.md.
     #[serde(default)]
     pub forecast: Option<crate::session::forecast::ForecastSummary>,
+    /// The session's entry in an owner's tree, from
+    /// `<app_dir>/session-owners.json`; `null` when no owner lists it. Overlaid
+    /// in `list_sessions`. See docs/guides/session-owners.md.
+    #[serde(default)]
+    pub owner: Option<crate::session::owners::OwnerMark>,
     #[serde(default)]
     pub has_terminal: bool,
     #[serde(default)]

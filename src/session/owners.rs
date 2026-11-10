@@ -1,9 +1,10 @@
-//! Session owners: sessions an outside agent marks as its own, shown among the
-//! favorites with the owner, usage and limit on the row. The writer replaces
-//! `<app_dir>/session-owners.json` whole; aoe rereads it when its mtime moves
-//! and computes nothing. Spec: docs/guides/session-owners.md.
+//! Session owners: an outside agent's tree of the sessions it owns. The core
+//! (root and its modules) shows in favorites, deeper entries as workers, each
+//! with its usage and limit. The writer replaces `<app_dir>/session-owners.json`
+//! whole; aoe rereads it when its mtime moves and computes nothing about money
+//! or ownership, it only arranges the tree. Spec: docs/guides/session-owners.md.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::time::{Duration, Instant, SystemTime};
@@ -13,30 +14,265 @@ use serde_json::Value;
 
 const FILE_NAME: &str = "session-owners.json";
 const MAX_OWNER_CHARS: usize = 24;
-const MAX_DETAIL_CHARS: usize = 40;
 /// The file is stat'ed at most this often, however many rows ask.
 const RECHECK: Duration = Duration::from_secs(1);
 
-/// One session's mark, as `GET /api/sessions` carries it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
-pub struct OwnerMark {
-    pub owner: String,
-    pub usage: Option<String>,
-    pub limit: Option<String>,
+/// A pair of weekly-plan shares (1 = one account's whole weekly limit);
+/// `None` is unknown.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct Shares {
+    pub claude: Option<f64>,
+    pub codex: Option<f64>,
 }
 
-impl OwnerMark {
-    /// `owner · usage · limit`, leaving out what was not given.
-    pub fn rendered(&self) -> String {
-        todo!()
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    Root,
+    Module,
+    Worker,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum TransferKind {
+    Grant,
+    Default,
+    Raise,
+    AutoRaise,
+    Cut,
+}
+
+/// One budget transfer between sessions (or from outside the tree).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct Transfer {
+    pub at: chrono::DateTime<chrono::Utc>,
+    pub from: String,
+    pub to: String,
+    pub claude: Option<f64>,
+    pub codex: Option<f64>,
+    pub kind: TransferKind,
+    pub by: String,
+}
+
+/// One session's entry with its place in the tree, as `GET /api/sessions`
+/// carries it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct OwnerMark {
+    pub owner: String,
+    pub parent: Option<String>,
+    pub role: Role,
+    /// The worker's module (`None` for the root, a module, or an orphan worker).
+    pub module: Option<String>,
+    pub left: Shares,
+    pub granted: Shares,
+    pub over: bool,
+    pub transactions: Vec<Transfer>,
+}
+
+/// How full a fuel gauge is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Tone {
+    Ok,
+    Low,
+    Empty,
+}
+
+const MAX_TRANSFERS: usize = 20;
+/// A gauge turns amber below this share of its grant left.
+const LOW_LEFT: f64 = 0.2;
+
+/// A share as a percent of one account's weekly limit: two decimals, trailing
+/// zeros dropped, `?` when unknown.
+pub fn pct(share: Option<f64>) -> String {
+    let Some(share) = share else {
+        return "?".into();
+    };
+    let s = format!("{:.2}", share * 100.0);
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    if s == "-0" {
+        "0".into()
+    } else {
+        s.into()
     }
 }
 
-/// Every valid entry of an owners file. A file that does not parse yields
-/// nothing; an entry that breaks the rules is dropped alone.
+pub fn tone(left: Option<f64>, granted: Option<f64>, over: bool) -> Tone {
+    match (left, granted) {
+        _ if over => Tone::Empty,
+        (Some(l), _) if l <= 0.0 => Tone::Empty,
+        (Some(l), Some(g)) if l < g * LOW_LEFT => Tone::Low,
+        _ => Tone::Ok,
+    }
+}
+
+/// `width` cells of `▰` filled by left over granted, the rest `▱`.
+pub fn meter(left: Option<f64>, granted: Option<f64>, width: usize) -> String {
+    let filled = match (left, granted) {
+        (Some(l), Some(g)) if g > 0.0 => {
+            ((l / g) * width as f64).round().clamp(0.0, width as f64) as usize
+        }
+        _ => 0,
+    };
+    "▰".repeat(filled) + &"▱".repeat(width - filled)
+}
+
+/// A module title without its owner prefix: everything up to and including
+/// the first `: `.
+pub fn short_title(title: &str) -> &str {
+    title.split_once(": ").map_or(title, |(_, rest)| rest)
+}
+
+fn shares(v: Option<&Value>, may_be_negative: bool) -> Result<Shares, ()> {
+    let Some(obj) = (match v {
+        None | Some(Value::Null) => return Ok(Shares::default()),
+        Some(Value::Object(o)) => Some(o),
+        _ => None,
+    }) else {
+        return Err(());
+    };
+    let one = |key: &str| match obj.get(key) {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::Number(n)) => match n.as_f64() {
+            Some(x) if x.is_finite() && (may_be_negative || x >= 0.0) => Ok(Some(x)),
+            _ => Err(()),
+        },
+        _ => Err(()),
+    };
+    Ok(Shares {
+        claude: one("claude")?,
+        codex: one("codex")?,
+    })
+}
+
+fn transfer(v: &Value) -> Option<Transfer> {
+    let t: Transfer = serde_json::from_value(v.clone()).ok()?;
+    let ok = |x: Option<f64>| x.is_none_or(|x| x.is_finite() && x >= 0.0);
+    (ok(t.claude) && ok(t.codex)).then_some(t)
+}
+
+/// One entry before its place in the tree is known.
+fn parse_entry(v: &Value) -> Result<OwnerMark, ()> {
+    let obj = v.as_object().ok_or(())?;
+    let owner = match obj.get("owner") {
+        Some(Value::String(s)) if !s.is_empty() && s.chars().count() <= MAX_OWNER_CHARS => {
+            s.clone()
+        }
+        _ => return Err(()),
+    };
+    let parent = match obj.get("parent") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) if !s.is_empty() => Some(s.clone()),
+        _ => return Err(()),
+    };
+    let over = match obj.get("over") {
+        None | Some(Value::Null) => false,
+        Some(Value::Bool(b)) => *b,
+        _ => return Err(()),
+    };
+    let transactions = match obj.get("transactions") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(list)) => list
+            .iter()
+            .filter_map(transfer)
+            .take(MAX_TRANSFERS)
+            .collect(),
+        _ => return Err(()),
+    };
+    Ok(OwnerMark {
+        owner,
+        parent,
+        role: Role::Worker,
+        module: None,
+        left: shares(obj.get("left"), true)?,
+        granted: shares(obj.get("granted"), false)?,
+        over,
+        transactions,
+    })
+}
+
+/// Every valid entry of an owners file, placed in the tree. A file that does
+/// not parse yields nothing; an entry that breaks the rules is dropped alone.
 pub fn parse(bytes: &[u8]) -> HashMap<String, OwnerMark> {
-    let _ = bytes;
-    HashMap::new()
+    let Ok(Value::Object(file)) = serde_json::from_slice::<Value>(bytes) else {
+        tracing::warn!("session owners file does not parse; no session is owned");
+        return HashMap::new();
+    };
+    let Some(Value::Object(sessions)) = file.get("sessions") else {
+        return HashMap::new();
+    };
+    let mut marks = HashMap::new();
+    for (id, v) in sessions {
+        match parse_entry(v) {
+            Ok(m) => {
+                marks.insert(id.clone(), m);
+            }
+            Err(()) => tracing::warn!("session owners file: entry {id} breaks the rules; dropped"),
+        }
+    }
+    place(&mut marks);
+    marks
+}
+
+/// Set each entry's role and module from the parent chain: the first
+/// parentless entry by id is the root, its children are modules, and anything
+/// whose chain does not reach the root is a worker of no module.
+fn place(marks: &mut HashMap<String, OwnerMark>) {
+    let root = marks
+        .iter()
+        .filter(|(_, m)| m.parent.is_none())
+        .map(|(id, _)| id.clone())
+        .min();
+    let placed: Vec<(String, Role, Option<String>)> = marks
+        .keys()
+        .map(|id| {
+            let mut chain = vec![id.clone()];
+            let mut seen = HashSet::from([id.clone()]);
+            let mut at = id.clone();
+            while let Some(parent) = marks.get(&at).and_then(|m| m.parent.clone()) {
+                if !seen.insert(parent.clone()) {
+                    break;
+                }
+                chain.push(parent.clone());
+                at = parent;
+            }
+            let reaches_root = root.as_ref().is_some_and(|r| chain.last() == Some(r));
+            let (role, module) = match (reaches_root, chain.len()) {
+                (true, 1) => (Role::Root, None),
+                (true, 2) => (Role::Module, None),
+                (true, n) => (Role::Worker, Some(chain[n - 2].clone())),
+                (false, _) => (Role::Worker, None),
+            };
+            (id.clone(), role, module)
+        })
+        .collect();
+    for (id, role, module) in placed {
+        if let Some(m) = marks.get_mut(&id) {
+            m.role = role;
+            m.module = module;
+        }
+    }
+}
+
+/// Entries below each module, at any depth.
+pub fn worker_counts(marks: &HashMap<String, OwnerMark>) -> HashMap<String, usize> {
+    let mut counts = HashMap::new();
+    for m in marks.values() {
+        if let Some(module) = &m.module {
+            *counts.entry(module.clone()).or_default() += 1;
+        }
+    }
+    counts
+}
+
+/// What the root handed out: its modules' grants, per plan.
+pub fn handed_out(marks: &HashMap<String, OwnerMark>) -> Shares {
+    let modules = || marks.values().filter(|m| m.role == Role::Module);
+    let total = |f: fn(&OwnerMark) -> Option<f64>| Some(modules().filter_map(f).sum());
+    Shares {
+        claude: total(|m| m.granted.claude),
+        codex: total(|m| m.granted.codex),
+    }
 }
 
 #[derive(Default)]
@@ -51,7 +287,17 @@ impl Cache {
     /// Reread `path` when its mtime differs from the last read; a missing file
     /// empties the marks.
     fn refresh_from(&mut self, path: &Path) {
-        let _ = path;
+        let mtime = std::fs::metadata(path).and_then(|m| m.modified()).ok();
+        if mtime.is_none() {
+            self.mtime = None;
+            self.marks.clear();
+            return;
+        }
+        if mtime == self.mtime {
+            return;
+        }
+        self.mtime = mtime;
+        self.marks = std::fs::read(path).map(|b| parse(&b)).unwrap_or_default();
     }
 }
 
@@ -88,7 +334,7 @@ fn refresh() {
     }
 }
 
-/// The mark the owners file gives session `id`, if any.
+/// The entry the owners file gives session `id`, if any.
 pub fn mark(id: &str) -> Option<OwnerMark> {
     refresh();
     CACHE
@@ -97,16 +343,7 @@ pub fn mark(id: &str) -> Option<OwnerMark> {
         .and_then(|c| c.as_ref().and_then(|c| c.marks.get(id).cloned()))
 }
 
-/// Whether the owners file lists session `id`.
-pub fn is_owned(id: &str) -> bool {
-    refresh();
-    CACHE
-        .read()
-        .ok()
-        .is_some_and(|c| c.as_ref().is_some_and(|c| c.marks.contains_key(id)))
-}
-
-/// Every mark, for the session list's one overlay per poll.
+/// Every entry, for one overlay per poll or frame.
 pub fn marks() -> HashMap<String, OwnerMark> {
     refresh();
     CACHE
@@ -117,67 +354,198 @@ pub fn marks() -> HashMap<String, OwnerMark> {
 }
 
 #[cfg(test)]
-pub(crate) fn set_marks_for_test(marks: HashMap<String, OwnerMark>) {
-    *CACHE.write().unwrap() = Some(Cache {
-        marks,
-        ..Cache::default()
-    });
+pub(crate) fn test_file(entries: Value) -> HashMap<String, OwnerMark> {
+    parse(
+        serde_json::json!({ "sessions": entries })
+            .to_string()
+            .as_bytes(),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn mark(owner: &str, usage: Option<&str>, limit: Option<&str>) -> OwnerMark {
-        OwnerMark {
-            owner: owner.into(),
-            usage: usage.map(Into::into),
-            limit: limit.map(Into::into),
-        }
-    }
+    use serde_json::json;
 
     #[test]
     fn owners_file_entries_follow_the_rules() {
-        let long_owner = "o".repeat(MAX_OWNER_CHARS + 1);
-        let long_usage = "u".repeat(MAX_DETAIL_CHARS + 1);
-        let file = serde_json::json!({ "sessions": {
-            "full": { "owner": "central", "usage": "4.2M tok today", "limit": "64% of 5h" },
-            // Empty and null details read as not given.
-            "bare": { "owner": "central", "usage": "", "limit": null },
-            "no_owner": { "usage": "1 tok" },
+        let transfer = |kind: &str, claude: f64| {
+            json!({ "at": "2026-11-10T18:58:09Z", "from": "viktor", "to": "root",
+                    "claude": claude, "codex": null, "kind": kind, "by": "viktor" })
+        };
+        let mut transfers: Vec<Value> = vec![
+            transfer("grant", 0.25),
+            transfer("bribe", 0.1),
+            transfer("cut", -0.1),
+        ];
+        transfers.extend((0..30).map(|_| transfer("auto-raise", 0.01)));
+        let marks = test_file(json!({
+            "root": { "owner": "central", "parent": null,
+                      "left": { "claude": -0.01, "codex": null }, "granted": { "claude": 0.25, "codex": 0.1 },
+                      "over": true, "transactions": transfers,
+                      "usage": "old field", "anything": [1, 2] },
+            // left, granted and transactions may be absent.
+            "bare": { "owner": "central", "parent": "root" },
+            "no_owner": { "left": { "claude": 0.1 } },
             "empty_owner": { "owner": "" },
-            "long_owner": { "owner": long_owner },
-            "long_usage": { "owner": "central", "usage": long_usage },
+            "long_owner": { "owner": "o".repeat(MAX_OWNER_CHARS + 1) },
+            "negative_grant": { "owner": "central", "granted": { "claude": -0.1 } },
+            "text_left": { "owner": "central", "left": { "claude": "lots" } },
             "not_an_object": "central",
-            "numeric_usage": { "owner": "central", "usage": 5 },
-        }});
-        let marks = parse(file.to_string().as_bytes());
+            "numeric_parent": { "owner": "central", "parent": 7 },
+            "text_over": { "owner": "central", "over": "yes" },
+            "transactions_not_a_list": { "owner": "central", "transactions": {} },
+        }));
+        let root = &marks["root"];
         assert_eq!(
-            marks.get("full"),
-            Some(&mark("central", Some("4.2M tok today"), Some("64% of 5h")))
+            root.left,
+            Shares {
+                claude: Some(-0.01),
+                codex: None
+            },
+            "left may be negative"
         );
-        assert_eq!(marks.get("bare"), Some(&mark("central", None, None)));
-        assert_eq!(marks.len(), 2, "every broken entry is dropped: {marks:?}");
+        assert_eq!(
+            root.granted,
+            Shares {
+                claude: Some(0.25),
+                codex: Some(0.1)
+            }
+        );
+        assert!(root.over);
+        assert_eq!(
+            root.transactions.len(),
+            MAX_TRANSFERS,
+            "bad transfers dropped, the first 20 kept"
+        );
+        assert_eq!(root.transactions[0].kind, TransferKind::Grant);
+        assert_eq!(root.transactions[1].kind, TransferKind::AutoRaise);
+        let bare = &marks["bare"];
+        assert_eq!(
+            (bare.left, bare.granted, bare.over, bare.transactions.len()),
+            (Shares::default(), Shares::default(), false, 0)
+        );
+        assert_eq!(
+            marks.len(),
+            2,
+            "every broken entry is dropped: {:?}",
+            marks.keys()
+        );
 
         for broken in [&b"not json"[..], b"[]", b"{}", br#"{"sessions": []}"#] {
-            assert!(parse(broken).is_empty(), "{:?}", String::from_utf8_lossy(broken));
+            assert!(
+                parse(broken).is_empty(),
+                "{:?}",
+                String::from_utf8_lossy(broken)
+            );
         }
     }
 
     #[test]
-    fn mark_renders_owner_then_usage_then_limit() {
+    fn the_tree_is_placed_by_parent() {
+        let e = |parent: Option<&str>| json!({ "owner": "central", "parent": parent });
+        let marks = test_file(json!({
+            "r": e(None),
+            "m1": e(Some("r")),
+            "m2": e(Some("r")),
+            "w1": e(Some("m1")),
+            "w2": e(Some("w1")),
+            "w3": e(Some("m2")),
+            // A second parentless entry sorts after "r", so it is not the root.
+            "z_orphan_root": e(None),
+            "missing_parent": e(Some("gone")),
+            "cycle_a": e(Some("cycle_b")),
+            "cycle_b": e(Some("cycle_a")),
+            "under_orphan": e(Some("z_orphan_root")),
+        }));
         let cases = [
-            (mark("central", None, None), "central"),
-            (mark("central", Some("4.2M tok today"), None), "central · 4.2M tok today"),
-            (mark("central", None, Some("64% of 5h")), "central · 64% of 5h"),
-            (
-                mark("central", Some("4.2M tok today"), Some("64% of 5h")),
-                "central · 4.2M tok today · 64% of 5h",
-            ),
+            ("r", Role::Root, None),
+            ("m1", Role::Module, None),
+            ("m2", Role::Module, None),
+            ("w1", Role::Worker, Some("m1")),
+            ("w2", Role::Worker, Some("m1")),
+            ("w3", Role::Worker, Some("m2")),
+            ("z_orphan_root", Role::Worker, None),
+            ("missing_parent", Role::Worker, None),
+            ("cycle_a", Role::Worker, None),
+            ("under_orphan", Role::Worker, None),
         ];
-        for (m, expected) in cases {
-            assert_eq!(m.rendered(), expected);
+        for (id, role, module) in cases {
+            assert_eq!(
+                (marks[id].role, marks[id].module.as_deref()),
+                (role, module),
+                "{id}"
+            );
         }
+        let counts = worker_counts(&marks);
+        assert_eq!(
+            (counts.get("m1"), counts.get("m2"), counts.get("r")),
+            (Some(&2), Some(&1), None)
+        );
+    }
+
+    #[test]
+    fn shares_show_as_percents_and_meters() {
+        let pcts = [
+            (Some(0.0224), "2.24"),
+            (Some(0.08), "8"),
+            (Some(1.6), "160"),
+            (Some(0.0), "0"),
+            (Some(0.00004), "0"),
+            (None, "?"),
+        ];
+        for (share, expected) in pcts {
+            assert_eq!(pct(share), expected, "{share:?}");
+        }
+        let tones = [
+            (Some(0.06), Some(0.08), false, Tone::Ok),
+            (Some(0.016), Some(0.08), false, Tone::Ok),
+            (Some(0.015), Some(0.08), false, Tone::Low),
+            (Some(0.0), Some(0.08), false, Tone::Empty),
+            (Some(-0.01), Some(0.08), false, Tone::Empty),
+            (Some(0.08), Some(0.08), true, Tone::Empty),
+            (None, Some(0.08), false, Tone::Ok),
+        ];
+        for (left, granted, over, expected) in tones {
+            assert_eq!(
+                tone(left, granted, over),
+                expected,
+                "{left:?}/{granted:?} over={over}"
+            );
+        }
+        let meters = [
+            (Some(0.0576), Some(0.08), "▰▰▰▰▱▱"),
+            (Some(0.08), Some(0.08), "▰▰▰▰▰▰"),
+            (Some(-0.01), Some(0.08), "▱▱▱▱▱▱"),
+            (None, Some(0.08), "▱▱▱▱▱▱"),
+            (Some(0.01), Some(0.0), "▱▱▱▱▱▱"),
+        ];
+        for (left, granted, expected) in meters {
+            assert_eq!(meter(left, granted, 6), expected, "{left:?}/{granted:?}");
+        }
+        for (title, expected) in [
+            ("Central: Planner", "Planner"),
+            ("Planner", "Planner"),
+            ("A: b: c", "b: c"),
+        ] {
+            assert_eq!(short_title(title), expected);
+        }
+    }
+
+    #[test]
+    fn handed_out_sums_the_modules_grants() {
+        let e = |parent: Option<&str>, claude: Option<f64>| json!({ "owner": "central", "parent": parent, "granted": { "claude": claude, "codex": 0.01 } });
+        let marks = test_file(json!({
+            "r": e(None, Some(0.25)),
+            "m1": e(Some("r"), Some(0.08)),
+            "m2": e(Some("r"), None),
+            "w": e(Some("m1"), Some(0.5)),
+        }));
+        let out = handed_out(&marks);
+        assert!(
+            (out.claude.unwrap() - 0.08).abs() < 1e-9 && (out.codex.unwrap() - 0.02).abs() < 1e-9,
+            "{out:?}"
+        );
     }
 
     #[test]
@@ -210,6 +578,3 @@ mod tests {
         assert!(cache.marks.is_empty(), "a removed file owns nothing");
     }
 }
-
-#[allow(unused)]
-fn _value_is_used(_: Value) {}

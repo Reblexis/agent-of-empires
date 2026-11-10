@@ -1,10 +1,11 @@
 import { useCallback, useContext, useMemo, useRef, useState } from "react";
 import { collectSidebarFavorites, FavoritesFirstContext } from "../lib/sidebarFavorites";
+import { buildCore, OwnedSessionsContext } from "../lib/sessionOwners";
 import { usePluginUiEntries } from "../lib/pluginUiContext";
 import { workspaceMatchesActivity } from "../lib/sidebarActivity";
 import { useIdleDecayWindowMs } from "../lib/idleDecay";
 import { pluginSortSpecs } from "../lib/pluginUi";
-import type { ProjectInfo, RepoGroup, Workspace } from "../lib/types";
+import type { ProjectInfo, RepoGroup, SessionResponse, Workspace } from "../lib/types";
 import { SidebarSystemHealth } from "./SystemHealthStrip";
 import type { SidebarAxis } from "../lib/sidebarAxis";
 import {
@@ -27,6 +28,7 @@ import { usePersistedFlag } from "./usePersistedFlag";
 import { useSuppressClickAfterDrag } from "./sidebar/dnd";
 import { filterFlat, filterNested, filterOrg, makeRowFilter, renderedOrder, sunkViews } from "./sidebar/filterGroups";
 import { FlatGroupList, NestedGroupList, OrgGroupList, type ListContext } from "./sidebar/GroupLists";
+import { OwnerCoreTree } from "./sidebar/OwnerCore";
 import { SessionRow } from "./sidebar/SessionRow";
 import { FacetPanel, SidebarToolbar } from "./sidebar/SidebarToolbar";
 import { TrashMenu } from "./sidebar/TrashMenu";
@@ -159,6 +161,20 @@ export function WorkspaceSidebar(props: Props) {
   }));
   const filteredOrgGroups = matchedOrgGroups.map((og) => ({ ...og, repos: og.repos.map(withoutFavorites) }));
   const allWorkspaces = props.workspaces;
+  const ownedIndex = useMemo(() => {
+    const byId = new Map<string, SessionResponse>();
+    const workspaceIdOf = new Map<string, string>();
+    for (const ws of allWorkspaces) {
+      for (const s of ws.sessions) {
+        byId.set(s.id, s);
+        workspaceIdOf.set(s.id, ws.id);
+      }
+    }
+    return { byId, workspaceIdOf, sessions: [...byId.values()] };
+  }, [allWorkspaces]);
+  // The core stays in the Active view like a pin; typed text narrows to matching rows, and the compact rail has no room for meters.
+  const core = useMemo(() => buildCore(ownedIndex.sessions), [ownedIndex]);
+  const showCore = core != null && !compact && !q;
   const triage = useSidebarTriage(allWorkspaces);
   const visibleGroups = isNested
     ? filteredNested.flatMap((ng) => (hasFilter || !ng.repo.collapsed ? ng.subgroups : []))
@@ -235,6 +251,7 @@ export function WorkspaceSidebar(props: Props) {
     !!q &&
     props.savedProjects.some((p) => p.displayName.toLowerCase().includes(q) || p.repoPath.toLowerCase().includes(q));
   const hasResults =
+    showCore ||
     favoriteWorkspaces.length > 0 ||
     (isNested ? filteredNested.length : isOrgAxis ? filteredOrgGroups.length : filteredGroups.length) > 0 ||
     savedProjectsMatchQuery;
@@ -257,220 +274,231 @@ export function WorkspaceSidebar(props: Props) {
   // The phone overlay starts under the header, which the app root insets below the status bar.
   return (
     <SidebarCompactContext.Provider value={compact}>
-      <div
-        className={`fixed top-[calc(3rem+env(safe-area-inset-top))] inset-x-0 bottom-0 z-30 md:hidden transition-opacity duration-300 ${
-          open ? "bg-black/50" : "opacity-0 pointer-events-none"
-        }`}
-        onClick={props.onToggle}
-      />
-      <div
-        {...tourAnchor(TOUR_ANCHORS.sidebar)}
-        role="navigation"
-        aria-label="Sessions sidebar"
-        tabIndex={-1}
-        style={{ width: effectiveWidth }}
-        data-compact={compact ? "true" : undefined}
-        className={`fixed top-[calc(3rem+env(safe-area-inset-top))] bottom-0 z-40 md:static md:z-auto bg-surface-800 border-surface-700/60 flex flex-col md:h-full shrink-0 transition-transform duration-300 ease-in-out md:transition-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand-500 ${
-          rightSide ? "right-0 border-l md:border-l-0 md:border-r" : "left-0 border-r"
-        } ${open ? "translate-x-0" : `${rightSide ? "translate-x-full" : "-translate-x-full"} md:hidden`}`}
-      >
-        <SidebarToolbar
-          compact={compact}
-          axis={axis}
-          onAxisChange={props.onAxisChange}
-          sortMode={props.sortMode}
-          onSortModeChange={props.onSortModeChange}
-          pluginSorts={pluginSorts}
-          pluginSortRef={props.pluginSortRef}
-          onPluginSortChange={props.onPluginSortChange}
-          hasFacets={facets.facetSpecs.length > 0}
-          facetsActive={facets.activeFacets.length > 0}
-          facetOpen={facetOpen}
-          onToggleFacets={() => setFacetOpen((o) => !o)}
-          filterOpen={filterOpen}
-          onToggleFilter={toggleFilter}
-          offline={offline}
-          onNew={props.onNew}
-          onToggleCompact={() => updateWebSettings({ sidebarCompact: !compact })}
-          onClose={props.onToggle}
+      <OwnedSessionsContext.Provider value={ownedIndex.byId}>
+        <div
+          className={`fixed top-[calc(3rem+env(safe-area-inset-top))] inset-x-0 bottom-0 z-30 md:hidden transition-opacity duration-300 ${
+            open ? "bg-black/50" : "opacity-0 pointer-events-none"
+          }`}
+          onClick={props.onToggle}
         />
-
-        <div className={`flex gap-1 pb-2 ${compact ? "px-1 flex-col" : "px-3"}`} aria-label="Session activity view">
-          {([true, false] as const).map((onlyActive) => (
-            <button
-              key={String(onlyActive)}
-              type="button"
-              aria-label={onlyActive ? "Active sessions" : "All sessions"}
-              aria-pressed={activeOnly === onlyActive}
-              onClick={() => updateWebSettings({ sidebarActiveOnly: onlyActive })}
-              className={`flex-1 rounded-md px-2 py-1.5 text-xs cursor-pointer transition-colors ${
-                activeOnly === onlyActive
-                  ? "bg-brand-500/15 text-brand-500"
-                  : "text-text-dim hover:text-text-secondary hover:bg-surface-700/40"
-              }`}
-            >
-              {onlyActive ? "Active" : "All"}
-            </button>
-          ))}
-        </div>
-
-        {filterOpen && !compact && (
-          <div className="px-3 pb-2">
-            <input
-              ref={filterRef}
-              type="text"
-              value={filterQuery}
-              onChange={(e) => setFilterQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") toggleFilter();
-              }}
-              placeholder="Filter by name, branch, agent..."
-              data-testid="sidebar-filter-input"
-              className="w-full bg-surface-800 border border-surface-700 rounded-md px-2.5 py-1.5 text-[13px] text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
-            />
-          </div>
-        )}
-
-        {facetOpen && !compact && facets.facetSpecs.length > 0 && (
-          <FacetPanel
-            facetSpecs={facets.facetSpecs}
-            selectedValues={facets.selectedValues}
-            onToggle={facets.toggleValue}
+        <div
+          {...tourAnchor(TOUR_ANCHORS.sidebar)}
+          role="navigation"
+          aria-label="Sessions sidebar"
+          tabIndex={-1}
+          style={{ width: effectiveWidth }}
+          data-compact={compact ? "true" : undefined}
+          className={`fixed top-[calc(3rem+env(safe-area-inset-top))] bottom-0 z-40 md:static md:z-auto bg-surface-800 border-surface-700/60 flex flex-col md:h-full shrink-0 transition-transform duration-300 ease-in-out md:transition-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-brand-500 ${
+            rightSide ? "right-0 border-l md:border-l-0 md:border-r" : "left-0 border-r"
+          } ${open ? "translate-x-0" : `${rightSide ? "translate-x-full" : "-translate-x-full"} md:hidden`}`}
+        >
+          <SidebarToolbar
+            compact={compact}
+            axis={axis}
+            onAxisChange={props.onAxisChange}
+            sortMode={props.sortMode}
+            onSortModeChange={props.onSortModeChange}
+            pluginSorts={pluginSorts}
+            pluginSortRef={props.pluginSortRef}
+            onPluginSortChange={props.onPluginSortChange}
+            hasFacets={facets.facetSpecs.length > 0}
+            facetsActive={facets.activeFacets.length > 0}
+            facetOpen={facetOpen}
+            onToggleFacets={() => setFacetOpen((o) => !o)}
+            filterOpen={filterOpen}
+            onToggleFilter={toggleFilter}
+            offline={offline}
+            onNew={props.onNew}
+            onToggleCompact={() => updateWebSettings({ sidebarCompact: !compact })}
+            onClose={props.onToggle}
           />
-        )}
 
-        <div className="flex-1 overflow-y-auto overflow-x-hidden border-t border-surface-700/60">
-          {favoriteWorkspaces.length > 0 && (
-            <section data-testid="sidebar-favorites-section" aria-label="Favorites">
-              {!compact && <div className="px-3 pt-2 pb-1 text-xs text-text-muted">Favorites</div>}
-              {favoriteWorkspaces.map((workspace) => (
-                <SessionRow
-                  key={workspace.id}
-                  {...ctx.rowProps({ ...matchingViews.find((v) => v.workspace.id === workspace.id)!, workspace })}
-                />
-              ))}
-            </section>
-          )}
-          {isNested ? (
-            <NestedGroupList
-              ctx={ctx}
-              groups={filteredNested}
-              fullGroups={nestedGroups}
-              onToggleGroup={props.onToggleGroup}
-              onToggleSubgroup={props.onToggleSubgroup}
-            />
-          ) : isOrgAxis ? (
-            <OrgGroupList
-              ctx={ctx}
-              groups={filteredOrgGroups}
-              fullGroups={orgGroups}
-              onToggleOrg={props.onToggleOrg}
-              onToggleOrgRepo={props.onToggleOrgRepo}
-            />
-          ) : (
-            <FlatGroupList
-              ctx={ctx}
-              groups={filteredGroups}
-              fullGroups={groups}
-              reorderDisabled={reorderDisabled}
-              groupDragDisabled={reorderDisabled || q.length > 0}
-              onToggleGroup={props.onToggleGroup}
-              onReorderGroups={props.onReorderGroups}
-              onReorderWorkspaces={props.onReorderWorkspaces}
-              dragSuppressRef={dragSuppressRef}
-            />
-          )}
-
-          {sunk.length > 0 && (
-            <div data-testid="sidebar-sunk-section">
+          <div className={`flex gap-1 pb-2 ${compact ? "px-1 flex-col" : "px-3"}`} aria-label="Session activity view">
+            {([true, false] as const).map((onlyActive) => (
               <button
-                onClick={toggleSunkExpanded}
-                data-testid="sidebar-sunk-toggle"
-                aria-expanded={sunkExpanded}
-                className={`w-full flex items-center gap-2 py-1.5 text-[11px] font-mono uppercase text-text-muted hover:text-text-secondary hover:bg-surface-800/40 cursor-pointer transition-colors border-t border-surface-800/60 ${
-                  compact ? "px-2" : "px-3 tracking-widest"
+                key={String(onlyActive)}
+                type="button"
+                aria-label={onlyActive ? "Active sessions" : "All sessions"}
+                aria-pressed={activeOnly === onlyActive}
+                onClick={() => updateWebSettings({ sidebarActiveOnly: onlyActive })}
+                className={`flex-1 rounded-md px-2 py-1.5 text-xs cursor-pointer transition-colors ${
+                  activeOnly === onlyActive
+                    ? "bg-brand-500/15 text-brand-500"
+                    : "text-text-dim hover:text-text-secondary hover:bg-surface-700/40"
                 }`}
               >
-                <FoldChevron
-                  className={`shrink-0 transition-transform duration-75 ${sunkExpanded ? "" : "-rotate-90"}`}
-                />
-                {/* The count and wide tracking do not fit the compact rail. */}
-                <span className="truncate">Snoozed &amp; archived{compact ? "" : ` (${sunk.length})`}</span>
+                {onlyActive ? "Active" : "All"}
               </button>
-              {sunkExpanded && sunk.map((v) => <SessionRow key={v.key} {...ctx.rowProps(v)} indented />)}
+            ))}
+          </div>
+
+          {filterOpen && !compact && (
+            <div className="px-3 pb-2">
+              <input
+                ref={filterRef}
+                type="text"
+                value={filterQuery}
+                onChange={(e) => setFilterQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Escape") toggleFilter();
+                }}
+                placeholder="Filter by name, branch, agent..."
+                data-testid="sidebar-filter-input"
+                className="w-full bg-surface-800 border border-surface-700 rounded-md px-2.5 py-1.5 text-[13px] text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
+              />
             </div>
           )}
 
-          {(props.canManageProjects ?? true) && (
-            <ProjectsSection
-              projects={props.savedProjects}
-              query={q}
-              readOnly={readOnly}
-              offline={offline}
-              onCreateSession={props.onCreateSession}
-              onAddProject={props.onAddProject}
-              onEditProject={props.onEditProject}
-              onRemoveProject={props.onRemoveProject}
+          {facetOpen && !compact && facets.facetSpecs.length > 0 && (
+            <FacetPanel
+              facetSpecs={facets.facetSpecs}
+              selectedValues={facets.selectedValues}
+              onToggle={facets.toggleValue}
             />
           )}
 
-          {!hasResults && hasFilter && (
-            <div className="px-4 py-8 text-left">
-              <p className="text-sm text-text-muted">
-                {q ? <>No matches for &ldquo;{activeFilterQuery}&rdquo;</> : "No active sessions"}
-              </p>
-            </div>
-          )}
+          <div className="flex-1 overflow-y-auto overflow-x-hidden border-t border-surface-700/60">
+            {(showCore || favoriteWorkspaces.length > 0) && (
+              <section data-testid="sidebar-favorites-section" aria-label="Favorites">
+                {!compact && <div className="px-3 pt-2 pb-1 text-xs text-text-muted">Favorites</div>}
+                {showCore && (
+                  <OwnerCoreTree
+                    core={core}
+                    sessions={ownedIndex.sessions}
+                    workspaceIdOf={ownedIndex.workspaceIdOf}
+                    activeWorkspaceId={selection.displayedActiveId}
+                    onActivate={selection.handleRowActivate}
+                  />
+                )}
+                {favoriteWorkspaces.map((workspace) => (
+                  <SessionRow
+                    key={workspace.id}
+                    {...ctx.rowProps({ ...matchingViews.find((v) => v.workspace.id === workspace.id)!, workspace })}
+                  />
+                ))}
+              </section>
+            )}
+            {isNested ? (
+              <NestedGroupList
+                ctx={ctx}
+                groups={filteredNested}
+                fullGroups={nestedGroups}
+                onToggleGroup={props.onToggleGroup}
+                onToggleSubgroup={props.onToggleSubgroup}
+              />
+            ) : isOrgAxis ? (
+              <OrgGroupList
+                ctx={ctx}
+                groups={filteredOrgGroups}
+                fullGroups={orgGroups}
+                onToggleOrg={props.onToggleOrg}
+                onToggleOrgRepo={props.onToggleOrgRepo}
+              />
+            ) : (
+              <FlatGroupList
+                ctx={ctx}
+                groups={filteredGroups}
+                fullGroups={groups}
+                reorderDisabled={reorderDisabled}
+                groupDragDisabled={reorderDisabled || q.length > 0}
+                onToggleGroup={props.onToggleGroup}
+                onReorderGroups={props.onReorderGroups}
+                onReorderWorkspaces={props.onReorderWorkspaces}
+                dragSuppressRef={dragSuppressRef}
+              />
+            )}
 
-          {!hasResults && !hasFilter && (
-            <div className="px-4 py-10 text-left" data-testid="sidebar-empty-state">
-              <p className="text-sm font-medium text-text-secondary">No sessions yet</p>
-              <p className="mt-1 text-[13px] text-text-muted">Create a session to start working in a repo.</p>
-              <button
-                onClick={props.onNew}
-                disabled={offline}
-                className="mt-4 inline-flex items-center gap-1.5 rounded-md bg-brand-600 px-3 py-1.5 text-[13px] font-medium text-white hover:bg-brand-500 cursor-pointer transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-brand-600"
-              >
-                <PlusIcon size={14} />
-                New session
-              </button>
-            </div>
-          )}
+            {sunk.length > 0 && (
+              <div data-testid="sidebar-sunk-section">
+                <button
+                  onClick={toggleSunkExpanded}
+                  data-testid="sidebar-sunk-toggle"
+                  aria-expanded={sunkExpanded}
+                  className={`w-full flex items-center gap-2 py-1.5 text-[11px] font-mono uppercase text-text-muted hover:text-text-secondary hover:bg-surface-800/40 cursor-pointer transition-colors border-t border-surface-800/60 ${
+                    compact ? "px-2" : "px-3 tracking-widest"
+                  }`}
+                >
+                  <FoldChevron
+                    className={`shrink-0 transition-transform duration-75 ${sunkExpanded ? "" : "-rotate-90"}`}
+                  />
+                  {/* The count and wide tracking do not fit the compact rail. */}
+                  <span className="truncate">Snoozed &amp; archived{compact ? "" : ` (${sunk.length})`}</span>
+                </button>
+                {sunkExpanded && sunk.map((v) => <SessionRow key={v.key} {...ctx.rowProps(v)} indented />)}
+              </div>
+            )}
+
+            {(props.canManageProjects ?? true) && (
+              <ProjectsSection
+                projects={props.savedProjects}
+                query={q}
+                readOnly={readOnly}
+                offline={offline}
+                onCreateSession={props.onCreateSession}
+                onAddProject={props.onAddProject}
+                onEditProject={props.onEditProject}
+                onRemoveProject={props.onRemoveProject}
+              />
+            )}
+
+            {!hasResults && hasFilter && (
+              <div className="px-4 py-8 text-left">
+                <p className="text-sm text-text-muted">
+                  {q ? <>No matches for &ldquo;{activeFilterQuery}&rdquo;</> : "No active sessions"}
+                </p>
+              </div>
+            )}
+
+            {!hasResults && !hasFilter && (
+              <div className="px-4 py-10 text-left" data-testid="sidebar-empty-state">
+                <p className="text-sm font-medium text-text-secondary">No sessions yet</p>
+                <p className="mt-1 text-[13px] text-text-muted">Create a session to start working in a repo.</p>
+                <button
+                  onClick={props.onNew}
+                  disabled={offline}
+                  className="mt-4 inline-flex items-center gap-1.5 rounded-md bg-brand-600 px-3 py-1.5 text-[13px] font-medium text-white hover:bg-brand-500 cursor-pointer transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-brand-600"
+                >
+                  <PlusIcon size={14} />
+                  New session
+                </button>
+              </div>
+            )}
+          </div>
+
+          <SidebarSystemHealth />
+
+          <div className="border-t border-surface-700/20 p-2 max-md:pb-[max(0.5rem,env(safe-area-inset-bottom))] flex items-center gap-1">
+            {trashedWorkspaces.length > 0 && (
+              <TrashMenu
+                trashedWorkspaces={trashedWorkspaces}
+                readOnly={readOnly}
+                onOpen={selection.handleRowActivate}
+                onRestore={(ids) => props.onRestoreSession?.(ids)}
+                onDelete={(ids) => props.onDeleteSession?.(ids)}
+                onEmptyTrash={() => props.onEmptyTrash?.()}
+              />
+            )}
+            <button
+              onClick={props.onSettings}
+              {...tourAnchor(TOUR_ANCHORS.sidebarSettings)}
+              className="w-8 h-8 shrink-0 flex items-center justify-center text-text-secondary hover:text-text-primary hover:bg-surface-800/50 cursor-pointer rounded-md transition-colors"
+              title="Settings"
+              aria-label="Settings"
+            >
+              <StrokeIcon size={16} strokeWidth="1.5">
+                <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
+                <circle cx="12" cy="12" r="3" />
+              </StrokeIcon>
+            </button>
+          </div>
         </div>
-
-        <SidebarSystemHealth />
-
-        <div className="border-t border-surface-700/20 p-2 max-md:pb-[max(0.5rem,env(safe-area-inset-bottom))] flex items-center gap-1">
-          {trashedWorkspaces.length > 0 && (
-            <TrashMenu
-              trashedWorkspaces={trashedWorkspaces}
-              readOnly={readOnly}
-              onOpen={selection.handleRowActivate}
-              onRestore={(ids) => props.onRestoreSession?.(ids)}
-              onDelete={(ids) => props.onDeleteSession?.(ids)}
-              onEmptyTrash={() => props.onEmptyTrash?.()}
-            />
-          )}
-          <button
-            onClick={props.onSettings}
-            {...tourAnchor(TOUR_ANCHORS.sidebarSettings)}
-            className="w-8 h-8 shrink-0 flex items-center justify-center text-text-secondary hover:text-text-primary hover:bg-surface-800/50 cursor-pointer rounded-md transition-colors"
-            title="Settings"
-            aria-label="Settings"
-          >
-            <StrokeIcon size={16} strokeWidth="1.5">
-              <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z" />
-              <circle cx="12" cy="12" r="3" />
-            </StrokeIcon>
-          </button>
-        </div>
-      </div>
-      {/* Hidden with the panel so no dead drag bar lingers when the sidebar is closed. */}
-      <div
-        data-testid="sidebar-resize-handle"
-        onMouseDown={startResize}
-        className={`${open && !compact ? "hidden md:block" : "hidden"} w-1 cursor-col-resize shrink-0 bg-surface-800 hover:bg-brand-600/50 transition-colors duration-75`}
-      />
+        {/* Hidden with the panel so no dead drag bar lingers when the sidebar is closed. */}
+        <div
+          data-testid="sidebar-resize-handle"
+          onMouseDown={startResize}
+          className={`${open && !compact ? "hidden md:block" : "hidden"} w-1 cursor-col-resize shrink-0 bg-surface-800 hover:bg-brand-600/50 transition-colors duration-75`}
+        />
+      </OwnedSessionsContext.Provider>
     </SidebarCompactContext.Provider>
   );
 }

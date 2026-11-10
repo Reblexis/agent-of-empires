@@ -3787,6 +3787,7 @@ impl HomeView {
                     // codebase disarms.
                     if crate::session::is_within_archived_section(path)
                         || crate::session::is_within_trash_section(path)
+                        || crate::session::is_owners_section_path(path)
                     {
                         continue;
                     }
@@ -4180,6 +4181,7 @@ impl HomeView {
                     self.selected_session = None;
                     if crate::session::is_within_archived_section(path)
                         || crate::session::is_within_trash_section(path)
+                        || crate::session::is_owners_section_path(path)
                     {
                         // The synthetic Archived section (and its Project-mode
                         // sub-folders) is not a real group and cannot be renamed, deleted,
@@ -4301,6 +4303,10 @@ impl HomeView {
         }
         if crate::session::is_trash_section_path(path) {
             self.toggle_trashed_section();
+            return;
+        }
+        // The owners' Favorites section does not collapse: it is a handful of rows.
+        if crate::session::is_owners_section_path(path) {
             return;
         }
         if self.group_by == GroupByMode::Project {
@@ -4714,6 +4720,10 @@ impl HomeView {
                 if crate::session::is_trash_section_path(path) {
                     self.context_menu =
                         Some(ContextMenuDialog::for_trash_section(anchor, *collapsed));
+                    return true;
+                }
+                // The owners' Favorites header has no actions of its own.
+                if crate::session::is_owners_section_path(path) {
                     return true;
                 }
                 if crate::session::is_archived_section_path(path) {

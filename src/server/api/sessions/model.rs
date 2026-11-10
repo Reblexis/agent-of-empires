@@ -88,6 +88,7 @@ impl SessionResponse {
             default_name: false,
             // Overlaid in list_sessions; single-session responses stay null.
             forecast: None,
+            owner: None,
             has_terminal: inst.terminal_info.is_some(),
             profile: row.profile.to_string(),
             cleanup_defaults: CleanupDefaults {

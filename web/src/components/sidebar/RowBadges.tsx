@@ -12,6 +12,7 @@ import { summarizeRateLimits } from "../../lib/rateLimitSummary";
 import { computeSessionRowTag, useSessionRowTagMode } from "../../lib/sessionRowTag";
 import { PluginRowLine } from "../plugin/PluginSlots";
 import { ForecastChip } from "../ForecastBand";
+import { WorkerChip } from "./OwnerCore";
 import { formatDurationSecondsShort, formatSnoozeRemainingShort } from "./format";
 import type { RowModel } from "./rowModel";
 
@@ -121,8 +122,10 @@ export function RowTrailingBadges({ workspace, model }: { workspace: Workspace; 
   const worker = first?.view === "structured" ? first.acp_worker_state : undefined;
   // Forecast chip: like the color label, the first session carrying a card wins.
   const forecast = workspace.sessions.map((s) => s.forecast).find((f) => f != null) ?? null;
+  const ownedWorker = workspace.sessions.find((s) => s.owner?.role === "worker");
   return (
     <>
+      {ownedWorker && <WorkerChip session={ownedWorker} />}
       {forecast && <ForecastChip summary={forecast} />}
       {rowTag && (
         <span

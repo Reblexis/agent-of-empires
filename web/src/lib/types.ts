@@ -50,6 +50,9 @@ export interface SessionResponse {
    *  the session band when to refetch the full card. Null when the session
    *  has no card. See docs/guides/session-forecast.md. */
   forecast?: ForecastSummary | null;
+  /** The session's entry in an outside agent's session tree; null when no
+   *  owner marks it. See docs/guides/session-owners.md. */
+  owner?: SessionOwner | null;
   urgent?: boolean;
   /** Web pin time; `pinned_at != null` is the pinned state. */
   pinned_at?: string | null;
@@ -563,6 +566,38 @@ export interface PriorityAsk {
   refined_at?: string | null;
   /** The session whose ask this one is the same as; a merged ask is not listed. */
   merged_into?: string | null;
+}
+
+/** A share of one account's weekly plan per plan (1 is a whole weekly limit); null is unknown. */
+export interface PlanShares {
+  claude: number | null;
+  codex: number | null;
+}
+
+/** One move of budget between entries of an owner's tree, as the owner recorded it. */
+export interface OwnerTransaction {
+  at: string;
+  /** Session ids. */
+  from: string;
+  to: string;
+  claude: number | null;
+  codex: number | null;
+  kind: "grant" | "default" | "raise" | "auto-raise" | "cut";
+  by: string;
+}
+
+/** What `GET /api/sessions` carries per session about its owner's tree. */
+export interface SessionOwner {
+  owner: string;
+  parent: string | null;
+  role: "root" | "module" | "worker";
+  /** Id of a worker's module; null for the root, a module, or a worker of no module. */
+  module: string | null;
+  left: PlanShares;
+  granted: PlanShares;
+  over: boolean;
+  /** Newest first, up to 20. */
+  transactions: OwnerTransaction[];
 }
 
 /** What `GET /api/sessions` carries per session about its forecast card. */
