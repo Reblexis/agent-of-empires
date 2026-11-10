@@ -142,7 +142,7 @@ Status transitions also reach `callback_url` and push subscribers.
 
 ## GET /api/sessions/{id}/forecast
 
-The session's forecast card as stored, including the `updated_at` aoe stamps on every write. Cards are written by the agent in the session with `aoe session forecast set`; there is no HTTP write. Each session in `GET /api/sessions` also carries `forecast`: `null`, or `{"verdict", "headline", "updated_at"}`. See the [Session Forecast guide](guides/session-forecast.md) for the card schema.
+The session's forecast card as stored, including the `updated_at` aoe stamps on every write. Cards are written by the agent in the session with `aoe session forecast set`; there is no HTTP write. Each session in `GET /api/sessions` also carries `forecast`: `null`, or `{"verdict", "headline", "updated_at"}`. See the [Session Forecast guide](guides/session-forecast.md) for the card schema. Each session also carries `owner`: `null`, or `{"owner", "usage", "limit"}` from the [owners file](guides/session-owners.md).
 
 | Status | Body | When |
 | --- | --- | --- |

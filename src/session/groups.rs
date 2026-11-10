@@ -1688,6 +1688,32 @@ mod tests {
     }
 
     #[test]
+    fn owned_session_pins_as_a_favorite_without_the_favorite_flag() {
+        let mut owned = inst("owned", "work");
+        let mut plain = inst("plain", "work");
+        plain.created_at = owned.created_at + chrono::Duration::seconds(1);
+        crate::session::owners::set_marks_for_test(std::collections::HashMap::from([(
+            owned.id.clone(),
+            crate::session::owners::OwnerMark {
+                owner: "central".into(),
+                usage: None,
+                limit: None,
+            },
+        )]));
+        assert!(!owned.is_favorited(), "the mark never sets the person's flag");
+        assert!(is_live_favorite(&owned));
+        assert!(!is_live_favorite(&plain));
+
+        // `owned` is the older row, so only the pin can put it first.
+        let mut sessions = vec![&plain, &owned];
+        sort_sessions_inner(&mut sessions, SortOrder::Newest, true);
+        assert_eq!(sessions[0].id, owned.id, "owned rows pin first");
+
+        owned.snooze(60);
+        assert!(!is_live_favorite(&owned), "a snoozed owned session does not pin");
+    }
+
+    #[test]
     fn live_favorite_excludes_snoozed_archived_and_trashed() {
         let now = Utc::now();
         let mut fav = inst("fav", "work");

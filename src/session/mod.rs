@@ -30,6 +30,7 @@ pub mod inbox;
 pub mod inbox_log;
 mod instance;
 pub mod mcp;
+pub mod owners;
 mod move_journal;
 pub(crate) mod pointer_guard;
 pub mod poller;
