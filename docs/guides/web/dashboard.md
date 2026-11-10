@@ -74,6 +74,12 @@ The first time you open the dashboard, a **Choose your theme** card appears; pic
 
 Completing or skipping it records `app_state.has_seen_web_tour` on the server (in `state.toml`, see the [configuration reference](../configuration.md#file-locations)), so it does not relaunch on another device. Replay it from the overflow menu's **Show tutorial**; it does not auto-launch on touch devices. Both the theme card and the tour are skipped in read-only mode.
 
+## Sidebar activity view
+
+The sidebar starts in **Active** view. It shows working, starting, creating, waiting and error sessions, the current workspace and deliberately pinned or favorited workspaces. Fresh idle sessions follow the configured idle-decay window. Other idle, stopped and unknown rows are hidden from this view. The home screen's recent-session list follows the same choice; its total counter continues to describe retained sessions. Archived, snoozed and trashed rows keep their existing separate recovery controls.
+
+**All** shows the full live list again. The Active/All choice persists per browser, remains available in compact mode, and combines with text and plugin filters across every grouping axis. Switching the view never stops, archives, snoozes, trashes, deletes or resumes a session, changes its favorite or ownership, or navigates away from the current terminal. Reordering requires All view so hidden rows cannot be reordered accidentally.
+
 ## Sorting and grouping
 
 By default the sidebar keeps your manual order. Drag a row (press and hold) to move it; that order syncs across browsers via `workspace-ordering.json`. Drag a project or group header to reorder whole groups, which is per-browser and disabled while a filter or a computed sort is active.

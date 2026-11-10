@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 
 import { FavoritesFirstContext } from "../../lib/sidebarFavorites";
@@ -75,6 +75,10 @@ const withTrash = (over: Partial<Props> = {}) => {
 const click = (id: string) => fireEvent.click(screen.getByTestId(id));
 const query = (id: string) => screen.queryByTestId(id);
 const follows = (a: Node, b: Node) => !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+
+beforeEach(() => {
+  window.localStorage.setItem("aoe-web-settings", JSON.stringify({ sidebarActiveOnly: false }));
+});
 
 afterEach(cleanup);
 
@@ -430,5 +434,37 @@ describe("global favorites", () => {
     expect(
       Array.from(favorites.querySelectorAll('[data-testid="sidebar-session-row"]')).map((r) => r.textContent),
     ).toEqual([expect.stringContaining("First favorite"), expect.stringContaining("Favorite 0")]);
+  });
+});
+
+describe("WorkspaceSidebar activity view", () => {
+  it("does not show so many sessions when they are not active, without clearing their work", () => {
+    window.localStorage.setItem("aoe-web-settings", "{}");
+    const workspaces = [
+      workspace("working", [{ id: "working", title: "working", status: "Running" }]),
+      workspace("waiting", [{ id: "waiting", title: "waiting", status: "Waiting" }]),
+      workspace("failed", [{ id: "failed", title: "failed", status: "Error" }]),
+      workspace("finished-idle", [{ id: "finished", title: "finished-idle", status: "Idle" }]),
+      workspace("stopped-old", [{ id: "stopped", title: "stopped-old", status: "Stopped" }]),
+      workspace("favorite-pa", [{ id: "pa", title: "favorite-pa", status: "Idle", favorited: true }]),
+      workspace("current-draft", [{ id: "draft", title: "current-draft", status: "Idle" }]),
+    ];
+    const stop = vi.fn();
+    const props = renderSidebar(workspaces, { activeId: "current-draft", onStopSession: stop });
+    for (const name of ["working", "waiting", "failed", "favorite-pa", "current-draft"])
+      expect(screen.getAllByText(name).length, name).toBeGreaterThan(0);
+    expect(screen.queryByText("finished-idle")).toBeNull();
+    expect(screen.queryByText("stopped-old")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "All sessions" }));
+    expect(screen.getAllByText("finished-idle").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("stopped-old").length).toBeGreaterThan(0);
+    expect(stop).not.toHaveBeenCalled();
+    expect(props.onDeleteSession).not.toHaveBeenCalled();
+    expect(props.onRestoreSession).not.toHaveBeenCalled();
+    cleanup();
+    renderSidebar(workspaces, { activeId: "current-draft" });
+    expect(screen.getAllByText("finished-idle").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "Active sessions" }));
+    expect(screen.queryByText("finished-idle")).toBeNull();
   });
 });

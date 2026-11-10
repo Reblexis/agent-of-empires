@@ -1,6 +1,8 @@
 import { useCallback, useContext, useMemo, useRef, useState } from "react";
 import { collectSidebarFavorites, FavoritesFirstContext } from "../lib/sidebarFavorites";
 import { usePluginUiEntries } from "../lib/pluginUiContext";
+import { workspaceMatchesActivity } from "../lib/sidebarActivity";
+import { useIdleDecayWindowMs } from "../lib/idleDecay";
 import { pluginSortSpecs } from "../lib/pluginUi";
 import type { ProjectInfo, RepoGroup, Workspace } from "../lib/types";
 import { SidebarSystemHealth } from "./SystemHealthStrip";
@@ -87,6 +89,8 @@ export function WorkspaceSidebar(props: Props) {
   const { settings: webSettings, update: updateWebSettings } = useWebSettings();
   const rightSide = webSettings.sidebarSide === "right";
   const compact = webSettings.sidebarCompact;
+  const activeOnly = webSettings.sidebarActiveOnly;
+  const idleDecayWindowMs = useIdleDecayWindowMs();
   const offline = useServerDown();
   const { effectiveWidth, startResize } = useSidebarWidth(compact);
 
@@ -101,6 +105,7 @@ export function WorkspaceSidebar(props: Props) {
   // and on axes (the user-group axis) whose groups cannot persist an order.
   const reorderDisabled =
     !!readOnly ||
+    activeOnly ||
     props.sortMode === "lastActivity" ||
     pluginSortActive ||
     facets.activeFacets.length > 0 ||
@@ -116,9 +121,14 @@ export function WorkspaceSidebar(props: Props) {
   // The compact rail has no filter controls, so a query typed earlier stops applying without being cleared.
   const activeFilterQuery = compact ? "" : filterQuery;
   const q = activeFilterQuery.trim().toLowerCase();
-  const hasFilter = !!q || facets.activeFacets.length > 0;
+  const hasFilter = activeOnly || !!q || facets.activeFacets.length > 0;
 
-  const { matchesFacets } = facets;
+  const { matchesFacets: matchesPluginFacets } = facets;
+  const matchesFacets = useCallback(
+    (ws: Workspace) =>
+      (!activeOnly || workspaceMatchesActivity(ws, activeId, idleDecayWindowMs)) && matchesPluginFacets(ws),
+    [activeOnly, activeId, idleDecayWindowMs, matchesPluginFacets],
+  );
   const [matchedGroups, matchedNested, matchedOrgGroups] = useMemo(() => {
     if (!hasFilter) return [groups, nestedGroups, orgGroups] as const;
     const keep = makeRowFilter(q, matchesFacets);
@@ -285,6 +295,25 @@ export function WorkspaceSidebar(props: Props) {
           onClose={props.onToggle}
         />
 
+        <div className={`flex gap-1 pb-2 ${compact ? "px-1 flex-col" : "px-3"}`} aria-label="Session activity view">
+          {([true, false] as const).map((onlyActive) => (
+            <button
+              key={String(onlyActive)}
+              type="button"
+              aria-label={onlyActive ? "Active sessions" : "All sessions"}
+              aria-pressed={activeOnly === onlyActive}
+              onClick={() => updateWebSettings({ sidebarActiveOnly: onlyActive })}
+              className={`flex-1 rounded-md px-2 py-1.5 text-xs cursor-pointer transition-colors ${
+                activeOnly === onlyActive
+                  ? "bg-brand-500/15 text-brand-500"
+                  : "text-text-dim hover:text-text-secondary hover:bg-surface-700/40"
+              }`}
+            >
+              {onlyActive ? "Active" : "All"}
+            </button>
+          ))}
+        </div>
+
         {filterOpen && !compact && (
           <div className="px-3 pb-2">
             <input
@@ -387,7 +416,9 @@ export function WorkspaceSidebar(props: Props) {
 
           {!hasResults && hasFilter && (
             <div className="px-4 py-8 text-left">
-              <p className="text-sm text-text-muted">No matches for &ldquo;{activeFilterQuery}&rdquo;</p>
+              <p className="text-sm text-text-muted">
+                {q ? <>No matches for &ldquo;{activeFilterQuery}&rdquo;</> : "No active sessions"}
+              </p>
             </div>
           )}
 

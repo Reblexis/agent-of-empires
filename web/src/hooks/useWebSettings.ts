@@ -22,6 +22,8 @@ export interface WebSettings {
   collapsedDiffDirs: string[];
   sidebarSide: "left" | "right";
   sidebarCompact: boolean;
+  /** Show active sessions and deliberate anchors; All restores idle rows. */
+  sidebarActiveOnly: boolean;
   autoOpenDiffPane: boolean;
   autoOpenTerminalPane: boolean;
   autoOpenPluginPanes: boolean;
@@ -46,6 +48,7 @@ function getDefaults(): WebSettings {
     collapsedDiffDirs: [],
     sidebarSide: "left",
     sidebarCompact: false,
+    sidebarActiveOnly: true,
     autoOpenDiffPane: false,
     autoOpenTerminalPane: false,
     autoOpenPluginPanes: false,
@@ -67,6 +70,7 @@ function normalizeSnapshot(settings: WebSettings & { paneDefaultsVersion?: numbe
     structuredMobileFontSize: normalizeConversationFontSize(settings.structuredMobileFontSize),
     structuredDesktopFontSize: normalizeConversationFontSize(settings.structuredDesktopFontSize),
     sidebarCompact: normalizeBool(settings.sidebarCompact, defaults.sidebarCompact),
+    sidebarActiveOnly: normalizeBool(settings.sidebarActiveOnly, defaults.sidebarActiveOnly),
     autoOpenDiffPane: settings.paneDefaultsVersion === 1 && normalizeBool(settings.autoOpenDiffPane, false),
     autoOpenTerminalPane: settings.paneDefaultsVersion === 1 && normalizeBool(settings.autoOpenTerminalPane, false),
     autoOpenPluginPanes: normalizeBool(settings.autoOpenPluginPanes, defaults.autoOpenPluginPanes),
