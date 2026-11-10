@@ -1964,9 +1964,10 @@ impl HomeView {
             }
             _ => text,
         };
-        let owner_spans: Option<Vec<Span<'static>>> = owner_mark
-            .as_ref()
-            .map(|m| self.owner_suffix(id, inst, m, theme, is_selected));
+        // Full suffix and a compact one for a narrow list, so the budget left survives.
+        let owner_spans: Option<[Vec<Span<'static>>; 2]> = owner_mark.as_ref().map(|m| {
+            [false, true].map(|compact| self.owner_suffix(id, inst, m, theme, is_selected, compact))
+        });
         // Config-driven suffix next to the title; it owns the branch/profile/sandbox
         // slot, so `None` means no suffix.
         let tag_span = compute_row_tag(inst, self.row_tag_mode, self.active_profile.is_none())
@@ -2029,14 +2030,35 @@ impl HomeView {
             LAST_ACTIVITY_SLOT
         };
 
-        let tag_spans: Vec<Span<'static>> =
-            owner_spans.unwrap_or_else(|| tag_span.into_iter().collect());
-        let (title_width, keep_tag) = title_width_for_column(
-            rendered_width(&text),
-            room,
-            tag_spans.iter().map(|s| s.width()).sum(),
-            slot_width + badge_width + LAST_ACTIVITY_RIGHT_MARGIN,
-        );
+        let trailing = slot_width + badge_width + LAST_ACTIVITY_RIGHT_MARGIN;
+        let (title_width, keep_tag, tag_spans) = match owner_spans {
+            // An owner's suffix outranks the title: the title shortens (down to
+            // MIN_TITLE_CELLS) before the suffix goes compact, then away.
+            Some(suffixes) => {
+                let title = rendered_width(&text);
+                let width = |v: &Vec<Span<'static>>| v.iter().map(|s| s.width()).sum::<usize>();
+                match suffixes
+                    .into_iter()
+                    .find(|v| title.min(MIN_TITLE_CELLS) + width(v) + trailing <= room)
+                {
+                    Some(v) => (title.min(room - width(&v) - trailing), true, v),
+                    None => {
+                        let (w, _) = title_width_for_column(title, room, 0, trailing);
+                        (w, false, Vec::new())
+                    }
+                }
+            }
+            None => {
+                let spans: Vec<Span<'static>> = tag_span.into_iter().collect();
+                let (w, keep) = title_width_for_column(
+                    rendered_width(&text),
+                    room,
+                    spans.iter().map(|s| s.width()).sum(),
+                    trailing,
+                );
+                (w, keep, spans)
+            }
+        };
         line_spans.push(Span::styled(
             truncate_to_width(&text, title_width),
             text_style,
@@ -2247,6 +2269,7 @@ impl HomeView {
         mark: &crate::session::owners::OwnerMark,
         theme: &Theme,
         is_selected: bool,
+        compact: bool,
     ) -> Vec<Span<'static>> {
         use crate::session::owners::{meter, pct, tone, Role, Tone};
         let styled = |text: String, color: ratatui::style::Color| {
@@ -2275,7 +2298,31 @@ impl HomeView {
                 styled(format!(" {}%", pct(left)), theme.text),
             ]
         };
-        let mut spans = vec![Span::raw("  ")];
+        let mut spans = vec![Span::raw(" ")];
+        let codex = inst.tool == "codex";
+        if compact {
+            let (left, granted) = if codex && mark.role == Role::Worker {
+                (mark.left.codex, mark.granted.codex)
+            } else {
+                (mark.left.claude, mark.granted.claude)
+            };
+            let label = match mark.role {
+                Role::Worker => "worker ",
+                _ => "C ",
+            };
+            let label_color = if mark.role == Role::Worker {
+                theme.fresh_idle
+            } else {
+                theme.dimmed
+            };
+            spans.push(styled(label.into(), label_color));
+            spans.push(styled(
+                format!("{}%", pct(left)),
+                tone_color(tone(left, granted, mark.over)),
+            ));
+            return spans;
+        }
+        spans.push(Span::raw(" "));
         match mark.role {
             Role::Root => {
                 let marks = crate::session::owners::marks();
@@ -2318,7 +2365,6 @@ impl HomeView {
                     theme.fresh_idle,
                 ));
                 spans.push(Span::raw("  "));
-                let codex = inst.tool == "codex";
                 let (plan, left, granted) = if codex {
                     ("X", mark.left.codex, mark.granted.codex)
                 } else {

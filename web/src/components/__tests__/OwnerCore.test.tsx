@@ -119,8 +119,23 @@ describe("owner core in favorites", () => {
     expect(modules.map((m) => m.getAttribute("data-session-id"))).toEqual(["planner", "router"]);
     expect(modules[0].textContent).toContain("C5.76%");
     expect(modules[0].textContent).toContain("X3% left");
-    // The core is not the favorite flag, so no core session is also listed as a favorited workspace.
+    // Module rows name the module without the owner prefix.
+    expect(modules[0].textContent).toContain("Planner");
+    expect(modules[0].textContent).not.toContain("Central:");
+    // A core session shows once, in the tree: not as a favorited workspace, not in its group.
     expect(within(favorites).queryAllByTestId("sidebar-session-row")).toHaveLength(0);
+    const rows = screen.queryAllByTestId("sidebar-session-row").map((r) => r.textContent ?? "");
+    expect(rows.filter((t) => t.includes("Central:"))).toEqual([]);
+  });
+
+  it("shows a core session once even when the person favorited it", () => {
+    renderSidebar(WORKSPACES.map((ws) => ({ ...ws, sessions: ws.sessions.map((s) => ({ ...s, favorited: true })) })));
+    const favorites = screen.getByTestId("sidebar-favorites-section");
+    const rows = within(favorites)
+      .queryAllByTestId("sidebar-session-row")
+      .map((r) => r.textContent ?? "");
+    expect(rows.filter((t) => t.includes("Central:"))).toEqual([]);
+    expect(within(favorites).getAllByTestId("owner-core-module")).toHaveLength(2);
   });
 
   it("opens a module's workers nested by parent, and a click on any core row selects that session", () => {

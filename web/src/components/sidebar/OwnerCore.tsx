@@ -7,6 +7,7 @@ import {
   handedOut,
   meterFill,
   meterTone,
+  moduleShortName,
   moduleWorkers,
   OwnedSessionsContext,
   workerCount,
@@ -211,15 +212,20 @@ function ModuleRow({ module, props }: { module: SessionResponse; props: TreeProp
           session={module}
           testId="owner-core-module"
           props={props}
-          className="min-h-[30px] flex-1 gap-2 px-2 py-1"
+          className="min-h-[30px] flex-1 flex-wrap gap-x-2 gap-y-1 px-2 py-1"
         >
           <span className="shrink-0 text-[12px] text-brand-400" aria-hidden="true">
             ✦
           </span>
           <Dot session={module} size="h-[7px] w-[7px]" />
-          <span className="min-w-0 flex-1 truncate font-mono text-[13px] text-text-primary">{module.title}</span>
-          <PlanCell session={module} plan="claude" width="w-[72px]" />
-          <PlanCell session={module} plan="codex" width="w-[60px]" suffix />
+          {/* The owner prefix repeats on every module, so the narrow sidebar shows the module's own name. */}
+          <span className="min-w-0 flex-1 truncate font-mono text-[13px] text-text-primary">
+            {moduleShortName(module.title)}
+          </span>
+          <span className="flex basis-full gap-3 pl-5">
+            <PlanCell session={module} plan="claude" width="flex-1" />
+            <PlanCell session={module} plan="codex" width="flex-1" suffix />
+          </span>
         </RowLink>
         {count > 0 && (
           <button

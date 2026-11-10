@@ -146,12 +146,32 @@ export function WorkspaceSidebar(props: Props) {
       ? matchedOrgGroups.flatMap((og) => og.repos.flatMap((g) => g.workspaces))
       : matchedGroups.flatMap((g) => g.workspaces);
   const matchingIds = new Set(matchingViews.map((v) => v.workspace.id));
+  const ownedIndex = useMemo(() => {
+    const byId = new Map<string, SessionResponse>();
+    const workspaceIdOf = new Map<string, string>();
+    for (const ws of props.workspaces) {
+      for (const s of ws.sessions) {
+        byId.set(s.id, s);
+        workspaceIdOf.set(s.id, ws.id);
+      }
+    }
+    return { byId, workspaceIdOf, sessions: [...byId.values()] };
+  }, [props.workspaces]);
+  // The core stays in the Active view like a pin; typed text narrows to matching rows, and the compact rail has no room for meters.
+  const core = useMemo(() => buildCore(ownedIndex.sessions), [ownedIndex]);
+  const showCore = core != null && !compact && !q;
+  // A core session shows once, in the tree, never again as a favorite or in its group.
+  const coreWorkspaceIds = new Set(
+    showCore ? [core.root, ...core.modules].flatMap((s) => (s ? [ownedIndex.workspaceIdOf.get(s.id) ?? ""] : [])) : [],
+  );
   const favoriteWorkspaces = collectSidebarFavorites(props.workspaces).filter(
-    (ws) => favoritesFirst && matchingIds.has(ws.id),
+    (ws) => favoritesFirst && matchingIds.has(ws.id) && !coreWorkspaceIds.has(ws.id),
   );
   const favoriteIds = new Set(favoriteWorkspaces.map((ws) => ws.id));
   const withoutFavorites = (g: SidebarGroup): SidebarGroup => {
-    const workspaces = g.workspaces.filter((v) => !favoriteIds.has(v.workspace.id));
+    const workspaces = g.workspaces.filter(
+      (v) => !favoriteIds.has(v.workspace.id) && !coreWorkspaceIds.has(v.workspace.id),
+    );
     return { ...g, workspaces, pinnedEmpty: !!g.pinned && workspaces.length === 0 };
   };
   const filteredGroups = matchedGroups.map(withoutFavorites);
@@ -161,20 +181,6 @@ export function WorkspaceSidebar(props: Props) {
   }));
   const filteredOrgGroups = matchedOrgGroups.map((og) => ({ ...og, repos: og.repos.map(withoutFavorites) }));
   const allWorkspaces = props.workspaces;
-  const ownedIndex = useMemo(() => {
-    const byId = new Map<string, SessionResponse>();
-    const workspaceIdOf = new Map<string, string>();
-    for (const ws of allWorkspaces) {
-      for (const s of ws.sessions) {
-        byId.set(s.id, s);
-        workspaceIdOf.set(s.id, ws.id);
-      }
-    }
-    return { byId, workspaceIdOf, sessions: [...byId.values()] };
-  }, [allWorkspaces]);
-  // The core stays in the Active view like a pin; typed text narrows to matching rows, and the compact rail has no room for meters.
-  const core = useMemo(() => buildCore(ownedIndex.sessions), [ownedIndex]);
-  const showCore = core != null && !compact && !q;
   const triage = useSidebarTriage(allWorkspaces);
   const visibleGroups = isNested
     ? filteredNested.flatMap((ng) => (hasFilter || !ng.repo.collapsed ? ng.subgroups : []))

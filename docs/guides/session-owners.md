@@ -86,10 +86,17 @@ amber below that, red at or below nothing left or while the entry is `over`.
 - In the TUI the core is a **Favorites** section at the top of the session
   list, above every group and in every sort and grouping mode. It holds the
   root first and then its modules, by Claude grant, largest first, then by
-  title. A core session shows only there, not again in its group. Rows draw
-  the tree with `├`/`└` guides.
+  title. Rows draw the tree with `├`/`└` guides.
 - In the web dashboard the core sits at the top of the **Favorites** section,
-  as the same tree in the same order, above the favorited workspaces.
+  as the same tree in the same order, above the favorited workspaces, in the
+  Active and All views alike. Module rows name the module without the owner
+  prefix (`Planner`), with the plans' meters on a second line.
+- A core session shows once, in the tree: not again in its group, and not as a
+  favorited workspace even when the person favorited it.
+- In the TUI a row's budget text outranks its title: the title shortens first
+  (down to 8 cells), and where even that leaves no room for the full text, the
+  row shows only what is left of its Claude share (`C 5.76%`; a worker shows
+  `worker` and the share of its plan).
 - The person's own favorites keep pinning as they always have; the mark is not
   the favorite flag, and `aoe session favorite` / `unfavorite` change only the
   person's flag.
