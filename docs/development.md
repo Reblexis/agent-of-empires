@@ -57,3 +57,7 @@ Install kache before exporting `RUSTC_WRAPPER`, to avoid a bootstrap loop, and u
 ## Demo recordings
 
 `web/scripts/record-tui-demo.mjs` produces `docs/assets/demo.gif`, and `web/scripts/record-web-demo.mjs` the desktop and mobile dashboard GIFs. Each documents its dependencies and setup in its file header.
+
+## `aoe ps` cost
+
+`aoe ps` asks tmux for every pane once and reads each session's agent pid from that one answer. A registry row with no tmux session costs no tmux call, so the command's time follows the running sessions, not the size of the registry.

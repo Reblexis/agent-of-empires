@@ -499,6 +499,15 @@ fn is_agent_session_name(name: &str, marker: Option<&str>) -> bool {
         && crate::tmux::SessionKind::of(name, marker) == Some(crate::tmux::SessionKind::Agent)
 }
 
+/// The agent pane's pid for `name`.
+fn agent_pid(
+    _meta: &std::collections::HashMap<String, crate::tmux::PaneMetadata>,
+    name: &str,
+    lookup: impl Fn(&str) -> Option<u32>,
+) -> Option<u32> {
+    lookup(name)
+}
+
 fn collect_tmux_states(instances: &mut [Instance]) -> Vec<TmuxState> {
     use std::collections::HashSet;
 
@@ -551,7 +560,7 @@ fn collect_tmux_states(instances: &mut [Instance]) -> Vec<TmuxState> {
         states.push(TmuxState {
             session_name: name.clone(),
             status: inst.status,
-            pid: crate::process::get_pane_pid(&name),
+            pid: agent_pid(&meta, &name, crate::process::get_pane_pid),
             activity_epoch: crate::tmux::session_activity(&name),
             agent,
         });
@@ -570,7 +579,7 @@ fn collect_tmux_states(instances: &mut [Instance]) -> Vec<TmuxState> {
             } else {
                 Status::Idle
             },
-            pid: crate::process::get_pane_pid(name),
+            pid: agent_pid(&meta, name, crate::process::get_pane_pid),
             activity_epoch: crate::tmux::session_activity(name),
             agent: m.pane_current_command.clone().unwrap_or_default(),
         });
@@ -875,6 +884,40 @@ pub async fn run(profile: &str, profile_explicit: bool, args: PsArgs) -> Result<
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn agent_pid_comes_from_the_one_pane_listing_and_absent_sessions_cost_no_tmux_call() {
+        use std::cell::Cell;
+        let pane = |pane_pid| crate::tmux::PaneMetadata {
+            pane_dead: false,
+            pane_current_command: None,
+            pane_start_command_is_protected: false,
+            pane_pid,
+            pane_title: None,
+            window_activity: None,
+            window_size: None,
+        };
+        let mut meta = std::collections::HashMap::new();
+        meta.insert("aoe_live".to_string(), pane(Some(4242)));
+        meta.insert("aoe_no_pid".to_string(), pane(None));
+        // (session, expected pid, expected single-session lookups)
+        let cases = [
+            ("aoe_live", Some(4242), 0),
+            // A trashed or stopped registry row: no tmux session, so no lookup at all.
+            ("aoe_gone", None, 0),
+            // tmux listed the session without a usable pid: ask for that one only.
+            ("aoe_no_pid", Some(7), 1),
+        ];
+        for (name, expected, expected_calls) in cases {
+            let calls = Cell::new(0);
+            let got = agent_pid(&meta, name, |_| {
+                calls.set(calls.get() + 1);
+                Some(7)
+            });
+            assert_eq!(got, expected, "{name}");
+            assert_eq!(calls.get(), expected_calls, "{name}");
+        }
+    }
+
     use super::*;
 
     const CREATED_AT: u64 = 1000;
