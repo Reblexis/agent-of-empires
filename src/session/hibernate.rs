@@ -48,12 +48,14 @@ pub struct HibernatePolicy {
 
 impl HibernatePolicy {
     /// Whether the current sample permits this profile's hibernation mode.
+    /// In pressure mode memory is short when RAM plus swap in use reaches the
+    /// percent of RAM: the kernel swaps idle agents out before RAM reads full.
     pub(crate) fn should_check(self, memory: &MemorySample) -> bool {
         if self.memory_pressure_percent == 0 {
             return self.max_live > 0;
         }
         memory.total_bytes > 0
-            && u128::from(memory.used_bytes()) * 100
+            && (u128::from(memory.used_bytes()) + u128::from(memory.swap_used_bytes)) * 100
                 >= u128::from(memory.total_bytes) * u128::from(self.memory_pressure_percent)
     }
 }
@@ -261,6 +263,36 @@ mod tests {
         )
     }
 
+    #[test]
+    fn memory_is_short_when_ram_plus_swap_reaches_the_percent_of_ram() {
+        // (total, available, swap used, percent, short)
+        let cases = [
+            (1000, 500, 0, 85, false),
+            // The aoe-cloud case: RAM reads half used while swap holds the rest.
+            (1000, 500, 350, 85, true),
+            (1000, 500, 349, 85, false),
+            (1000, 150, 0, 85, true),
+            // An unknown reading never parks, whatever swap says.
+            (0, 0, 900, 85, false),
+        ];
+        for (total_bytes, available_bytes, swap_used_bytes, percent, short) in cases {
+            let policy = HibernatePolicy {
+                max_live: 50,
+                memory_pressure_percent: percent,
+            };
+            let memory = MemorySample {
+                total_bytes,
+                available_bytes,
+                swap_used_bytes,
+                ..MemorySample::default()
+            };
+            assert_eq!(
+                policy.should_check(&memory),
+                short,
+                "total {total_bytes} available {available_bytes} swap {swap_used_bytes}"
+            );
+        }
+    }
     #[test]
     fn healthy_memory_does_not_restart_sessions_above_the_live_cap() {
         let instances = [

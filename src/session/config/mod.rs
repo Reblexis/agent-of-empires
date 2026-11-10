@@ -1511,16 +1511,17 @@ pub struct SessionConfig {
     )]
     pub hibernate_max_live: u32,
 
-    /// Host RAM occupancy that triggers pressure-based hibernation (1 to 100).
-    /// Replaces the live-count cap: at or above this percentage used, reclaim
+    /// Host memory occupancy that triggers pressure-based hibernation (1 to 100).
+    /// Replaces the live-count cap: when RAM plus swap in use reaches this
+    /// percentage of RAM, reclaim
     /// at most one oldest eligible idle session per minute, even below the cap.
     /// Healthy or unavailable memory readings never park sessions in this mode.
     /// Working, attached and scheduled-work sessions remain protected. Memory
-    /// is sampled again each sweep; swap occupancy and PSI do not trigger it.
+    /// is sampled again each sweep; PSI does not trigger it.
     /// `0` retains count-based hibernation (default).
     #[serde(default)]
     #[setting(
-        label = "Hibernate at RAM used (%)",
+        label = "Hibernate at RAM plus swap used (%)",
         widget = "number",
         min = 0,
         max = 100,

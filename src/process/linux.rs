@@ -525,9 +525,18 @@ pub(super) fn sample_memory() -> super::metrics::MemorySample {
         _ => (0, 0),
     };
 
+    let swap_used_bytes = match (
+        parse_meminfo_field(&meminfo, "SwapTotal"),
+        parse_meminfo_field(&meminfo, "SwapFree"),
+    ) {
+        (Some(total), Some(free)) => kib_to_bytes(total.saturating_sub(free)),
+        _ => 0,
+    };
+
     super::metrics::MemorySample {
         total_bytes,
         available_bytes,
+        swap_used_bytes,
         psi_mem_some_avg10,
         psi_io_some_avg10,
         macos_pressure_level: None,

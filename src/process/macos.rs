@@ -616,6 +616,8 @@ pub(super) fn sample_memory() -> super::metrics::MemorySample {
     super::metrics::MemorySample {
         total_bytes,
         available_bytes,
+        // macOS grows swap on demand and reports shortage through the pressure level.
+        swap_used_bytes: 0,
         psi_mem_some_avg10: None,
         psi_io_some_avg10: None,
         macos_pressure_level: sysctl_u64("kern.memorystatus_vm_pressure_level").map(|v| v as u8),

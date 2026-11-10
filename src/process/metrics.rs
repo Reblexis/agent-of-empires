@@ -86,6 +86,7 @@ fn band_from_macos(level: u8) -> PressureBand {
 pub struct MemorySample {
     pub total_bytes: u64,
     pub available_bytes: u64,
+    pub swap_used_bytes: u64,
     pub psi_mem_some_avg10: Option<f32>,
     pub psi_io_some_avg10: Option<f32>,
     pub macos_pressure_level: Option<u8>,
