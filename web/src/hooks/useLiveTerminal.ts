@@ -138,7 +138,9 @@ export function useLiveTerminal(
     const recalled = recallScreen(memoryKey);
     // Display only: a prefetched screen carries no history count, so it must not replace the copy.
     const shown = recalled && historyRef.current ? mergeFrame(historyRef.current, recalled).frame : recalled;
-    setState(() => ({ ...INITIAL_STATE, frame: shown ?? null }));
+    // Reading mode is the pane's choice (a restored reading position enters it before the stream starts), so the
+    // state keeps agreeing with `readingRef`.
+    setState(() => ({ ...INITIAL_STATE, frame: shown ?? null, reading: readingRef.current }));
 
     let disposed = false;
     const stats: LiveStats = { frames: 0, patches: 0, wireBytes: 0, resyncs: 0 };

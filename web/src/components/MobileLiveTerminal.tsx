@@ -17,6 +17,7 @@ import {
 } from "./live-terminal/pacing";
 import { FORWARD_TOUCH_GAIN, useForwardInput } from "./live-terminal/useForwardInput";
 import { Row } from "./live-terminal/TermRow";
+import { forgetReadingRow, rememberReadingRow } from "../lib/liveScrollMemory";
 import { LIVE_WINDOW_SCREENS, useLiveEdgeScroll } from "./live-terminal/useLiveEdgeScroll";
 import { useTerminalInput } from "./live-terminal/useTerminalInput";
 import { useLocalEcho } from "./live-terminal/useLocalEcho";
@@ -91,6 +92,11 @@ export interface MobileLiveTerminalProps {
   bottomAlign: boolean;
   /** The soft keyboard occludes the viewport; defers the row latch so keyboard-shrunk rows never reach tmux. */
   keyboardOpen: boolean;
+  /** Identifies this pane in the per-session reading-position memory (lib/liveScrollMemory), where scrolling
+   *  records the reader's place. Omitted: no memory. */
+  scrollMemoryKey?: string;
+  /** The remembered row to reopen on (recalled by the parent at mount); null opens at the live tail. */
+  initialReadingRow?: number | null;
   /** Draw plain typing at the cursor before the server echoes it; only while this browser's keys reach the pane. */
   predictEcho?: boolean;
 }
@@ -143,6 +149,8 @@ export function MobileLiveTerminal({
   bottomAlign,
   keyboardOpen,
   predictEcho = false,
+  scrollMemoryKey,
+  initialReadingRow = null,
 }: MobileLiveTerminalProps) {
   const { settings, update } = useWebSettings();
   const coarse = useIsCoarsePointer();
@@ -760,13 +768,39 @@ export function MobileLiveTerminal({
     },
     [coarse, lineH, liveScrollTarget, selectionHeld, touchActiveRef, liveDetachedRef, latchRef, cursorAnchorRef],
   );
+  // `initialReadingRow` is applied once, on the first frame that reaches it (or the first streamed one); until
+  // then the pane sits "at the bottom" of too little content, and no scroll event may save, forget, or leave
+  // reading mode.
+  const restorePendingRef = useRef(initialReadingRow != null);
   const onScrollerScroll = useCallback(() => {
+    if (restorePendingRef.current) return;
     if (anchorLayoutRef.current && scrollerRef.current) anchorLayoutRef.current.top = scrollerRef.current.scrollTop;
     if (scrollerRef.current && !forwardModeRef.current) reportJumpIfUnasked(scrollerRef.current);
     onScroll();
-  }, [onScroll, reportJumpIfUnasked, forwardModeRef]);
+    const el = scrollerRef.current;
+    if (el && scrollMemoryKey && !forwardModeRef.current) {
+      if (atBottom()) forgetReadingRow(scrollMemoryKey);
+      else rememberReadingRow(scrollMemoryKey, el.scrollTop / lineH);
+    }
+  }, [onScroll, reportJumpIfUnasked, forwardModeRef, atBottom, scrollMemoryKey, lineH]);
   useLayoutEffect(() => {
     if (live.top != null) cursorAnchorRef.current = live.top;
+    // Reopening a session the reader left mid-history: put them back on those lines before the first pin can
+    // take them to the live tail.
+    const restoreEl = scrollerRef.current;
+    if (restorePendingRef.current && restoreEl && visual.rows.length > 0 && initialReadingRow != null) {
+      const target = initialReadingRow * lineH;
+      const maxTop = Math.max(0, restoreEl.scrollHeight - restoreEl.clientHeight);
+      if (forwardMode) restorePendingRef.current = false;
+      else if (maxTop >= target || connected) {
+        restorePendingRef.current = false;
+        restoreEl.scrollTop = Math.min(target, maxTop);
+        if (!atBottom()) {
+          liveDetachedRef.current = true;
+          enterReading(rowsRef.current || screenRows);
+        } else returnToLive(rowsRef.current * LIVE_WINDOW_SCREENS);
+      }
+    }
     pinIfWasAtBottom();
     const el = scrollerRef.current;
     const prev = anchorLayoutRef.current;
@@ -798,6 +832,12 @@ export function MobileLiveTerminal({
     liveDetachedRef,
     pinIfWasAtBottom,
     syncView,
+    initialReadingRow,
+    connected,
+    atBottom,
+    enterReading,
+    returnToLive,
+    screenRows,
   ]);
 
   const input = useTerminalInput({
@@ -815,7 +855,13 @@ export function MobileLiveTerminal({
   const cursorRow = connected && !reading ? live.row : -1;
   // Trailing blanks are trimmed only at the normal-screen live edge: reading must keep scrollHeight stable, and
   // a full-screen app owns its whole grid.
-  const visibleRowCount = reading || altScreen ? visual.rows.length : Math.min(renderRowCount, visual.rows.length);
+  // The debounced count shrinks late but grows in this same render: its state lags a commit, and a frame turning
+  // spacer into rows would otherwise render short of its height, so the browser clamps scrollTop and the reader is
+  // thrown to unrelated lines.
+  const visibleRowCount =
+    reading || altScreen
+      ? visual.rows.length
+      : Math.min(Math.max(renderRowCount, lastNonBlankRow + 1), visual.rows.length);
   const { blocks, bottomPadLines } = mountedBlocks(visibleRowCount, effectiveSpacerLines, view, lineH);
 
   return (

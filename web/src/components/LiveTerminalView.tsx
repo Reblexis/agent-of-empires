@@ -24,6 +24,7 @@ import {
 } from "../lib/terminalFocus";
 import { isSessionActive } from "../lib/session";
 import { recallScreen, screenKey } from "../lib/screenCache";
+import { recallReadingRow } from "../lib/liveScrollMemory";
 
 interface Props {
   session: SessionResponse;
@@ -78,6 +79,9 @@ export function LiveTerminalView({ session, active = true, surface = "agent", te
     [],
   );
   const live = useLiveTerminal(ensureState === "ready" ? session.id : null, wsPath, receiveAgentClipboard);
+  // Where the reader left this pane last time (null: live tail), recalled once: the pane remounts on every switch.
+  const scrollMemoryKey = `${surface}:${terminalIndex}:${session.id}`;
+  const [initialReadingRow] = useState(() => recallReadingRow(scrollMemoryKey));
   // The viewport hook supplies the iOS-regular-Safari bottom inset and the occlusion-based keyboardOpen used to
   // gate the pane's sizing latch (occlusion is what shrinks the container, whichever element is focused).
   const { keyboardHeight, keyboardOpen } = useMobileKeyboard();
@@ -263,9 +267,10 @@ export function LiveTerminalView({ session, active = true, surface = "agent", te
     else ta.focus();
   }, [inputFocused]);
 
-  // While the session is ensured, a screen this page remembers (or the sidebar prefetched) stands in for the
-  // placeholder; the live stream replaces it once it connects.
-  const remembered = ensureState === "pending" ? recallScreen(screenKey(session.id, wsPath)) : undefined;
+  // Until the live stream has a frame (while the session is ensured, and for the render after it is ready), a
+  // screen this page remembers (or the sidebar prefetched) stands in. A frameless render in between collapses the
+  // pane to one empty screen: the content flashes away and the browser resets the scroll position.
+  const remembered = live.state.frame ? undefined : recallScreen(screenKey(session.id, wsPath));
   if (ensureState === "pending" && !remembered) {
     return (
       <div className="flex-1 flex items-center justify-center bg-surface-950 text-text-dim">
@@ -366,6 +371,8 @@ export function LiveTerminalView({ session, active = true, surface = "agent", te
           onInputFocusChange={setInputFocused}
           bottomAlign={surface === "agent"}
           keyboardOpen={keyboardOpen}
+          scrollMemoryKey={scrollMemoryKey}
+          initialReadingRow={initialReadingRow}
           predictEcho={live.state.connected && live.state.isOwner}
         />
         {coarse && live.state.connected && <KeyboardFab keyboardOpen={inputFocused} onToggle={toggleKeyboard} />}
