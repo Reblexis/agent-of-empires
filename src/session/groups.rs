@@ -1090,9 +1090,28 @@ pub fn owners_core<'a>(
     out
 }
 
+/// How many sessions sit below each session of an owner's tree, at any depth,
+/// for its `▸ N`; a session with none is absent.
+pub fn core_counts(core: &[(&Instance, usize)]) -> HashMap<String, usize> {
+    let mut counts = HashMap::new();
+    for (at, (inst, depth)) in core.iter().enumerate() {
+        let below = core[at + 1..].iter().take_while(|(_, d)| d > depth).count();
+        if below > 0 {
+            counts.insert(inst.id.clone(), below);
+        }
+    }
+    counts
+}
+
 /// The Favorites section for an owner's tree: a header named after the owner
-/// (the root, which is no session), then each session nested by its depth.
-pub fn owners_section(owner: &str, core: &[(&Instance, usize)]) -> Vec<Item> {
+/// (the root, which is no session) counting every session, then each session
+/// nested by its depth. A session's children show only while it is in
+/// `expanded`: every session is collapsed by default.
+pub fn owners_section(
+    owner: &str,
+    core: &[(&Instance, usize)],
+    expanded: &std::collections::HashSet<String>,
+) -> Vec<Item> {
     if core.is_empty() {
         return Vec::new();
     }
@@ -1107,10 +1126,18 @@ pub fn owners_section(owner: &str, core: &[(&Instance, usize)]) -> Vec<Item> {
         profile: None,
         archived_at: None,
     }];
-    items.extend(core.iter().map(|(inst, depth)| Item::Session {
-        id: inst.id.clone(),
-        depth: depth + 1,
-    }));
+    // Rows deeper than this belong to a collapsed session.
+    let mut hidden_below: Option<usize> = None;
+    for (inst, depth) in core {
+        if hidden_below.is_some_and(|d| *depth > d) {
+            continue;
+        }
+        hidden_below = (!expanded.contains(&inst.id)).then_some(*depth);
+        items.push(Item::Session {
+            id: inst.id.clone(),
+            depth: depth + 1,
+        });
+    }
     items
 }
 
@@ -1254,6 +1281,7 @@ mod tests {
     use super::*;
     use crate::session::Status;
     use chrono::Duration;
+    use std::collections::HashSet;
 
     fn inst(title: &str, group: &str) -> Instance {
         let mut inst = Instance::new(title, &format!("/tmp/{title}"));
@@ -1843,7 +1871,8 @@ mod tests {
             ]
         );
 
-        let section = owners_section("central", &owners_core(&instances, &marks));
+        let all: HashSet<String> = core.iter().map(|(id, _)| id.to_string()).collect();
+        let section = owners_section("central", &owners_core(&instances, &marks), &all);
         assert!(
             matches!(&section[0], Item::Group { path, name, session_count: 9, .. }
                 if is_owners_section_path(path) && name == "Central")
@@ -1857,9 +1886,69 @@ mod tests {
             .collect();
         assert_eq!(depths, [1, 2, 1, 2, 3, 2, 1, 1, 1]);
         assert!(
-            owners_section("central", &[]).is_empty(),
+            owners_section("central", &[], &all).is_empty(),
             "no core, no section"
         );
+    }
+
+    #[test]
+    fn owned_sessions_are_collapsed_by_default_and_expand_on_their_own() {
+        let e = |parent: Option<&str>| serde_json::json!({ "owner": "central", "parent": parent });
+        let marks = crate::session::owners::test_file(serde_json::json!({
+            "planner": e(None),
+            "dispatcher": e(Some("planner")),
+            "task": e(Some("dispatcher")),
+            "way": e(Some("task")),
+            "improver": e(None),
+        }));
+        let instances: Vec<Instance> = ["planner", "dispatcher", "task", "way", "improver"]
+            .iter()
+            .map(|id| {
+                let mut i = inst(id, "");
+                i.id = id.to_string();
+                i
+            })
+            .collect();
+        let core = owners_core(&instances, &marks);
+        let shown = |expanded: &[&str]| -> Vec<String> {
+            let expanded: HashSet<String> = expanded.iter().map(|s| s.to_string()).collect();
+            let section = owners_section("central", &core, &expanded);
+            assert!(
+                matches!(
+                    &section[0],
+                    Item::Group {
+                        session_count: 5,
+                        ..
+                    }
+                ),
+                "the card counts every session, shown or not"
+            );
+            section[1..]
+                .iter()
+                .filter_map(|i| match i {
+                    Item::Session { id, .. } => Some(id.clone()),
+                    Item::Group { .. } => None,
+                })
+                .collect()
+        };
+        let cases: [(&[&str], &[&str]); 4] = [
+            (&[], &["improver", "planner"]),
+            // Children come back collapsed.
+            (&["planner"], &["improver", "planner", "dispatcher"]),
+            (
+                &["planner", "dispatcher"],
+                &["improver", "planner", "dispatcher", "task"],
+            ),
+            // A row expanded under a collapsed parent stays hidden.
+            (&["dispatcher", "task"], &["improver", "planner"]),
+        ];
+        for (expanded, want) in cases {
+            assert_eq!(shown(expanded), want, "expanded {expanded:?}");
+        }
+        let counts = core_counts(&core);
+        let mut counts: Vec<(&str, usize)> = counts.iter().map(|(k, v)| (k.as_str(), *v)).collect();
+        counts.sort();
+        assert_eq!(counts, [("dispatcher", 2), ("planner", 3), ("task", 1)]);
     }
 
     #[test]

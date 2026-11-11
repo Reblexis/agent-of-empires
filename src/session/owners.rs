@@ -69,6 +69,11 @@ pub struct OwnerMark {
     /// the owner's budget and shows nothing about budget.
     pub budgeted: bool,
     pub over: bool,
+    /// How far the session's one piece of work is, 0 to 100; `None` for a
+    /// session without an end or without an estimate (no progress bar).
+    pub progress: Option<f64>,
+    /// The writer's id for that piece of work, carried only.
+    pub work: Option<String>,
     pub transactions: Vec<Transfer>,
 }
 
@@ -175,6 +180,19 @@ fn parse_entry(v: &Value) -> Result<OwnerMark, ()> {
         Some(Value::Bool(b)) => *b,
         _ => return Err(()),
     };
+    let progress = match obj.get("progress") {
+        None | Some(Value::Null) => None,
+        Some(Value::Number(n)) => match n.as_f64() {
+            Some(x) if (0.0..=100.0).contains(&x) => Some(x),
+            _ => return Err(()),
+        },
+        _ => return Err(()),
+    };
+    let work = match obj.get("work") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) => Some(s.clone()),
+        _ => return Err(()),
+    };
     let transactions = match obj.get("transactions") {
         None | Some(Value::Null) => Vec::new(),
         Some(Value::Array(list)) => list
@@ -193,6 +211,8 @@ fn parse_entry(v: &Value) -> Result<OwnerMark, ()> {
         granted: shares(obj.get("granted"), false)?,
         budgeted: obj.contains_key("left") || obj.contains_key("granted"),
         over,
+        progress,
+        work,
         transactions,
     })
 }
@@ -254,17 +274,6 @@ fn place(marks: &mut HashMap<String, OwnerMark>) {
             m.module = module;
         }
     }
-}
-
-/// Entries below each module, at any depth.
-pub fn worker_counts(marks: &HashMap<String, OwnerMark>) -> HashMap<String, usize> {
-    let mut counts = HashMap::new();
-    for m in marks.values() {
-        if let Some(module) = &m.module {
-            *counts.entry(module.clone()).or_default() += 1;
-        }
-    }
-    counts
 }
 
 #[derive(Default)]
@@ -374,7 +383,7 @@ mod tests {
         let marks = test_file(json!({
             "root": { "owner": "central", "parent": null,
                       "left": { "claude": -0.01, "codex": null }, "granted": { "claude": 0.25, "codex": 0.1 },
-                      "over": true, "transactions": transfers,
+                      "over": true, "transactions": transfers, "progress": 40, "work": "w281392d8d5",
                       "usage": "old field", "anything": [1, 2] },
             // left, granted and transactions may be absent.
             "bare": { "owner": "central", "parent": "root" },
@@ -387,6 +396,10 @@ mod tests {
             "numeric_parent": { "owner": "central", "parent": 7 },
             "text_over": { "owner": "central", "over": "yes" },
             "transactions_not_a_list": { "owner": "central", "transactions": {} },
+            "progress_past_100": { "owner": "central", "progress": 100.5 },
+            "progress_below_0": { "owner": "central", "progress": -1 },
+            "progress_as_text": { "owner": "central", "progress": "half" },
+            "numeric_work": { "owner": "central", "work": 7 },
         }));
         let root = &marks["root"];
         assert_eq!(
@@ -406,6 +419,10 @@ mod tests {
         );
         assert!(root.over);
         assert_eq!(
+            (root.progress, root.work.as_deref()),
+            (Some(40.0), Some("w281392d8d5"))
+        );
+        assert_eq!(
             root.transactions.len(),
             MAX_TRANSFERS,
             "bad transfers dropped, the first 20 kept"
@@ -417,6 +434,8 @@ mod tests {
             (bare.left, bare.granted, bare.over, bare.transactions.len()),
             (Shares::default(), Shares::default(), false, 0)
         );
+        // No estimate (or a session without an end): no progress bar.
+        assert_eq!((bare.progress, bare.work.as_deref()), (None, None));
         // Neither left nor granted: outside the owner's budget; either one keeps it in.
         assert!(!bare.budgeted && root.budgeted);
         assert_eq!(
@@ -469,11 +488,6 @@ mod tests {
                 "{id}"
             );
         }
-        let counts = worker_counts(&marks);
-        assert_eq!(
-            (counts.get("m1"), counts.get("m2"), counts.get("r")),
-            (Some(&2), Some(&1), None)
-        );
     }
 
     #[test]

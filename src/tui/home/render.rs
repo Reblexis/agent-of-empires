@@ -2112,6 +2112,8 @@ impl HomeView {
     /// The tree guide of a row in the owner's Favorites section: `└` for the
     /// last of its siblings, `├` otherwise; `None` outside the section.
     fn core_guide(&self, id: &str) -> Option<&'static str> {
+        // A flat sort has no header after the section, so only tree entries draw guides.
+        crate::session::owners::mark(id)?;
         let at = self
             .flat_items
             .iter()
@@ -2138,7 +2140,8 @@ impl HomeView {
         })
     }
 
-    /// The budget-left suffix of an owner's tree entry (docs/guides/session-owners.md).
+    /// The suffix of an owner's tree entry: its progress bar, what is left of
+    /// its budget and its child count (docs/guides/session-owners.md).
     fn owner_suffix(
         &self,
         id: &str,
@@ -2149,9 +2152,6 @@ impl HomeView {
         compact: bool,
     ) -> Vec<Span<'static>> {
         use crate::session::owners::{meter, pct, tone, Role, Tone};
-        if !mark.budgeted {
-            return Vec::new();
-        }
         let styled = |text: String, color: ratatui::style::Color| {
             let style = Style::default().fg(color);
             Span::styled(
@@ -2168,74 +2168,60 @@ impl HomeView {
             Tone::Low => theme.waiting,
             Tone::Empty => theme.error,
         };
-        let gauge = |plan: &str, left: Option<f64>, granted: Option<f64>, width: usize| {
-            vec![
-                styled(format!("{plan} "), theme.dimmed),
-                styled(
-                    meter(left, granted, width),
-                    tone_color(tone(left, granted, mark.over)),
-                ),
-                styled(format!(" {}%", pct(left)), theme.text),
-            ]
-        };
-        let mut spans = vec![Span::raw(" ")];
-        let codex = inst.tool == "codex";
-        if compact {
-            let (left, granted) = if codex && mark.role == Role::Worker {
-                (mark.left.codex, mark.granted.codex)
-            } else {
-                (mark.left.claude, mark.granted.claude)
-            };
-            // The tree already shows a row's place, so the compact suffix is only the plan and what is left.
-            let label = if codex && mark.role == Role::Worker {
-                "X "
-            } else {
-                "C "
-            };
-            spans.push(styled(label.into(), theme.dimmed));
-            spans.push(styled(
+        let left_pct = |left: Option<f64>, granted: Option<f64>| {
+            styled(
                 format!("{}%", pct(left)),
                 tone_color(tone(left, granted, mark.over)),
-            ));
-            return spans;
+            )
+        };
+        let codex = inst.tool == "codex" && mark.role == Role::Worker;
+        let mut spans = vec![Span::raw(" ")];
+        if let Some(p) = mark.progress {
+            if !compact {
+                spans.push(Span::raw(" "));
+                spans.push(styled(meter(Some(p), Some(100.0), 6) + " ", theme.accent));
+            }
+            spans.push(styled(format!("{}% ", pct(Some(p / 100.0))), theme.text));
         }
-        spans.push(Span::raw(" "));
-        match mark.role {
-            Role::Module => {
-                spans.extend(gauge("C", mark.left.claude, mark.granted.claude, 6));
-                spans.push(Span::raw("  "));
-                spans.extend(gauge("X", mark.left.codex, mark.granted.codex, 4));
-                spans.push(styled(" left".into(), theme.dimmed));
-                let workers =
-                    crate::session::owners::worker_counts(&crate::session::owners::marks())
-                        .get(id)
-                        .copied()
-                        .unwrap_or(0);
-                if workers > 0 {
-                    spans.push(styled(format!("  ▸ {workers}"), theme.dimmed));
-                }
-            }
-            Role::Worker => {
-                let module = mark
-                    .module
-                    .as_deref()
-                    .and_then(|m| self.get_instance(m))
-                    .map(|m| {
-                        crate::session::owners::short_title(&m.title, &mark.owner).to_string()
-                    });
-                spans.push(styled(
-                    module.map_or_else(|| "worker".to_string(), |m| format!("worker · {m}")),
-                    theme.fresh_idle,
-                ));
-                spans.push(Span::raw("  "));
-                let (plan, left, granted) = if codex {
-                    ("X", mark.left.codex, mark.granted.codex)
+        if mark.budgeted {
+            if compact {
+                let (label, left, granted) = if codex {
+                    ("X ", mark.left.codex, mark.granted.codex)
                 } else {
-                    ("C", mark.left.claude, mark.granted.claude)
+                    ("C ", mark.left.claude, mark.granted.claude)
                 };
-                spans.extend(gauge(plan, left, granted, 4));
+                spans.push(styled(label.into(), theme.dimmed));
+                spans.push(left_pct(left, granted));
+            } else {
+                spans.push(Span::raw(" "));
+                let plans: &[(&str, Option<f64>, Option<f64>)] = match mark.role {
+                    Role::Module => &[
+                        ("Claude ", mark.left.claude, mark.granted.claude),
+                        ("Codex ", mark.left.codex, mark.granted.codex),
+                    ],
+                    Role::Worker if codex => &[("Codex ", mark.left.codex, mark.granted.codex)],
+                    Role::Worker => &[("Claude ", mark.left.claude, mark.granted.claude)],
+                };
+                for (n, (plan, left, granted)) in plans.iter().enumerate() {
+                    if n > 0 {
+                        spans.push(styled(" · ".into(), theme.dimmed));
+                    }
+                    spans.push(styled((*plan).into(), theme.dimmed));
+                    spans.push(left_pct(*left, *granted));
+                }
                 spans.push(styled(" left".into(), theme.dimmed));
             }
+        }
+        if let Some(count) = self.owner_counts.get(id) {
+            let arrow = if self.owner_expanded.contains(id) {
+                "▾"
+            } else {
+                "▸"
+            };
+            spans.push(styled(format!("  {arrow} {count}"), theme.dimmed));
+        }
+        if spans.len() == 1 {
+            spans.clear();
         }
         spans
     }

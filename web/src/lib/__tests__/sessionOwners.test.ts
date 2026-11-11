@@ -9,9 +9,11 @@ import {
   meterTone,
   moduleShortName,
   ownerHandedOut,
-  moduleWorkers,
   moduleBudget,
-  workerCount,
+  sessionsBelow,
+  leftParts,
+  budgetTitle,
+  formatProgress,
   workerPlan,
   workerTag,
 } from "../sessionOwners";
@@ -152,23 +154,47 @@ describe("session owners", () => {
     expect(buildCore([{ ...PLANNER, trashed_at: "2026-01-01T00:00:00Z" }])).toBeNull();
   });
 
-  it("lists a module's workers nested by parent with their depth, and counts them at any depth", () => {
-    expect(moduleWorkers(ALL, "planner").map((w) => [w.session.id, w.depth])).toEqual([
+  it("nests every session below one by Claude grant then title; one below a session that left the tree leaves with it", () => {
+    const below = (sessions: SessionResponse[], id: string) =>
+      sessionsBelow(sessions, id).map((w) => [w.session.id, w.depth]);
+    expect(below(ALL, "planner")).toEqual([
       ["w2", 0],
       ["w1", 0],
       ["w1b", 1],
       ["w1a", 1],
     ]);
-    // A worker whose parent left the tree (trashed) still shows, at the top; an archived worker does not.
-    expect(workerCount([{ ...W2, archived_at: "2026-01-01T00:00:00Z" }, W1], "planner")).toBe(1);
-    const trashedW1 = { ...W1, trashed_at: "2026-01-01T00:00:00Z" };
-    expect(moduleWorkers([trashedW1, W1A, W2], "planner").map((w) => [w.session.id, w.depth])).toEqual([
-      ["w2", 0],
+    expect(below(ALL, "w1")).toEqual([
+      ["w1b", 0],
       ["w1a", 0],
     ]);
-    expect(workerCount(ALL, "planner")).toBe(4);
-    expect(workerCount(ALL, "router")).toBe(0);
-    expect(moduleWorkers(ALL, "router")).toEqual([]);
+    expect(below(ALL, "router")).toEqual([]);
+    expect(below([{ ...W2, archived_at: "2026-01-01T00:00:00Z" }, W1], "planner")).toEqual([["w1", 0]]);
+    expect(below([{ ...W1, trashed_at: "2026-01-01T00:00:00Z" }, W1A, W2], "planner")).toEqual([["w2", 0]]);
+  });
+
+  it("names each plan in full with what is left, the worker's own plan only, and gives what was granted on hover", () => {
+    const cases: [SessionResponse, string, string][] = [
+      [PLANNER, "Claude 2.24% · Codex 0% left", "left of the weekly plan; granted Claude 8% · Codex 3%"],
+      [W1, "Claude 0.43% left", "left of the weekly plan; granted Claude 1%"],
+      [W1A, "Codex 0.2% left", "left of the weekly plan; granted Codex ?"],
+    ];
+    for (const [s, text, title] of cases) {
+      const parts = leftParts(s);
+      expect(parts.map((p) => `${p.plan} ${p.text}`).join(" · ") + " left", s.id).toBe(text);
+      expect(budgetTitle(s), s.id).toBe(title);
+    }
+    // Tones as the fuel meter did: the module's Codex is spent.
+    expect(leftParts(PLANNER).map((p) => p.tone)).toEqual(["teal", "red"]);
+  });
+
+  it("shows progress as a percent with two decimals at most", () => {
+    const cases: [number, string][] = [
+      [40, "40%"],
+      [0, "0%"],
+      [100, "100%"],
+      [33.333, "33.33%"],
+    ];
+    for (const [p, text] of cases) expect(formatProgress(p)).toBe(text);
   });
 
   it("names a module by its title without the owner prefix up to the first ': '", () => {

@@ -4863,7 +4863,7 @@
       "id": "sidebar.owner-core",
       "kind": "vitest",
       "risk": "medium",
-      "description": "An outside agent's session tree: the owner's card, then modules with left-of-grant meters and every worker nested under its parent at the top of Favorites, the worker chip on rows outside the tree, and a module's Budget tab (docs/guides/session-owners.md).",
+      "description": "An outside agent's session tree: the owner's card, then modules with what is left per plan as text and every session nested under its parent, collapsed until its count is clicked, with a progress bar where the writer gives one, at the top of Favorites, the worker chip on rows outside the tree, and a module's Budget tab (docs/guides/session-owners.md).",
       "specs": ["src/components/__tests__/OwnerCore.test.tsx", "src/lib/__tests__/sessionOwners.test.ts"],
       "components": [
         "web/src/components/sidebar/OwnerCore.tsx",

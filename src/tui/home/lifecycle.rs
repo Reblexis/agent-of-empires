@@ -232,6 +232,8 @@ impl HomeView {
             hyperlink_cells: crate::tui::hyperlink::SharedHyperlinks::default(),
             vt_live_enabled: resolved.tmux.vt_live,
             profile_default_attach_mode: resolved.session.default_attach_mode,
+            owner_expanded: Default::default(),
+            owner_counts: Default::default(),
             project_group_collapsed: user_config
                 .as_ref()
                 .map(|c| {

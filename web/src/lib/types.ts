@@ -598,6 +598,10 @@ export interface SessionOwner {
   left: PlanShares;
   granted: PlanShares;
   over: boolean;
+  /** How far the session's one piece of work is, 0 to 100; null for a session without an end or an estimate (no bar). */
+  progress: number | null;
+  /** The writer's id for that piece of work (a ledger id), carried only. */
+  work: string | null;
   /** Newest first, up to 20. */
   transactions: OwnerTransaction[];
 }

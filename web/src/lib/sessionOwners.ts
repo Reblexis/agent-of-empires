@@ -71,29 +71,24 @@ export interface NestedWorker {
   depth: number;
 }
 
-const workersOf = (sessions: readonly SessionResponse[], moduleId: string) =>
-  sessions.filter((s) => s.owner?.role === "worker" && s.owner.module === moduleId && inTree(s));
+// A session's direct children in the tree, by Claude grant then title.
+export const childrenOf = (sessions: readonly SessionResponse[], id: string): SessionResponse[] =>
+  sessions.filter((s) => s.owner?.role === "worker" && s.owner.parent === id && inTree(s)).sort(byClaudeLimitThenTitle);
 
-/** A module's workers in tree order; a worker whose parent is not listed starts at depth 0. */
-export function moduleWorkers(sessions: readonly SessionResponse[], moduleId: string): NestedWorker[] {
-  const workers = workersOf(sessions, moduleId).sort((a, b) => a.title.localeCompare(b.title));
-  const ids = new Set(workers.map((w) => w.id));
+/** Every session below one, depth first, depth 0 for its children; one below a session that left the tree leaves with it. */
+export function sessionsBelow(sessions: readonly SessionResponse[], id: string): NestedWorker[] {
   const out: NestedWorker[] = [];
-  const seen = new Set<string>();
-  const visit = (s: SessionResponse, depth: number) => {
-    if (seen.has(s.id)) return;
-    seen.add(s.id);
-    out.push({ session: s, depth });
-    for (const child of workers) if (child.owner?.parent === s.id) visit(child, depth + 1);
+  const seen = new Set<string>([id]);
+  const visit = (parent: string, depth: number) => {
+    for (const child of childrenOf(sessions, parent)) {
+      if (seen.has(child.id)) continue;
+      seen.add(child.id);
+      out.push({ session: child, depth });
+      visit(child.id, depth + 1);
+    }
   };
-  for (const w of workers) if (!ids.has(w.owner?.parent ?? "")) visit(w, 0);
-  // A cycle among workers reaches no top; list what is left flat rather than drop it.
-  for (const w of workers) visit(w, 0);
+  visit(id, 0);
   return out;
-}
-
-export function workerCount(sessions: readonly SessionResponse[], moduleId: string): number {
-  return workersOf(sessions, moduleId).length;
 }
 
 /** The title without the owner's own prefix (`Central: ` for owner `central`, any case); any other title stays whole. */
@@ -105,6 +100,38 @@ export function moduleShortName(title: string, owner: string): string {
 /** What the owner handed out: its modules' grants per plan; an unknown grant counts as nothing. */
 export function ownerHandedOut(modules: readonly SessionResponse[], plan: Plan): number {
   return modules.reduce((t, m) => t + (m.owner?.granted[plan] ?? 0), 0);
+}
+
+const PLAN_NAME: Record<Plan, string> = { claude: "Claude", codex: "Codex" };
+
+export interface LeftPart {
+  plan: string;
+  text: string;
+  tone: MeterTone;
+}
+
+/** What is left per plan, each plan named in full: both for a module, the plan a worker runs on for a worker. */
+export function leftParts(session: SessionResponse): LeftPart[] {
+  const o = session.owner;
+  if (!o) return [];
+  const plans: Plan[] = o.role === "module" ? ["claude", "codex"] : [workerPlan(session)];
+  return plans.map((p) => ({
+    plan: PLAN_NAME[p],
+    text: formatPercent(o.left[p]),
+    tone: meterTone(o.left[p], o.granted[p], o.over),
+  }));
+}
+
+/** The hover of a budget: what was granted on the plans its text shows. */
+export function budgetTitle(session: SessionResponse): string {
+  const o = session.owner;
+  const plans: Plan[] = o?.role === "module" ? ["claude", "codex"] : [workerPlan(session)];
+  const granted = plans.map((p) => `${PLAN_NAME[p]} ${formatPercent(o?.granted[p])}`).join(" · ");
+  return `left of the weekly plan; granted ${granted}`;
+}
+
+export function formatProgress(progress: number): string {
+  return formatPercent(progress / 100);
 }
 
 /** The plan a worker's agent runs on. */
@@ -147,21 +174,10 @@ export interface ModuleBudget {
   transactions: BudgetTransaction[];
 }
 
-const childrenOf = (sessions: readonly SessionResponse[], id: string) =>
-  sessions.filter((s) => s.owner?.parent === id && inTree(s));
-
-function countBelow(sessions: readonly SessionResponse[], id: string, seen = new Set<string>([id])): number {
-  return childrenOf(sessions, id).reduce((n, c) => {
-    if (seen.has(c.id)) return n;
-    seen.add(c.id);
-    return n + 1 + countBelow(sessions, c.id, seen);
-  }, 0);
-}
-
 /** A module's grant, what is left of it and what its direct children were granted, per plan; its children; its transfers by title. */
 export function moduleBudget(module: SessionResponse, sessions: readonly SessionResponse[]): ModuleBudget {
   const titleOf = (id: string) => sessions.find((s) => s.id === id)?.title ?? (id === module.id ? module.title : id);
-  const children = childrenOf(sessions, module.id).sort(byClaudeLimitThenTitle);
+  const children = childrenOf(sessions, module.id);
   return {
     plans: (["claude", "codex"] as const).map((plan) => ({
       plan,
@@ -175,7 +191,7 @@ export function moduleBudget(module: SessionResponse, sessions: readonly Session
       codexLeft: c.owner?.left.codex ?? null,
       claudeGranted: c.owner?.granted.claude ?? null,
       codexGranted: c.owner?.granted.codex ?? null,
-      below: countBelow(sessions, c.id),
+      below: sessionsBelow(sessions, c.id).length,
     })),
     transactions: (module.owner?.transactions ?? []).map((tx) => ({
       ...tx,

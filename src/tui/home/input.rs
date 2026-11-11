@@ -2711,28 +2711,36 @@ impl HomeView {
                     return Some(action);
                 }
             }
-            KeyCode::Left | KeyCode::Char('h') => {
-                if let Some(Item::Group {
+            KeyCode::Left | KeyCode::Char('h') => match self.flat_items.get(self.cursor) {
+                Some(Item::Group {
                     path, collapsed, ..
-                }) = self.flat_items.get(self.cursor)
-                {
+                }) => {
                     if !collapsed {
                         let path = path.clone();
                         self.toggle_group_collapsed(&path);
                     }
                 }
-            }
-            KeyCode::Right | KeyCode::Char('l') => {
-                if let Some(Item::Group {
+                Some(Item::Session { id, .. }) => {
+                    let id = id.clone();
+                    self.set_owner_expanded(&id, false);
+                }
+                None => {}
+            },
+            KeyCode::Right | KeyCode::Char('l') => match self.flat_items.get(self.cursor) {
+                Some(Item::Group {
                     path, collapsed, ..
-                }) = self.flat_items.get(self.cursor)
-                {
+                }) => {
                     if *collapsed {
                         let path = path.clone();
                         self.toggle_group_collapsed(&path);
                     }
                 }
-            }
+                Some(Item::Session { id, .. }) => {
+                    let id = id.clone();
+                    self.set_owner_expanded(&id, true);
+                }
+                None => {}
+            },
             // Strict-mode typing guard: a bare lowercase letter bound to nothing opens
             // the compose dialog pre-filled with that character (the
             // no-destructive-lowercase contract).
@@ -4292,6 +4300,22 @@ impl HomeView {
                 "{mode_label} groups are automatic. Press {toggle} and pick Manual to manage groups."
             ),
         ))
+    }
+
+    /// Expand or collapse an owned session's children in the owner's tree; a
+    /// row with no children there is left alone.
+    fn set_owner_expanded(&mut self, id: &str, expand: bool) {
+        if !self.owner_counts.contains_key(id) {
+            return;
+        }
+        let changed = if expand {
+            self.owner_expanded.insert(id.to_string())
+        } else {
+            self.owner_expanded.remove(id)
+        };
+        if changed {
+            self.rebuild_flat_items_keeping_cursor();
+        }
     }
 
     fn toggle_group_collapsed(&mut self, path: &str) {

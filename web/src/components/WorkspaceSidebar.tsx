@@ -1,6 +1,6 @@
 import { useCallback, useContext, useMemo, useRef, useState } from "react";
 import { collectSidebarFavorites, FavoritesFirstContext } from "../lib/sidebarFavorites";
-import { buildCore, moduleWorkers, OwnedSessionsContext } from "../lib/sessionOwners";
+import { buildCore, OwnedSessionsContext, sessionsBelow } from "../lib/sessionOwners";
 import { usePluginUiEntries } from "../lib/pluginUiContext";
 import { workspaceMatchesActivity } from "../lib/sidebarActivity";
 import { useIdleDecayWindowMs } from "../lib/idleDecay";
@@ -164,7 +164,7 @@ export function WorkspaceSidebar(props: Props) {
   const coreWorkspaceIds = new Set(
     showCore
       ? core
-          .flatMap((m) => [m, ...moduleWorkers(ownedIndex.sessions, m.id).map((w) => w.session)])
+          .flatMap((m) => [m, ...sessionsBelow(ownedIndex.sessions, m.id).map((w) => w.session)])
           .map((s) => ownedIndex.workspaceIdOf.get(s.id) ?? "")
       : [],
   );

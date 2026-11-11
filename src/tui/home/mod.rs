@@ -174,6 +174,12 @@ pub struct HomeView {
     pub(super) vt_live_enabled: bool,
     pub(super) profile_default_attach_mode: crate::session::AttachMode,
     pub(super) project_group_collapsed: HashMap<String, bool>,
+    /// Owned sessions whose children show in the owner's tree; every other is
+    /// collapsed (docs/guides/session-owners.md). Kept while aoe runs.
+    pub(super) owner_expanded: std::collections::HashSet<String>,
+    /// Sessions below each owned session in the tree, for its `▸ N` and for
+    /// which rows Right/Left can expand.
+    pub(super) owner_counts: HashMap<String, usize>,
     pub(super) org_group_collapsed: HashMap<String, bool>,
     pub(super) remote_owner_cache: std::cell::RefCell<HashMap<String, Option<(String, String)>>>,
     pub(super) registered_projects: Vec<crate::session::Project>,

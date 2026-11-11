@@ -153,6 +153,10 @@ impl HomeView {
     /// Rebuild the rows and, while stopped sessions are hidden, every group header's full count.
     pub(super) fn refresh_flat_items(&mut self) {
         self.flat_items = self.build_flat_items();
+        self.owner_counts = crate::session::core_counts(&owners_core(
+            &self.cloned_instances_in_active_view(),
+            &crate::session::owners::marks(),
+        ));
         self.group_totals = if self.hide_stopped_in_groups {
             self.build_flat_items_hiding(false)
                 .into_iter()
@@ -245,7 +249,7 @@ impl HomeView {
             .first()
             .and_then(|(i, _)| marks.get(&i.id))
             .map_or("", |m| m.owner.as_str());
-        let mut items = owners_section(owner, &core);
+        let mut items = owners_section(owner, &core, &self.owner_expanded);
         let core_ids: HashSet<String> = core.iter().map(|(i, _)| i.id.clone()).collect();
         items.extend(self.build_group_items(hide_stopped, &core_ids));
         items

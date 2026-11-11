@@ -22,6 +22,8 @@ function owner(o: Partial<SessionOwner>): SessionOwner {
     granted: { claude: null, codex: null },
     left: { claude: null, codex: null },
     over: false,
+    progress: null,
+    work: null,
     transactions: [],
     ...o,
   };
@@ -53,9 +55,11 @@ const WORKSPACES = [
       module: "planner",
       granted: { claude: 0.01, codex: null },
       left: { claude: 0.0057, codex: null },
+      progress: 40,
+      work: "w281392d8d5",
     }),
   ),
-  ws("w1a", "Nested helper", owner({ parent: "w1", module: "planner", left: { claude: null, codex: 0.02 } }), {
+  ws("w1a", "Central: Nested helper", owner({ parent: "w1", module: "planner", left: { claude: null, codex: 0.02 } }), {
     tool: "codex",
   }),
   ws("improver", "Central: Improver", owner({ role: "module", budgeted: false })),
@@ -111,13 +115,14 @@ describe("owner core in favorites", () => {
     const card = within(favorites).getByTestId("owner-core-card");
     expect(card.textContent).toContain("central");
     expect(card.textContent).toContain("5 sessions");
-    expect(card.textContent).toContain("out C 10% X 4%");
+    expect(card.textContent).toContain("handed out Claude 10% · Codex 4%");
     const modules = within(favorites).getAllByTestId("owner-core-module");
     expect(modules.map((m) => m.getAttribute("data-session-id"))).toEqual(["planner", "router", "improver"]);
     // Outside the owner's budget: its title and nothing about budget.
     expect(modules[2].textContent).toBe("✦Improver");
-    expect(modules[0].textContent).toContain("C5.76%");
-    expect(modules[0].textContent).toContain("X3% left");
+    // Each plan named in full, what is left as text and no budget bar: the only bar on a row is its progress.
+    expect(modules[0].textContent).toContain("Claude 5.76% · Codex 3% left");
+    expect(within(modules[0]).queryByRole("progressbar")).toBeNull();
     // Module rows name the module without the owner prefix.
     expect(modules[0].textContent).toContain("Planner");
     expect(modules[0].textContent).not.toContain("Central:");
@@ -137,23 +142,43 @@ describe("owner core in favorites", () => {
     expect(within(favorites).getAllByTestId("owner-core-module")).toHaveLength(3);
   });
 
-  it("opens a module's workers nested by parent, and a click on any core row selects that session", () => {
+  it("keeps an owned session's children collapsed until its count is clicked, each level on its own", () => {
+    window.localStorage.removeItem("aoe-owner-expanded");
     const props = renderSidebar(WORKSPACES);
-    // Open by default: a module's children show nested under it.
-    const workers = screen.getAllByTestId("owner-core-worker");
-    expect(workers.map((w) => [w.getAttribute("data-session-id"), w.getAttribute("data-depth")])).toEqual([
+    const workers = () =>
+      screen
+        .queryAllByTestId("owner-core-worker")
+        .map((w) => [w.getAttribute("data-session-id"), w.getAttribute("data-depth")]);
+    expect(workers()).toEqual([]);
+    fireEvent.click(screen.getByRole("button", { name: "2 sessions below Planner" }));
+    expect(workers()).toEqual([["w1", "0"]]);
+    const w1 = screen.getByTestId("owner-core-worker");
+    expect(w1.textContent).toContain("Claude 0.57% left");
+    // A session with an end shows its progress bar.
+    expect(w1.textContent).toContain("40%");
+    expect(within(w1).getByRole("progressbar").getAttribute("aria-valuenow")).toBe("40");
+    fireEvent.click(screen.getByRole("button", { name: "1 session below Make aoe fast" }));
+    expect(workers()).toEqual([
       ["w1", "0"],
       ["w1a", "1"],
     ]);
-    expect(workers[0].textContent).toContain("C 0.57% left");
-    expect(workers[1].textContent).toContain("X 2% left");
+    const w1a = screen.getAllByTestId("owner-core-worker")[1];
+    expect(w1a.textContent).toContain("Codex 2% left");
+    // A worker's title loses the owner's own prefix too.
+    expect(w1a.textContent).not.toContain("Central:");
+    expect(within(w1a).queryByRole("progressbar")).toBeNull();
 
-    fireEvent.click(workers[1]);
+    fireEvent.click(w1a);
     expect(props.onSelect).toHaveBeenLastCalledWith("ws-w1a", "w1a");
     fireEvent.click(screen.getAllByTestId("owner-core-module")[1]);
     expect(props.onSelect).toHaveBeenLastCalledWith("ws-router", "router");
-    fireEvent.click(screen.getByRole("button", { name: /2 workers/ }));
-    expect(screen.queryAllByTestId("owner-core-worker")).toHaveLength(0);
+
+    // The choice lasts in this browser.
+    cleanup();
+    renderSidebar(WORKSPACES);
+    expect(workers()).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "2 sessions below Planner" }));
+    expect(workers()).toEqual([]);
   });
 
   it("shows a worker once, in the tree; while a filter hides the tree its own row carries the worker tag", () => {
@@ -169,8 +194,8 @@ describe("owner core in favorites", () => {
       c.closest("[data-testid=sidebar-session-row]")?.textContent?.includes("Make aoe fast"),
     );
     expect(chip?.textContent).toContain("worker · Planner");
-    expect(chip?.textContent).toContain("C 0.57% left");
-    expect(chip?.getAttribute("title")).toContain("of 1% granted");
+    expect(chip?.textContent).toContain("Claude 0.57% left");
+    expect(chip?.getAttribute("title")).toContain("granted Claude 1%");
   });
 
   it("shows no Favorites section when nothing is owned or favorited", () => {
