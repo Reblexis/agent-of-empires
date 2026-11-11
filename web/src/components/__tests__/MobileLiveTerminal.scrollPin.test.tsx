@@ -97,4 +97,42 @@ describe("MobileLiveTerminal live-edge scroll", () => {
     expect(props.enterReading).not.toHaveBeenCalled();
     expect(props.returnToLive).toHaveBeenCalledTimes(2);
   });
+  it("clicking in a session while scrolled up stays where the reader was instead of scrolling down", async () => {
+    const { scroller, input, props, rerenderWith, scrollTo } = mount();
+    const reading = bottom() - 20 * LINE_H;
+    scrollTo(reading);
+    rerenderWith({ reading: true }); // the hook answers enterReading
+    vi.mocked(props.returnToLive).mockClear();
+    // A desktop click focuses the hidden input so the physical keyboard types; that alone keeps the place.
+    fireEvent.click(scroller);
+    expect(document.activeElement).toBe(input());
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    expect(scroller.scrollTop).toBeCloseTo(reading, 0);
+    expect(props.returnToLive).not.toHaveBeenCalled();
+    // Typing does return to the live prompt the keystroke lands at.
+    fireEvent.keyDown(input(), { key: "Enter" });
+    expect(scroller.scrollTop).toBe(bottom());
+    expect(props.returnToLive).toHaveBeenCalled();
+  });
+
+  it("opening the soft keyboard on touch still returns to the live prompt", async () => {
+    const savedMatchMedia = window.matchMedia;
+    window.matchMedia = ((query: string) => ({
+      matches: query === "(pointer: coarse)",
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    })) as unknown as typeof window.matchMedia;
+    try {
+      const { scroller, props, scrollTo } = mount();
+      scrollTo(bottom() - 20 * LINE_H);
+      vi.mocked(props.returnToLive).mockClear();
+      fireEvent.click(scroller);
+      await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      expect(scroller.scrollTop).toBe(bottom());
+      expect(props.returnToLive).toHaveBeenCalled();
+    } finally {
+      window.matchMedia = savedMatchMedia;
+    }
+  });
 });

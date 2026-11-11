@@ -442,18 +442,20 @@ export function MobileLiveTerminal({
   const { wheelAccumRef, enqueueTouchWheelDelta, cancelTouchWheelQueue, startMomentum, stopMomentum } = forward;
   // Recent drag samples for the release velocity.
   const flickSamplesRef = useRef<FlickSample[]>([]);
-  // Every input path funnels through here, so typing interrupts a coast instead of queueing behind it.
+  // Every input path funnels through here, so typing interrupts a coast instead of queueing behind it,
+  // and a reader in scrollback is brought to the live prompt the keystroke lands at.
   const echoSent = echo.sent;
   const sendData = useCallback(
     (data: string) => {
       stopMomentum();
       cancelTouchWheelQueue();
+      if (!forwardModeRef.current && (readingRef.current || liveDetachedRef.current)) jumpToLatest();
       // The key goes out first: a prediction never stands between a key and the session.
       const delivered = sendDataRaw(data);
       echoSent(data, delivered);
       return delivered;
     },
-    [sendDataRaw, stopMomentum, cancelTouchWheelQueue, echoSent],
+    [sendDataRaw, stopMomentum, cancelTouchWheelQueue, echoSent, forwardModeRef, liveDetachedRef, jumpToLatest],
   );
 
   const pinchRef = useRef<{
@@ -650,9 +652,11 @@ export function MobileLiveTerminal({
     };
   }, [active, charW, lineH, latchRef, sendResize, setWindow, pinIfWasAtBottom, keyboardOpen, pinchGeneration]);
 
-  // Opening the keyboard means typing: return to the live prompt before the viewport shrinks.
+  // Opening the keyboard means typing: return to the live prompt before the viewport shrinks. Focus counts only
+  // on touch, where it is the keyboard opening; a desktop click focuses just so the physical keyboard types.
+  const focusOpensKeyboard = focused && coarse;
   useEffect(() => {
-    if (!keyboardOpen && !focused) return;
+    if (!keyboardOpen && !focusOpensKeyboard) return;
     const id = requestAnimationFrame(() => {
       const el = scrollerRef.current;
       if (!el) return;
@@ -663,7 +667,7 @@ export function MobileLiveTerminal({
       syncView();
     });
     return () => cancelAnimationFrame(id);
-  }, [focused, keyboardOpen, forceLiveRef, liveDetachedRef, liveScrollTarget, returnToLive, syncView]);
+  }, [focusOpensKeyboard, keyboardOpen, forceLiveRef, liveDetachedRef, liveScrollTarget, returnToLive, syncView]);
 
   // Fast cadence only for the visible, active pane at the live edge.
   useEffect(() => {
