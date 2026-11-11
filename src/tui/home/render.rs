@@ -2149,6 +2149,9 @@ impl HomeView {
         compact: bool,
     ) -> Vec<Span<'static>> {
         use crate::session::owners::{meter, pct, tone, Role, Tone};
+        if !mark.budgeted {
+            return Vec::new();
+        }
         let styled = |text: String, color: ratatui::style::Color| {
             let style = Style::default().fg(color);
             Span::styled(

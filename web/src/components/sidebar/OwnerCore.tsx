@@ -54,16 +54,19 @@ export function WorkerChip({ session }: { session: SessionResponse }) {
   if (!tag) return null;
   const plan = workerPlan(session);
   const { left, granted, over } = planShares(session, plan);
+  const budgeted = session.owner?.budgeted !== false;
   return (
     <span
       data-testid="sidebar-worker-chip"
-      title={`${tag}; ${leftTitle(session, plan)}`}
+      title={budgeted ? `${tag}; ${leftTitle(session, plan)}` : tag}
       className="inline-flex shrink-0 items-center gap-1"
     >
       <span className={TAG}>{tag}</span>
-      <span className={`font-mono text-[10px] ${TONE_TEXT[meterTone(left, granted, over)]}`}>
-        {LETTER[plan]} {formatLeft(left)}
-      </span>
+      {budgeted && (
+        <span className={`font-mono text-[10px] ${TONE_TEXT[meterTone(left, granted, over)]}`}>
+          {LETTER[plan]} {formatLeft(left)}
+        </span>
+      )}
     </span>
   );
 }
@@ -156,12 +159,14 @@ function WorkerRow({ session, depth, props }: { session: SessionResponse; depth:
         <Dot session={session} size="h-1.5 w-1.5" />
         <span className="truncate text-[12px] text-text-secondary">{session.title}</span>
       </span>
-      <span
-        className={`shrink-0 font-mono text-[10px] ${TONE_TEXT[meterTone(left, granted, over)]}`}
-        title={leftTitle(session, plan)}
-      >
-        {LETTER[plan]} {formatLeft(left)}
-      </span>
+      {session.owner?.budgeted !== false && (
+        <span
+          className={`shrink-0 font-mono text-[10px] ${TONE_TEXT[meterTone(left, granted, over)]}`}
+          title={leftTitle(session, plan)}
+        >
+          {LETTER[plan]} {formatLeft(left)}
+        </span>
+      )}
     </RowLink>
   );
 }
@@ -186,10 +191,12 @@ function ModuleRow({ module, props }: { module: SessionResponse; props: TreeProp
           <span className="min-w-0 flex-1 truncate font-mono text-[13px] text-text-primary">
             {moduleShortName(module.title, module.owner?.owner ?? "")}
           </span>
-          <span className="flex basis-full gap-3 pl-5">
-            <PlanCell session={module} plan="claude" width="flex-1" />
-            <PlanCell session={module} plan="codex" width="flex-1" suffix />
-          </span>
+          {module.owner?.budgeted !== false && (
+            <span className="flex basis-full gap-3 pl-5">
+              <PlanCell session={module} plan="claude" width="flex-1" />
+              <PlanCell session={module} plan="codex" width="flex-1" suffix />
+            </span>
+          )}
         </RowLink>
         {count > 0 && (
           <button

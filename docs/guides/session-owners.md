@@ -56,6 +56,9 @@ whole (write a temp file and rename it), so a reader never sees half a file:
   plans: `claude` of the Claude plan and `codex` of the Codex plan, where 1 is
   one account's whole weekly limit. `granted` is at least 0; `left` may be
   negative (spent past its budget). A missing or `null` value is unknown.
+- An entry with neither `left` nor `granted` is outside the owner's budget
+  (such as the owner's own improver and its sessions): its row shows its title
+  and nothing about budget, and it counts toward no total.
 - `over` is `true` while the entry is held for being past its budget.
 - `transactions` lists the entry's latest transfers, newest first: `at` (an
   RFC 3339 time), `from` and `to` (session ids, or a name such as `viktor` for
@@ -142,7 +145,8 @@ terminal (the TUI keeps the module's terminal preview). It shows:
 ## In the API
 
 `GET /api/sessions` carries the entry per session as `owner`: `null`, or
-`{"owner", "parent", "role", "module", "left", "granted", "over",
-"transactions"}`. `role` is `"module"` or `"worker"`; `module` is
+`{"owner", "parent", "role", "module", "left", "granted", "budgeted",
+"over", "transactions"}`, where `budgeted` is `false` for an entry outside the
+owner's budget. `role` is `"module"` or `"worker"`; `module` is
 the id of the worker's module (`null` for a module or a worker of no module); `left` and `granted` are `{"claude", "codex"}`, each value a share
 or `null`; `transactions` is the list above.

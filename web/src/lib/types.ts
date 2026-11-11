@@ -591,6 +591,8 @@ export interface SessionOwner {
   owner: string;
   parent: string | null;
   role: "module" | "worker";
+  /** False when the entry is outside the owner's budget: show nothing about budget. */
+  budgeted: boolean;
   /** Id of a worker's module; null for the root, a module, or a worker of no module. */
   module: string | null;
   left: PlanShares;

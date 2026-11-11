@@ -28,6 +28,7 @@ function owned(id: string, title: string, o: OwnerOver | null, over: Partial<Ses
     parent: null,
     role: "worker",
     module: null,
+    budgeted: true,
     over: false,
     transactions: [],
     ...o,

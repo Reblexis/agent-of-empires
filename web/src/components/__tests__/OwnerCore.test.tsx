@@ -18,6 +18,7 @@ function owner(o: Partial<SessionOwner>): SessionOwner {
     parent: null,
     role: "worker",
     module: null,
+    budgeted: true,
     granted: { claude: null, codex: null },
     left: { claude: null, codex: null },
     over: false,
@@ -57,6 +58,7 @@ const WORKSPACES = [
   ws("w1a", "Nested helper", owner({ parent: "w1", module: "planner", left: { claude: null, codex: 0.02 } }), {
     tool: "codex",
   }),
+  ws("improver", "Central: Improver", owner({ role: "module", budgeted: false })),
   ws("plain", "Plain session", null),
 ];
 
@@ -108,10 +110,12 @@ describe("owner core in favorites", () => {
     // The owner is the root and no session: a card named after it, with what it handed out.
     const card = within(favorites).getByTestId("owner-core-card");
     expect(card.textContent).toContain("central");
-    expect(card.textContent).toContain("4 sessions");
+    expect(card.textContent).toContain("5 sessions");
     expect(card.textContent).toContain("out C 10% X 4%");
     const modules = within(favorites).getAllByTestId("owner-core-module");
-    expect(modules.map((m) => m.getAttribute("data-session-id"))).toEqual(["planner", "router"]);
+    expect(modules.map((m) => m.getAttribute("data-session-id"))).toEqual(["planner", "router", "improver"]);
+    // Outside the owner's budget: its title and nothing about budget.
+    expect(modules[2].textContent).toBe("✦Improver");
     expect(modules[0].textContent).toContain("C5.76%");
     expect(modules[0].textContent).toContain("X3% left");
     // Module rows name the module without the owner prefix.
@@ -130,7 +134,7 @@ describe("owner core in favorites", () => {
       .queryAllByTestId("sidebar-session-row")
       .map((r) => r.textContent ?? "");
     expect(rows.filter((t) => t.includes("Central:"))).toEqual([]);
-    expect(within(favorites).getAllByTestId("owner-core-module")).toHaveLength(2);
+    expect(within(favorites).getAllByTestId("owner-core-module")).toHaveLength(3);
   });
 
   it("opens a module's workers nested by parent, and a click on any core row selects that session", () => {

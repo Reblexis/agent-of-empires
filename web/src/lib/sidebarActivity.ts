@@ -8,7 +8,8 @@ export function sessionMatchesActivity(s: SessionResponse, idleDecayWindowMs: nu
     s.pinned_at != null ||
     isSessionActive(s, idleDecayWindowMs) ||
     s.status === "Creating" ||
-    s.status === "Error"
+    s.status === "Error" ||
+    !!s.unread
   );
 }
 

@@ -146,7 +146,7 @@ export function BudgetFrame({
 }) {
   // The tab belongs to one module: opening another session and coming back starts on the terminal.
   const [picked, setPicked] = useState<{ id: string; tab: "terminal" | "budget" } | null>(null);
-  const isModule = session?.owner?.role === "module";
+  const isModule = session?.owner?.role === "module" && session.owner.budgeted !== false;
   const tab = isModule && picked?.id === session.id ? picked.tab : "terminal";
   const setTab = (t: "terminal" | "budget") => session && setPicked({ id: session.id, tab: t });
   const tabClass = (t: typeof tab) =>

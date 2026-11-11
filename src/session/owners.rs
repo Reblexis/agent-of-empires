@@ -65,6 +65,9 @@ pub struct OwnerMark {
     pub module: Option<String>,
     pub left: Shares,
     pub granted: Shares,
+    /// `false` when the entry has neither `left` nor `granted`: it is outside
+    /// the owner's budget and shows nothing about budget.
+    pub budgeted: bool,
     pub over: bool,
     pub transactions: Vec<Transfer>,
 }
@@ -188,6 +191,7 @@ fn parse_entry(v: &Value) -> Result<OwnerMark, ()> {
         module: None,
         left: shares(obj.get("left"), true)?,
         granted: shares(obj.get("granted"), false)?,
+        budgeted: obj.contains_key("left") || obj.contains_key("granted"),
         over,
         transactions,
     })
@@ -413,6 +417,8 @@ mod tests {
             (bare.left, bare.granted, bare.over, bare.transactions.len()),
             (Shares::default(), Shares::default(), false, 0)
         );
+        // Neither left nor granted: outside the owner's budget; either one keeps it in.
+        assert!(!bare.budgeted && root.budgeted);
         assert_eq!(
             marks.len(),
             2,
