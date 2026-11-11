@@ -160,6 +160,8 @@ export function WorkspaceSidebar(props: Props) {
   // The core stays in the Active view like a pin; typed text narrows to matching rows, and the compact rail has no room for meters.
   const core = useMemo(() => buildCore(ownedIndex.sessions), [ownedIndex]);
   const showCore = core != null && !compact && !q;
+  // Active narrows to the owner's tree alone; every other row waits under All.
+  const centralOnly = activeOnly && showCore;
   // A core session shows once, in the tree, never again as a favorite or in its group.
   const coreWorkspaceIds = new Set(
     showCore
@@ -169,7 +171,7 @@ export function WorkspaceSidebar(props: Props) {
       : [],
   );
   const favoriteWorkspaces = collectSidebarFavorites(props.workspaces).filter(
-    (ws) => favoritesFirst && matchingIds.has(ws.id) && !coreWorkspaceIds.has(ws.id),
+    (ws) => !centralOnly && favoritesFirst && matchingIds.has(ws.id) && !coreWorkspaceIds.has(ws.id),
   );
   const favoriteIds = new Set(favoriteWorkspaces.map((ws) => ws.id));
   const withoutFavorites = (g: SidebarGroup): SidebarGroup => {
@@ -178,12 +180,15 @@ export function WorkspaceSidebar(props: Props) {
     );
     return { ...g, workspaces, pinnedEmpty: !!g.pinned && workspaces.length === 0 };
   };
-  const filteredGroups = matchedGroups.map(withoutFavorites);
-  const filteredNested = matchedNested.map((ng) => ({
+  const filteredGroups = centralOnly ? [] : matchedGroups.map(withoutFavorites);
+  const filteredNested = (centralOnly ? [] : matchedNested).map((ng) => ({
     repo: withoutFavorites(ng.repo),
     subgroups: ng.subgroups.map(withoutFavorites),
   }));
-  const filteredOrgGroups = matchedOrgGroups.map((og) => ({ ...og, repos: og.repos.map(withoutFavorites) }));
+  const filteredOrgGroups = (centralOnly ? [] : matchedOrgGroups).map((og) => ({
+    ...og,
+    repos: og.repos.map(withoutFavorites),
+  }));
   const allWorkspaces = props.workspaces;
   const triage = useSidebarTriage(allWorkspaces);
   const visibleGroups = isNested
