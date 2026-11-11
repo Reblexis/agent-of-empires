@@ -126,7 +126,7 @@ import { TopBar } from "./components/TopBar";
 import { AppShellSkeleton, MainPaneSkeleton } from "./components/AppShellSkeleton";
 import { ContentSplit } from "./components/ContentSplit";
 import { ForecastBand } from "./components/ForecastBand";
-import { RootBudgetFrame } from "./components/OwnerBudget";
+import { BudgetFrame } from "./components/OwnerBudget";
 import { TerminalSessionStack } from "./components/TerminalSessionStack";
 // Lazy-load the acp surface so non-acp users never download
 // the @assistant-ui/react, shiki, and in-house StringDiff/DiffLine
@@ -2007,7 +2007,7 @@ function AppContent({
                   <ForecastBand key={activeSessionId} sessionId={activeSessionId} summary={activeSession?.forecast} />
                 )}
                 <div className={selectedFilePath ? "hidden" : "flex-1 flex flex-col min-h-0 overflow-hidden"}>
-                  <RootBudgetFrame session={activeSession} sessions={sessions}>
+                  <BudgetFrame session={activeSession} sessions={sessions}>
                     {activeSession?.view === "structured" ? (
                       <Suspense fallback={<AcpLoadingFallback />}>
                         <StructuredView
@@ -2041,7 +2041,7 @@ function AppContent({
                         maxPersistentTerminals={webSettings.maxPersistentTerminals}
                       />
                     )}
-                  </RootBudgetFrame>
+                  </BudgetFrame>
                 </div>
 
                 {selectedFilePath &&

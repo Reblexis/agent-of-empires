@@ -19,7 +19,6 @@ pub const TRASH_SECTION_NAME: &str = "Trash";
 /// Synthetic group path for the Favorites section that holds an owner's core
 /// (docs/guides/session-owners.md), pinned above every group.
 pub const OWNERS_SECTION_PATH: &str = "__aoe_owners_section__";
-pub const OWNERS_SECTION_NAME: &str = "Favorites";
 
 /// Synthetic group identity for the scratch bucket in project mode.
 pub const SCRATCH_GROUP_PATH: &str = "__aoe_scratch_group__";
@@ -1033,51 +1032,84 @@ fn append_section(
     }));
 }
 
-/// An owner's core in favorites order: the root, then its modules by Claude
-/// grant (largest first), then title. Snoozed, archived and trashed sessions
-/// are left out, as with favorites.
+/// An owner's whole tree in favorites order, each session with its depth
+/// below the owner: modules by Claude grant (largest first), then title, each
+/// followed by its children in the same order, nested. Archived and trashed
+/// sessions are left out with everything below them; idle and snoozed ones
+/// stay, so every worker shows.
 pub fn owners_core<'a>(
     instances: &'a [Instance],
     marks: &std::collections::HashMap<String, super::owners::OwnerMark>,
-) -> Vec<&'a Instance> {
-    use super::owners::Role;
-    let mut core: Vec<(&Instance, &super::owners::OwnerMark)> = instances
+) -> Vec<(&'a Instance, usize)> {
+    use super::owners::{OwnerMark, Role};
+    type Entry<'i, 'm> = (&'i Instance, &'m OwnerMark);
+    fn by_grant(v: &mut [Entry<'_, '_>]) {
+        v.sort_by(|(a, am), (b, bm)| {
+            bm.granted
+                .claude
+                .unwrap_or(0.0)
+                .total_cmp(&am.granted.claude.unwrap_or(0.0))
+                .then_with(|| a.title.cmp(&b.title))
+        });
+    }
+    fn visit<'i>(
+        at: Entry<'i, '_>,
+        depth: usize,
+        live: &[Entry<'i, '_>],
+        out: &mut Vec<(&'i Instance, usize)>,
+    ) {
+        if out.iter().any(|(i, _)| i.id == at.0.id) {
+            return;
+        }
+        out.push((at.0, depth));
+        let mut children: Vec<Entry<'i, '_>> = live
+            .iter()
+            .filter(|(_, m)| m.role == Role::Worker && m.parent.as_deref() == Some(&at.0.id))
+            .copied()
+            .collect();
+        by_grant(&mut children);
+        for child in children {
+            visit(child, depth + 1, live, out);
+        }
+    }
+    let live: Vec<Entry<'a, '_>> = instances
         .iter()
-        .filter(|i| !i.is_archived() && !i.is_trashed() && !i.is_snoozed())
+        .filter(|i| !i.is_archived() && !i.is_trashed())
         .filter_map(|i| marks.get(&i.id).map(|m| (i, m)))
-        .filter(|(_, m)| matches!(m.role, Role::Root | Role::Module))
         .collect();
-    core.sort_by(|(a, am), (b, bm)| {
-        (am.role != Role::Root)
-            .cmp(&(bm.role != Role::Root))
-            .then(
-                bm.granted
-                    .claude
-                    .unwrap_or(0.0)
-                    .total_cmp(&am.granted.claude.unwrap_or(0.0)),
-            )
-            .then_with(|| a.title.cmp(&b.title))
-    });
-    core.into_iter().map(|(i, _)| i).collect()
+    let mut modules: Vec<Entry<'a, '_>> = live
+        .iter()
+        .filter(|(_, m)| m.role == Role::Module)
+        .copied()
+        .collect();
+    by_grant(&mut modules);
+    let mut out = Vec::new();
+    for module in modules {
+        visit(module, 0, &live, &mut out);
+    }
+    out
 }
 
-/// The Favorites section for `core`: its header, then each core session.
-pub fn owners_section(core: &[&Instance]) -> Vec<Item> {
+/// The Favorites section for an owner's tree: a header named after the owner
+/// (the root, which is no session), then each session nested by its depth.
+pub fn owners_section(owner: &str, core: &[(&Instance, usize)]) -> Vec<Item> {
     if core.is_empty() {
         return Vec::new();
     }
+    let mut name: String = owner.chars().take(1).flat_map(char::to_uppercase).collect();
+    name.extend(owner.chars().skip(1));
     let mut items = vec![Item::Group {
         path: OWNERS_SECTION_PATH.to_string(),
-        name: OWNERS_SECTION_NAME.to_string(),
+        name,
         depth: 0,
         collapsed: false,
         session_count: core.len(),
         profile: None,
         archived_at: None,
     }];
-    items.extend(core.iter().map(|inst| Item::Session {
+    items.extend(core.iter().map(|(inst, depth)| Item::Session {
         id: inst.id.clone(),
-        depth: 1,
+        depth: depth + 1,
     }));
     items
 }
@@ -1750,22 +1782,38 @@ mod tests {
     }
 
     #[test]
-    fn owners_core_is_root_then_modules_by_claude_limit() {
+    fn owners_core_nests_the_whole_tree_under_the_owner() {
         let e = |parent: Option<&str>, claude: f64| {
             serde_json::json!({ "owner": "central", "parent": parent,
                                 "granted": { "claude": claude, "codex": 0.0 } })
         };
         let marks = crate::session::owners::test_file(serde_json::json!({
-            "root": e(None, 0.25),
-            "small": e(Some("root"), 0.01),
-            "big": e(Some("root"), 0.08),
-            "tie_b": e(Some("root"), 0.04),
-            "tie_a": e(Some("root"), 0.04),
-            "worker": e(Some("big"), 0.5),
-            "snoozed": e(Some("root"), 0.9),
+            "small": e(None, 0.01),
+            "big": e(None, 0.08),
+            "tie_b": e(None, 0.04),
+            "tie_a": e(None, 0.04),
+            "w_low": e(Some("big"), 0.01),
+            "w_high": e(Some("big"), 0.5),
+            "grandchild": e(Some("w_high"), 0.02),
+            // Snoozed stays (every worker shows); archived leaves with what is below it.
+            "snoozed": e(None, 0.9),
+            "under_snoozed": e(Some("snoozed"), 0.001),
+            "archived": e(None, 1.0),
+            "under_archived": e(Some("archived"), 1.0),
         }));
         let mut instances: Vec<Instance> = [
-            "worker", "small", "tie_b", "big", "tie_a", "root", "snoozed", "plain",
+            "w_low",
+            "small",
+            "tie_b",
+            "big",
+            "tie_a",
+            "snoozed",
+            "plain",
+            "w_high",
+            "grandchild",
+            "under_snoozed",
+            "archived",
+            "under_archived",
         ]
         .iter()
         .map(|id| {
@@ -1774,21 +1822,44 @@ mod tests {
             i
         })
         .collect();
-        instances[6].snooze(60);
-        let core: Vec<&str> = owners_core(&instances, &marks)
+        instances[5].snooze(60);
+        instances[10].archive();
+        let core: Vec<(&str, usize)> = owners_core(&instances, &marks)
             .iter()
-            .map(|i| i.id.as_str())
+            .map(|(i, d)| (i.id.as_str(), *d))
             .collect();
-        assert_eq!(core, ["root", "big", "tie_a", "tie_b", "small"]);
-
-        let section = owners_section(&owners_core(&instances, &marks));
-        assert!(
-            matches!(&section[0], Item::Group { path, session_count: 5, .. } if is_owners_section_path(path))
+        assert_eq!(
+            core,
+            [
+                ("snoozed", 0),
+                ("under_snoozed", 1),
+                ("big", 0),
+                ("w_high", 1),
+                ("grandchild", 2),
+                ("w_low", 1),
+                ("tie_a", 0),
+                ("tie_b", 0),
+                ("small", 0),
+            ]
         );
-        assert!(section[1..]
+
+        let section = owners_section("central", &owners_core(&instances, &marks));
+        assert!(
+            matches!(&section[0], Item::Group { path, name, session_count: 9, .. }
+                if is_owners_section_path(path) && name == "Central")
+        );
+        let depths: Vec<usize> = section[1..]
             .iter()
-            .all(|i| matches!(i, Item::Session { depth: 1, .. })));
-        assert!(owners_section(&[]).is_empty(), "no core, no section");
+            .map(|i| match i {
+                Item::Session { depth, .. } => *depth,
+                Item::Group { .. } => 0,
+            })
+            .collect();
+        assert_eq!(depths, [1, 2, 1, 2, 3, 2, 1, 1, 1]);
+        assert!(
+            owners_section("central", &[]).is_empty(),
+            "no core, no section"
+        );
     }
 
     #[test]

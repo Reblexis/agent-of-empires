@@ -1,6 +1,6 @@
 import { useCallback, useContext, useMemo, useRef, useState } from "react";
 import { collectSidebarFavorites, FavoritesFirstContext } from "../lib/sidebarFavorites";
-import { buildCore, OwnedSessionsContext } from "../lib/sessionOwners";
+import { buildCore, moduleWorkers, OwnedSessionsContext } from "../lib/sessionOwners";
 import { usePluginUiEntries } from "../lib/pluginUiContext";
 import { workspaceMatchesActivity } from "../lib/sidebarActivity";
 import { useIdleDecayWindowMs } from "../lib/idleDecay";
@@ -162,7 +162,11 @@ export function WorkspaceSidebar(props: Props) {
   const showCore = core != null && !compact && !q;
   // A core session shows once, in the tree, never again as a favorite or in its group.
   const coreWorkspaceIds = new Set(
-    showCore ? [core.root, ...core.modules].flatMap((s) => (s ? [ownedIndex.workspaceIdOf.get(s.id) ?? ""] : [])) : [],
+    showCore
+      ? core
+          .flatMap((m) => [m, ...moduleWorkers(ownedIndex.sessions, m.id).map((w) => w.session)])
+          .map((s) => ownedIndex.workspaceIdOf.get(s.id) ?? "")
+      : [],
   );
   const favoriteWorkspaces = collectSidebarFavorites(props.workspaces).filter(
     (ws) => favoritesFirst && matchingIds.has(ws.id) && !coreWorkspaceIds.has(ws.id),
@@ -369,7 +373,7 @@ export function WorkspaceSidebar(props: Props) {
                 {!compact && <div className="px-3 pt-2 pb-1 text-xs text-text-muted">Favorites</div>}
                 {showCore && (
                   <OwnerCoreTree
-                    core={core}
+                    modules={core}
                     sessions={ownedIndex.sessions}
                     workspaceIdOf={ownedIndex.workspaceIdOf}
                     activeWorkspaceId={selection.displayedActiveId}

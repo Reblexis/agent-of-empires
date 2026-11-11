@@ -28,7 +28,6 @@ pub struct Shares {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Role {
-    Root,
     Module,
     Worker,
 }
@@ -117,10 +116,13 @@ pub fn meter(left: Option<f64>, granted: Option<f64>, width: usize) -> String {
     "▰".repeat(filled) + &"▱".repeat(width - filled)
 }
 
-/// A module title without its owner prefix: everything up to and including
-/// the first `: `.
-pub fn short_title(title: &str) -> &str {
-    title.split_once(": ").map_or(title, |(_, rest)| rest)
+/// A title without the owner's own prefix (`Central: ` for owner `central`,
+/// any case); any other title is kept whole.
+pub fn short_title<'a>(title: &'a str, owner: &str) -> &'a str {
+    match title.split_once(": ") {
+        Some((prefix, rest)) if prefix.eq_ignore_ascii_case(owner) => rest,
+        _ => title,
+    }
 }
 
 fn shares(v: Option<&Value>, may_be_negative: bool) -> Result<Shares, ()> {
@@ -214,36 +216,32 @@ pub fn parse(bytes: &[u8]) -> HashMap<String, OwnerMark> {
     marks
 }
 
-/// Set each entry's role and module from the parent chain: the first
-/// parentless entry by id is the root, its children are modules, and anything
-/// whose chain does not reach the root is a worker of no module.
+/// Set each entry's role and module from the parent chain. The owner is the
+/// root and no entry: an entry whose parent is absent, not in the file, or
+/// whose chain loops back is a module (directly under the owner), and every
+/// other entry is a worker of the module its chain ends at.
 fn place(marks: &mut HashMap<String, OwnerMark>) {
-    let root = marks
-        .iter()
-        .filter(|(_, m)| m.parent.is_none())
-        .map(|(id, _)| id.clone())
-        .min();
     let placed: Vec<(String, Role, Option<String>)> = marks
         .keys()
         .map(|id| {
-            let mut chain = vec![id.clone()];
             let mut seen = HashSet::from([id.clone()]);
             let mut at = id.clone();
+            let mut looped = false;
             while let Some(parent) = marks.get(&at).and_then(|m| m.parent.clone()) {
-                if !seen.insert(parent.clone()) {
+                if !marks.contains_key(&parent) {
                     break;
                 }
-                chain.push(parent.clone());
+                if !seen.insert(parent.clone()) {
+                    looped = true;
+                    break;
+                }
                 at = parent;
             }
-            let reaches_root = root.as_ref().is_some_and(|r| chain.last() == Some(r));
-            let (role, module) = match (reaches_root, chain.len()) {
-                (true, 1) => (Role::Root, None),
-                (true, 2) => (Role::Module, None),
-                (true, n) => (Role::Worker, Some(chain[n - 2].clone())),
-                (false, _) => (Role::Worker, None),
-            };
-            (id.clone(), role, module)
+            if looped || at == *id {
+                (id.clone(), Role::Module, None)
+            } else {
+                (id.clone(), Role::Worker, Some(at))
+            }
         })
         .collect();
     for (id, role, module) in placed {
@@ -263,16 +261,6 @@ pub fn worker_counts(marks: &HashMap<String, OwnerMark>) -> HashMap<String, usiz
         }
     }
     counts
-}
-
-/// What the root handed out: its modules' grants, per plan.
-pub fn handed_out(marks: &HashMap<String, OwnerMark>) -> Shares {
-    let modules = || marks.values().filter(|m| m.role == Role::Module);
-    let total = |f: fn(&OwnerMark) -> Option<f64>| Some(modules().filter_map(f).sum());
-    Shares {
-        claude: total(|m| m.granted.claude),
-        codex: total(|m| m.granted.codex),
-    }
 }
 
 #[derive(Default)]
@@ -442,33 +430,31 @@ mod tests {
     }
 
     #[test]
-    fn the_tree_is_placed_by_parent() {
+    fn this_is_still_brorken_sessions_without_the_allocator_nest_under_the_owner() {
         let e = |parent: Option<&str>| json!({ "owner": "central", "parent": parent });
         let marks = test_file(json!({
-            "r": e(None),
-            "m1": e(Some("r")),
-            "m2": e(Some("r")),
+            // The owner is the root and not an entry: every parentless entry is a module.
+            "m1": e(None),
+            "m2": e(None),
             "w1": e(Some("m1")),
             "w2": e(Some("w1")),
             "w3": e(Some("m2")),
-            // A second parentless entry sorts after "r", so it is not the root.
-            "z_orphan_root": e(None),
+            // A parent that left the file (an archived module owner) puts the entry under the owner.
             "missing_parent": e(Some("gone")),
             "cycle_a": e(Some("cycle_b")),
             "cycle_b": e(Some("cycle_a")),
-            "under_orphan": e(Some("z_orphan_root")),
+            "under_missing": e(Some("missing_parent")),
         }));
         let cases = [
-            ("r", Role::Root, None),
             ("m1", Role::Module, None),
             ("m2", Role::Module, None),
             ("w1", Role::Worker, Some("m1")),
             ("w2", Role::Worker, Some("m1")),
             ("w3", Role::Worker, Some("m2")),
-            ("z_orphan_root", Role::Worker, None),
-            ("missing_parent", Role::Worker, None),
-            ("cycle_a", Role::Worker, None),
-            ("under_orphan", Role::Worker, None),
+            ("missing_parent", Role::Module, None),
+            ("cycle_a", Role::Module, None),
+            ("cycle_b", Role::Module, None),
+            ("under_missing", Role::Worker, Some("missing_parent")),
         ];
         for (id, role, module) in cases {
             assert_eq!(
@@ -525,27 +511,13 @@ mod tests {
         }
         for (title, expected) in [
             ("Central: Planner", "Planner"),
+            ("central: Ops: Daily", "Ops: Daily"),
             ("Planner", "Planner"),
-            ("A: b: c", "b: c"),
+            // Only the owner's own prefix goes; a task's own words stay.
+            ("Telarchy: minimize steps", "Telarchy: minimize steps"),
         ] {
-            assert_eq!(short_title(title), expected);
+            assert_eq!(short_title(title, "central"), expected, "{title}");
         }
-    }
-
-    #[test]
-    fn handed_out_sums_the_modules_grants() {
-        let e = |parent: Option<&str>, claude: Option<f64>| json!({ "owner": "central", "parent": parent, "granted": { "claude": claude, "codex": 0.01 } });
-        let marks = test_file(json!({
-            "r": e(None, Some(0.25)),
-            "m1": e(Some("r"), Some(0.08)),
-            "m2": e(Some("r"), None),
-            "w": e(Some("m1"), Some(0.5)),
-        }));
-        let out = handed_out(&marks);
-        assert!(
-            (out.claude.unwrap() - 0.08).abs() < 1e-9 && (out.codex.unwrap() - 0.02).abs() < 1e-9,
-            "{out:?}"
-        );
     }
 
     #[test]

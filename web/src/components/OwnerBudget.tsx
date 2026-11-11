@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from "react";
 import type { SessionResponse } from "../lib/types";
-import { formatPercent, meterFill, meterTone, rootBudget, type PlanBudget } from "../lib/sessionOwners";
+import { formatPercent, meterFill, meterTone, moduleBudget, type PlanBudget } from "../lib/sessionOwners";
 
 const TONE_BG = { teal: "bg-teal-500", amber: "bg-amber-500", red: "bg-red-500" } as const;
 const PLAN_NAME = { claude: "Claude", codex: "Codex" } as const;
@@ -50,10 +50,10 @@ function PlanCard({ p, over }: { p: PlanBudget; over: boolean }) {
 
 const GRID = "grid grid-cols-[minmax(0,1fr)_repeat(5,minmax(3.5rem,auto))] gap-x-4";
 
-/** The root's grant, its modules and its transfers (docs/guides/session-owners.md, "The root's budget"). */
-export function BudgetPane({ root, sessions }: { root: SessionResponse; sessions: readonly SessionResponse[] }) {
-  const budget = rootBudget(root, sessions);
-  const over = !!root.owner?.over;
+/** A module's grant, its direct children and its transfers (docs/guides/session-owners.md, "A module's budget"). */
+export function BudgetPane({ module, sessions }: { module: SessionResponse; sessions: readonly SessionResponse[] }) {
+  const budget = moduleBudget(module, sessions);
+  const over = !!module.owner?.over;
   return (
     <div data-testid="owner-budget" className="flex-1 min-h-0 overflow-y-auto p-4 md:p-6">
       <div className="flex max-w-5xl flex-col gap-5">
@@ -69,27 +69,27 @@ export function BudgetPane({ root, sessions }: { root: SessionResponse; sessions
           </div>
           <div className="min-w-[32rem]">
             <div className={`${GRID} px-4 py-2 font-mono text-[10px] uppercase tracking-wider text-text-dim`}>
-              <span>Module</span>
+              <span>Session</span>
               <span>C left</span>
               <span>X left</span>
               <span>C granted</span>
               <span>X granted</span>
-              <span>Workers</span>
+              <span>Below</span>
             </div>
-            {budget.modules.map((m) => (
+            {budget.children.map((m) => (
               <div
                 key={m.session.id}
-                data-testid="owner-budget-module"
+                data-testid="owner-budget-child"
                 className={`${GRID} items-center border-t border-surface-800 px-4 py-1.5 font-mono text-[12px] text-text-secondary`}
               >
                 <span className="truncate text-text-primary" title={m.session.title}>
-                  {m.short}
+                  {m.session.title}
                 </span>
                 <span>{formatPercent(m.claudeLeft)}</span>
                 <span>{formatPercent(m.codexLeft)}</span>
                 <span className="text-text-dim">{formatPercent(m.claudeGranted)}</span>
                 <span className="text-text-dim">{formatPercent(m.codexGranted)}</span>
-                <span className="text-text-dim">{m.workers}</span>
+                <span className="text-text-dim">{m.below || ""}</span>
               </div>
             ))}
           </div>
@@ -134,8 +134,8 @@ function formatWhen(at: string): string {
   return d.toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
 }
 
-/** Gives the root a Budget tab beside its terminal; any other session renders its content alone. */
-export function RootBudgetFrame({
+/** Gives a module a Budget tab beside its terminal; any other session renders its content alone. */
+export function BudgetFrame({
   session,
   sessions,
   children,
@@ -144,22 +144,22 @@ export function RootBudgetFrame({
   sessions: readonly SessionResponse[];
   children: ReactNode;
 }) {
-  // The tab belongs to one root: opening another session and coming back starts on the terminal.
+  // The tab belongs to one module: opening another session and coming back starts on the terminal.
   const [picked, setPicked] = useState<{ id: string; tab: "terminal" | "budget" } | null>(null);
-  const isRoot = session?.owner?.role === "root";
-  const tab = isRoot && picked?.id === session.id ? picked.tab : "terminal";
+  const isModule = session?.owner?.role === "module";
+  const tab = isModule && picked?.id === session.id ? picked.tab : "terminal";
   const setTab = (t: "terminal" | "budget") => session && setPicked({ id: session.id, tab: t });
   const tabClass = (t: typeof tab) =>
     `h-8 cursor-pointer rounded-md px-3 text-[12px] transition-colors ${
       tab === t ? "bg-surface-800 text-text-primary" : "text-text-muted hover:text-text-secondary"
     }`;
-  // One element tree for every session, so switching to or from the root never remounts the terminals.
+  // One element tree for every session, so switching to or from a module never remounts the terminals.
   return (
     <>
-      {isRoot && (
+      {isModule && (
         <div
           role="tablist"
-          aria-label="Root view"
+          aria-label="Module view"
           className="flex shrink-0 items-center gap-1 border-b border-surface-700/60 px-2 py-1"
         >
           <button
@@ -184,7 +184,7 @@ export function RootBudgetFrame({
       )}
       {/* The terminal stays mounted under the Budget tab so it keeps its connection and scrollback. */}
       <div className={tab === "terminal" ? "flex-1 flex flex-col min-h-0 overflow-hidden" : "hidden"}>{children}</div>
-      {isRoot && tab === "budget" && <BudgetPane root={session} sessions={sessions} />}
+      {isModule && tab === "budget" && <BudgetPane module={session} sessions={sessions} />}
     </>
   );
 }

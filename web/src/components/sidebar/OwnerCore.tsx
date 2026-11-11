@@ -3,18 +3,16 @@ import type { SessionResponse } from "../../lib/types";
 import {
   formatLeft,
   formatPercent,
-  formatShare,
-  handedOut,
   meterFill,
   meterTone,
   moduleShortName,
+  ownerHandedOut,
   moduleWorkers,
   OwnedSessionsContext,
   workerCount,
   workerPlan,
   workerTag,
   type MeterTone,
-  type OwnerCore,
   type Plan,
 } from "../../lib/sessionOwners";
 import { getStatusDotClass } from "../../lib/session";
@@ -71,7 +69,7 @@ export function WorkerChip({ session }: { session: SessionResponse }) {
 }
 
 interface TreeProps {
-  core: OwnerCore;
+  modules: readonly SessionResponse[];
   sessions: readonly SessionResponse[];
   workspaceIdOf: ReadonlyMap<string, string>;
   activeWorkspaceId: string | null;
@@ -119,38 +117,6 @@ const Dot = ({ session, size }: { session: SessionResponse; size: string }) => (
   <span className={`shrink-0 rounded-full ${size} ${getStatusDotClass(session)}`} aria-hidden="true" />
 );
 
-function RootRow({ root, props }: { root: SessionResponse; props: TreeProps }) {
-  const left = root.owner?.left;
-  return (
-    <RowLink
-      session={root}
-      testId="owner-core-root"
-      props={props}
-      className="mx-2 my-0.5 flex-col items-stretch gap-1.5 border border-brand-700 bg-surface-700/40 px-2 py-2"
-    >
-      <span className="flex min-w-0 items-center gap-2">
-        <span className="shrink-0 text-brand-400" aria-hidden="true">
-          ✦
-        </span>
-        <Dot session={root} size="h-2 w-2" />
-        <span className="truncate font-mono text-[13px] font-medium text-text-primary">{root.title}</span>
-      </span>
-      <span className="flex flex-wrap gap-x-3 pl-6 font-mono text-[11px] text-text-secondary">
-        <span>
-          left C {formatPercent(left?.claude)} X {formatPercent(left?.codex)}
-        </span>
-        <span className="text-text-dim">
-          out C {formatShare(handedOut(props.sessions, "claude"))} X {formatShare(handedOut(props.sessions, "codex"))}
-        </span>
-      </span>
-      <span className="grid grid-cols-2 gap-2.5 pl-6">
-        <Meter session={root} plan="claude" />
-        <Meter session={root} plan="codex" />
-      </span>
-    </RowLink>
-  );
-}
-
 function PlanCell({
   session,
   plan,
@@ -187,7 +153,6 @@ function WorkerRow({ session, depth, props }: { session: SessionResponse; depth:
       className="min-h-[26px] gap-1.5 py-0.5 pr-2"
     >
       <span style={{ paddingLeft: 8 + depth * 14 }} className="flex min-w-0 flex-1 items-center gap-1.5">
-        <span className={TAG}>worker</span>
         <Dot session={session} size="h-1.5 w-1.5" />
         <span className="truncate text-[12px] text-text-secondary">{session.title}</span>
       </span>
@@ -197,13 +162,12 @@ function WorkerRow({ session, depth, props }: { session: SessionResponse; depth:
       >
         {LETTER[plan]} {formatLeft(left)}
       </span>
-      <Meter session={session} plan={plan} className="w-10" />
     </RowLink>
   );
 }
 
 function ModuleRow({ module, props }: { module: SessionResponse; props: TreeProps }) {
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(true);
   const count = workerCount(props.sessions, module.id);
   return (
     <div>
@@ -220,7 +184,7 @@ function ModuleRow({ module, props }: { module: SessionResponse; props: TreeProp
           <Dot session={module} size="h-[7px] w-[7px]" />
           {/* The owner prefix repeats on every module, so the narrow sidebar shows the module's own name. */}
           <span className="min-w-0 flex-1 truncate font-mono text-[13px] text-text-primary">
-            {moduleShortName(module.title)}
+            {moduleShortName(module.title, module.owner?.owner ?? "")}
           </span>
           <span className="flex basis-full gap-3 pl-5">
             <PlanCell session={module} plan="claude" width="flex-1" />
@@ -251,23 +215,45 @@ function ModuleRow({ module, props }: { module: SessionResponse; props: TreeProp
   );
 }
 
-/** The root of an outside agent's tree and its modules, at the top of Favorites (docs/guides/session-owners.md). */
+/** The owner, the tree's root and no session, as a card at the top of Favorites. */
+function OwnerCard({ modules, total }: { modules: readonly SessionResponse[]; total: number }) {
+  const owner = modules[0]?.owner?.owner ?? "";
+  return (
+    <div
+      data-testid="owner-core-card"
+      className="mx-2 my-0.5 flex flex-col gap-1 rounded-md border border-brand-700 bg-surface-700/40 px-2 py-2"
+    >
+      <span className="flex min-w-0 items-center gap-2">
+        <span className="shrink-0 text-brand-400" aria-hidden="true">
+          ✦
+        </span>
+        <span className="truncate font-mono text-[13px] font-medium capitalize text-text-primary">{owner}</span>
+        <span className="flex-1" />
+        <span className="shrink-0 font-mono text-[10px] text-text-dim">{total} sessions</span>
+      </span>
+      <span className="pl-6 font-mono text-[11px] text-text-dim">
+        out C {formatPercent(ownerHandedOut(modules, "claude"))} X {formatPercent(ownerHandedOut(modules, "codex"))}
+      </span>
+    </div>
+  );
+}
+
+/** An outside agent's tree at the top of Favorites: the owner's card, its modules, their workers (docs/guides/session-owners.md). */
 export function OwnerCoreTree(props: TreeProps) {
-  const { root, modules } = props.core;
+  const { modules } = props;
+  const total = modules.reduce((n, m) => n + 1 + workerCount(props.sessions, m.id), 0);
   return (
     <div data-testid="owner-core">
+      <OwnerCard modules={modules} total={total} />
       <div className="flex items-center px-3 pb-1 font-mono text-[10px] text-text-dim">
         <span className="flex-1" />
         <span>left · % of weekly plan</span>
       </div>
-      {root && <RootRow root={root} props={props} />}
-      {modules.length > 0 && (
-        <div className="ml-[22px] border-l border-surface-700 pl-0.5">
-          {modules.map((m) => (
-            <ModuleRow key={m.id} module={m} props={props} />
-          ))}
-        </div>
-      )}
+      <div className="ml-[22px] border-l border-surface-700 pl-0.5">
+        {modules.map((m) => (
+          <ModuleRow key={m.id} module={m} props={props} />
+        ))}
+      </div>
     </div>
   );
 }

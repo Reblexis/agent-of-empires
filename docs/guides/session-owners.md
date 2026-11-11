@@ -3,10 +3,11 @@
 An outside agent that hands work to aoe sessions (an orchestrator, such as a
 central agent that spawns sessions and gives them tasks) can mark the sessions
 it owns, directly or through the sessions they spawned, as one tree whose
-sessions pass budget to each other like a currency. aoe shows the core of that
-tree (its root and the root's children) in favorites and every deeper session
-as a worker, each with the budget it has left, and the root's budget with what
-it granted and its transfers.
+sessions pass budget to each other like a currency. The owner itself is the
+tree's root and is not an aoe session. aoe shows the whole tree in
+favorites under a card for the owner: the root's children (the modules), and
+every deeper session (a worker) nested under its parent, each with the budget
+it has left, and each module's budget with what it granted and its transfers.
 
 aoe computes nothing about money or ownership. Which sessions an owner holds,
 what each was granted and what it has left are the writer's business; aoe
@@ -21,22 +22,22 @@ whole (write a temp file and rename it), so a reader never sees half a file:
 ```json
 {
   "sessions": {
-    "0f853c5a16d34c56": {
-      "owner": "central",
-      "parent": null,
-      "left": { "claude": 0.21, "codex": 0.1 },
-      "granted": { "claude": 0.25, "codex": 0.1 },
-      "over": false,
-      "transactions": [
-        { "at": "2026-11-10T18:58:09Z", "from": "viktor", "to": "0f853c5a16d34c56",
-          "claude": 0.25, "codex": 0.1, "kind": "grant", "by": "viktor" }
-      ]
-    },
     "c34e98b900a5417d": {
       "owner": "central",
-      "parent": "0f853c5a16d34c56",
+      "parent": null,
       "left": { "claude": 0.0576, "codex": 0.03 },
-      "granted": { "claude": 0.08, "codex": 0.03 }
+      "granted": { "claude": 0.08, "codex": 0.03 },
+      "over": false,
+      "transactions": [
+        { "at": "2026-11-10T18:58:09Z", "from": "central", "to": "c34e98b900a5417d",
+          "claude": 0.08, "codex": 0.03, "kind": "default", "by": "central" }
+      ]
+    },
+    "0418ec1c8e3444b7": {
+      "owner": "central",
+      "parent": "c34e98b900a5417d",
+      "left": { "claude": 0.0004, "codex": 0.012 },
+      "granted": { "claude": 0.1029, "codex": 0.02 }
     }
   }
 }
@@ -46,10 +47,10 @@ whole (write a temp file and rename it), so a reader never sees half a file:
   is ignored.
 - `owner` is required: 1 to 24 characters.
 - `parent` is the id of the entry's parent in the tree, or `null` (or absent)
-  for the root. The tree has one root: the first entry without a parent, by
-  id, is the root, and any other parentless entry, or an entry whose parent
-  chain does not reach the root (a missing parent, a cycle), is shown as a
-  worker of no module.
+  when its parent is the owner itself. An entry whose parent is absent, not in
+  the file (such as a session that left the tree) or whose parent chain loops
+  back is a **module**, directly under the owner; every other entry is a
+  **worker** of the module its parent chain ends at.
 - `left` is the budget the entry has left this week and `granted` the total
   transferred to it this week, net of cuts, each as shares of the weekly
   plans: `claude` of the Claude plan and `codex` of the Codex plan, where 1 is
@@ -79,70 +80,69 @@ A share's meter is a fuel gauge: it fills by left over granted, so a full
 meter has spent nothing. It is teal while at least 20% of the grant is left,
 amber below that, red at or below nothing left or while the entry is `over`.
 
-## The core, in favorites
+## The tree, in favorites
 
-- The **core** is the root and the root's children (the modules). Snoozed,
-  archived and trashed sessions are left out, as with favorites.
-- In the TUI the core is a **Favorites** section at the top of the session
-  list, above every group and in every sort and grouping mode. It holds the
-  root first and then its modules, by Claude grant, largest first, then by
-  title. Rows draw the tree with `├`/`└` guides.
-- In the web dashboard the core sits at the top of the **Favorites** section,
-  as the same tree in the same order, above the favorited workspaces, in the
-  Active and All views alike. Module rows name the module without the owner
-  prefix (`Planner`), with the plans' meters on a second line.
-- A core session shows once, in the tree: not again in its group, and not as a
-  favorited workspace even when the person favorited it.
+- The **tree** is every entry, modules first, so every worker shows: idle and
+  snoozed sessions stay in it, and the web dashboard's Active view never hides
+  it. An archived or trashed session has left the tree and is left out with
+  every entry below it.
+- The owner heads the tree as a card named after it (`Central` for owner
+  `central`), since the owner is no session. Below it come the modules by
+  Claude grant, largest first, then by title, and under each session its
+  children in the same order, nested.
+- In the TUI the tree is a section at the top of the session list, above every
+  group and in every sort and grouping mode. Its header is the owner's card,
+  with the count of sessions in the tree. Rows are indented by depth and draw
+  the tree with `├`/`└` guides.
+- In the web dashboard the tree sits at the top of the **Favorites** section,
+  above the favorited workspaces, in the Active and All views alike. The
+  owner's card shows the count of sessions and what the owner handed out per
+  plan, the sum of its modules' grants: `out C 17.5% X 6%`. Each module's
+  workers show nested below it; its worker count is a toggle that hides them.
+- A session in the tree shows once, in the tree: not again in its group, and
+  not as a favorited workspace even when the person favorited it.
+- A title loses the owner's own prefix (`Central: ` for owner `central`, in
+  any case) and keeps any other `: ` prefix, which is part of the task's name.
 - In the TUI a row's budget text outranks its title: the title shortens first
   (down to 8 cells), and where even that leaves no room for the full text, the
-  row shows only what is left of its Claude share (`C 5.76%`; a worker shows
-  `worker` and the share of its plan).
+  row shows only what is left of the share of its plan (`C 5.76%`; `X` for a
+  worker running on Codex).
 - The person's own favorites keep pinning as they always have; the mark is not
   the favorite flag, and `aoe session favorite` / `unfavorite` change only the
   person's flag.
 
-### The root row
-
-The root row shows what it has left and what it handed out, per plan: `left C
-21% X 10%`, then `out C 17.5 X 6`, where `out` is the sum of its modules'
-grants.
-
 ### A module row
 
 A module row shows, per plan, a meter and what is left: `C ▰▰▰▰▱▱ 5.76%  X
-▰▰▰▰ 3% left`, then its worker count (every entry below it, at any depth). In
-the web dashboard the count is a toggle that opens the module's workers below
-it, nested by parent; in the TUI the count is shown as `▸ 11`.
+▰▰▰▰ 3% left`; in the TUI it is followed by its worker count (every entry
+below it, at any depth) as `▸ 11`, in the web dashboard by the count toggle.
 
-## Workers
+### A worker row
 
-- A **worker** is an entry below a module, at any depth. Its row stays where
-  it is (its group, project or org) and gets a `worker · <module>` tag, where
-  `<module>` is its module's title with the owner's `Central: ` style prefix
-  (anything up to and including the first `: `) removed, then a meter and what
-  is left for the plan its agent runs on: Codex for a Codex session, Claude
-  otherwise.
-- A worker with no module (see `parent` above) is tagged `worker`.
-- In the web dashboard an open module lists its workers nested by parent, each
-  with the `worker` tag and the same meter; selecting one opens that session.
+A worker row shows its title and what is left for the plan its agent runs on:
+Codex for a Codex session, Claude otherwise. Where a worker's row shows outside
+the tree (the TUI's other rows, or the web dashboard while a filter hides the
+tree), it adds a `worker · <module>` tag, where `<module>` is its module's
+title. Selecting a worker opens that session.
 
-## The root's budget
+## A module's budget
 
-Selecting the root shows its budget: in the TUI the preview pane, in the web
-dashboard a **Budget** tab beside the terminal. It shows:
+In the web dashboard a selected module has a **Budget** tab beside the
+terminal (the TUI keeps the module's terminal preview). It shows:
 
-- per plan, what the root was granted, what it has left and what it handed out
-  (its modules' grants), with a bar of handed out and left against the grant;
-- a table of the modules: title, Claude left, Codex left, Claude granted,
-  Codex granted and worker count;
-- the root's transfers, newest first: time, kind, from and to (a session by
-  its title), and the shares moved (`C +0.5% X +0.2%`, a cut as `-`).
+- per plan, what the module was granted, what it has left and what it handed
+  out (its direct children's grants), with a bar of handed out and left
+  against the grant;
+- a table of its direct children: title, Claude left, Codex left, Claude
+  granted, Codex granted and, for a child with entries below it, their count;
+- the module's transfers, newest first: time, kind, from and to (a session by
+  its title, otherwise the name as written), and the shares moved
+  (`C +0.5% X +0.2%`, a cut as `-`).
 
 ## In the API
 
 `GET /api/sessions` carries the entry per session as `owner`: `null`, or
 `{"owner", "parent", "role", "module", "left", "granted", "over",
-"transactions"}`. `role` is `"root"`, `"module"` or `"worker"`; `module` is
-the id of the worker's module (`null` for the root, a module, or a worker of
-no module); `left` and `granted` are `{"claude", "codex"}`, each value a share
+"transactions"}`. `role` is `"module"` or `"worker"`; `module` is
+the id of the worker's module (`null` for a module or a worker of no module); `left` and `granted` are `{"claude", "codex"}`, each value a share
 or `null`; `transactions` is the list above.

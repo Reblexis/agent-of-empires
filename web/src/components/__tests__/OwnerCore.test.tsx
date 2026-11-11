@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 
-import { RootBudgetFrame } from "../OwnerBudget";
+import { BudgetFrame } from "../OwnerBudget";
 import { WorkspaceSidebar } from "../WorkspaceSidebar";
 import { buildSessionGroups } from "../../lib/sidebarGroups";
 import type { SessionOwner, SessionResponse, Workspace } from "../../lib/types";
@@ -34,18 +34,12 @@ const ws = (id: string, title: string, o: SessionOwner | null, over: Partial<Ses
   );
 
 const WORKSPACES = [
-  ws(
-    "root",
-    "Central: Allocator",
-    owner({ role: "root", granted: { claude: 0.25, codex: 0.1 }, left: { claude: 0.21, codex: 0.1 } }),
-  ),
-  ws("router", "Central: Router", owner({ role: "module", parent: "root", granted: { claude: 0.02, codex: 0.01 } })),
+  ws("router", "Central: Router", owner({ role: "module", granted: { claude: 0.02, codex: 0.01 } })),
   ws(
     "planner",
     "Central: Planner",
     owner({
       role: "module",
-      parent: "root",
       granted: { claude: 0.08, codex: 0.03 },
       left: { claude: 0.0576, codex: 0.03 },
     }),
@@ -108,13 +102,14 @@ function renderSidebar(workspaces: Workspace[]) {
 afterEach(cleanup);
 
 describe("owner core in favorites", () => {
-  it("shows the root and its modules at the top of Favorites with no favorited workspace", () => {
+  it("shows the modules at the top of Favorites with no favorited workspace", () => {
     renderSidebar(WORKSPACES);
     const favorites = screen.getByTestId("sidebar-favorites-section");
-    const root = within(favorites).getByTestId("owner-core-root");
-    expect(root.textContent).toContain("Central: Allocator");
-    expect(root.textContent).toContain("left C 21% X 10%");
-    expect(root.textContent).toContain("out C 10 X 4");
+    // The owner is the root and no session: a card named after it, with what it handed out.
+    const card = within(favorites).getByTestId("owner-core-card");
+    expect(card.textContent).toContain("central");
+    expect(card.textContent).toContain("4 sessions");
+    expect(card.textContent).toContain("out C 10% X 4%");
     const modules = within(favorites).getAllByTestId("owner-core-module");
     expect(modules.map((m) => m.getAttribute("data-session-id"))).toEqual(["planner", "router"]);
     expect(modules[0].textContent).toContain("C5.76%");
@@ -140,8 +135,7 @@ describe("owner core in favorites", () => {
 
   it("opens a module's workers nested by parent, and a click on any core row selects that session", () => {
     const props = renderSidebar(WORKSPACES);
-    expect(screen.queryAllByTestId("owner-core-worker")).toHaveLength(0);
-    fireEvent.click(screen.getByRole("button", { name: /2 workers/ }));
+    // Open by default: a module's children show nested under it.
     const workers = screen.getAllByTestId("owner-core-worker");
     expect(workers.map((w) => [w.getAttribute("data-session-id"), w.getAttribute("data-depth")])).toEqual([
       ["w1", "0"],
@@ -154,14 +148,18 @@ describe("owner core in favorites", () => {
     expect(props.onSelect).toHaveBeenLastCalledWith("ws-w1a", "w1a");
     fireEvent.click(screen.getAllByTestId("owner-core-module")[1]);
     expect(props.onSelect).toHaveBeenLastCalledWith("ws-router", "router");
-    fireEvent.click(screen.getByTestId("owner-core-root"));
-    expect(props.onSelect).toHaveBeenLastCalledWith("ws-root", "root");
+    fireEvent.click(screen.getByRole("button", { name: /2 workers/ }));
+    expect(screen.queryAllByTestId("owner-core-worker")).toHaveLength(0);
   });
 
-  it("tags a worker's own row with its module and what is left of its plan", () => {
+  it("shows a worker once, in the tree; while a filter hides the tree its own row carries the worker tag", () => {
     // Its row sits in its group, which the default Active view hides while idle.
     window.localStorage.setItem("aoe-web-settings", JSON.stringify({ sidebarActiveOnly: false }));
     renderSidebar(WORKSPACES);
+    const rowTexts = () => screen.queryAllByTestId("sidebar-session-row").map((r) => r.textContent ?? "");
+    expect(rowTexts().filter((t) => t.includes("Make aoe fast"))).toEqual([]);
+    fireEvent.click(screen.getByLabelText("Filter sessions"));
+    fireEvent.change(screen.getByTestId("sidebar-filter-input"), { target: { value: "aoe fast" } });
     const chips = screen.getAllByTestId("sidebar-worker-chip");
     const chip = chips.find((c) =>
       c.closest("[data-testid=sidebar-session-row]")?.textContent?.includes("Make aoe fast"),
@@ -177,17 +175,18 @@ describe("owner core in favorites", () => {
   });
 });
 
-describe("root budget tab", () => {
+describe("module budget tab", () => {
   const sessions = WORKSPACES.flatMap((w) => w.sessions);
-  const root = {
-    ...sessions[0],
+  const planner = sessions.find((s) => s.id === "planner")!;
+  const module = {
+    ...planner,
     owner: {
-      ...sessions[0].owner!,
+      ...planner.owner!,
       transactions: [
         {
           at: "2026-11-10T19:00:00Z",
-          from: "root",
-          to: "planner",
+          from: "planner",
+          to: "w1",
           claude: 0.005,
           codex: null,
           kind: "cut",
@@ -195,44 +194,41 @@ describe("root budget tab", () => {
         },
         {
           at: "2026-11-10T18:00:00Z",
-          from: "root",
-          to: "router",
-          claude: 0.02,
-          codex: 0.01,
-          kind: "grant",
-          by: "viktor",
+          from: "central",
+          to: "planner",
+          claude: 0.08,
+          codex: 0.03,
+          kind: "default",
+          by: "central",
         },
       ],
     },
   } as SessionResponse;
+  const all = sessions.map((s) => (s.id === "planner" ? module : s));
 
-  it("gives only the root a Budget tab with per-plan grants, the module table and its transfers", () => {
+  it("gives a module a Budget tab with per-plan grants, its children and its transfers; a worker gets none", () => {
     const { rerender } = render(
-      <RootBudgetFrame session={root} sessions={[root, ...sessions.slice(1)]}>
+      <BudgetFrame session={module} sessions={all}>
         <div data-testid="terminal" />
-      </RootBudgetFrame>,
+      </BudgetFrame>,
     );
     expect(screen.queryByTestId("owner-budget")).toBeNull();
     fireEvent.click(screen.getByRole("tab", { name: "Budget" }));
     const plans = screen.getAllByTestId("owner-budget-plan");
-    expect(plans[0].textContent).toContain("granted 25% of the weekly plan");
-    expect(plans[0].textContent).toContain("21%left");
-    expect(plans[0].textContent).toContain("handed out 10%");
-    expect(plans[1].textContent).toContain("handed out 4%");
-    expect(screen.getAllByTestId("owner-budget-module").map((r) => r.textContent)).toEqual([
-      "Planner5.76%3%8%3%2",
-      "Router??2%1%0",
-    ]);
+    expect(plans[0].textContent).toContain("granted 8% of the weekly plan");
+    expect(plans[0].textContent).toContain("5.76%left");
+    expect(plans[0].textContent).toContain("handed out 1%");
+    expect(screen.getAllByTestId("owner-budget-child").map((r) => r.textContent)).toEqual(["Make aoe fast0.57%?1%?1"]);
     const transfers = screen.getAllByTestId("owner-budget-transfer").map((r) => r.textContent);
-    expect(transfers[0]).toContain("cutCentral: Allocator → Central: Planner by centralC -0.5%");
-    expect(transfers[1]).toContain("C +2% X +1%");
+    expect(transfers[0]).toContain("cutCentral: Planner → Make aoe fast by centralC -0.5%");
+    expect(transfers[1]).toContain("central → Central: Planner");
     // The terminal stays mounted under the Budget tab.
     expect(screen.getByTestId("terminal")).toBeTruthy();
 
     rerender(
-      <RootBudgetFrame session={sessions[1]} sessions={sessions}>
+      <BudgetFrame session={sessions.find((s) => s.id === "w1")} sessions={all}>
         <div data-testid="terminal" />
-      </RootBudgetFrame>,
+      </BudgetFrame>,
     );
     expect(screen.queryByRole("tab")).toBeNull();
     expect(screen.queryByTestId("owner-budget")).toBeNull();

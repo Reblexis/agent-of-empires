@@ -1952,17 +1952,9 @@ impl HomeView {
         // An owner's tree entry takes the suffix slot from the row tag: the tree
         // guide goes before the title, the budget left after it.
         let owner_mark = crate::session::owners::mark(id);
-        let text: Cow<'_, str> = match owner_mark.as_ref().map(|m| m.role) {
-            Some(crate::session::owners::Role::Root) => Cow::Owned(format!("◆ {text}")),
-            Some(crate::session::owners::Role::Module) => {
-                let guide = if self.is_last_core_row(id) {
-                    "└"
-                } else {
-                    "├"
-                };
-                Cow::Owned(format!("{guide} {text}"))
-            }
-            _ => text,
+        let text: Cow<'_, str> = match self.core_guide(id) {
+            Some(guide) => Cow::Owned(format!("{guide} {text}")),
+            None => text,
         };
         // Full suffix and a compact one for a narrow list, so the budget left survives.
         let owner_spans: Option<[Vec<Span<'static>>; 2]> = owner_mark.as_ref().map(|m| {
@@ -2117,148 +2109,33 @@ impl HomeView {
         Line::from(line_spans)
     }
 
-    /// The root's budget in place of its preview (docs/guides/session-owners.md).
-    fn render_owner_budget(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
-        theme: &Theme,
-        root: &crate::session::owners::OwnerMark,
-    ) {
-        use crate::session::owners::{
-            handed_out, marks, pct, short_title, worker_counts, TransferKind,
-        };
-        let marks = marks();
-        let out = handed_out(&marks);
-        let title_of = |id: &str| {
-            self.get_instance(id)
-                .map_or_else(|| id.to_string(), |i| short_title(&i.title).to_string())
-        };
-        let dim = Style::default().fg(theme.dimmed);
-        let text = Style::default().fg(theme.text);
-        let accent = Style::default().fg(theme.favorite);
-        let bar_width = area.width.saturating_sub(4).min(40) as usize;
-        let bar = |left: Option<f64>, out: Option<f64>, granted: Option<f64>| -> Line<'static> {
-            let cells = |x: Option<f64>| match (x, granted) {
-                (Some(x), Some(g)) if g > 0.0 => ((x / g) * bar_width as f64)
-                    .round()
-                    .clamp(0.0, bar_width as f64)
-                    as usize,
-                _ => 0,
-            };
-            let handed = cells(out);
-            let kept = cells(left).min(bar_width - handed);
-            Line::from(vec![
-                Span::styled("▓".repeat(handed), Style::default().fg(theme.waiting)),
-                Span::styled("█".repeat(kept), accent),
-                Span::styled("░".repeat(bar_width - handed - kept), dim),
-            ])
-        };
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        for (plan, granted, left, out) in [
-            ("Claude", root.granted.claude, root.left.claude, out.claude),
-            ("Codex", root.granted.codex, root.left.codex, out.codex),
-        ] {
-            lines.push(Line::from(vec![
-                Span::styled(format!("{plan}  "), text.bold()),
-                Span::styled("granted ", dim),
-                Span::styled(format!("{}%", pct(granted)), accent),
-                Span::styled("  left ", dim),
-                Span::styled(format!("{}%", pct(left)), text),
-                Span::styled("  out ", dim),
-                Span::styled(format!("{}%", pct(out)), text),
-            ]));
-            lines.push(bar(left, out, granted));
-            lines.push(Line::default());
-        }
-        let counts = worker_counts(&marks);
-        let mut modules: Vec<(&String, &crate::session::owners::OwnerMark)> = marks
-            .iter()
-            .filter(|(_, m)| m.role == crate::session::owners::Role::Module)
-            .collect();
-        modules.sort_by(|(a, am), (b, bm)| {
-            bm.granted
-                .claude
-                .unwrap_or(0.0)
-                .total_cmp(&am.granted.claude.unwrap_or(0.0))
-                .then_with(|| title_of(a).cmp(&title_of(b)))
-        });
-        lines.push(Line::styled(
-            format!(
-                "{:<14}{:>9}{:>9}{:>10}{:>10}{:>9}",
-                "module", "C left", "X left", "C granted", "X granted", "workers"
-            ),
-            dim,
-        ));
-        for (id, m) in modules {
-            lines.push(Line::styled(
-                format!(
-                    "{:<14}{:>9}{:>9}{:>10}{:>10}{:>9}",
-                    truncate_to_width(&title_of(id), 13),
-                    format!("{}%", pct(m.left.claude)),
-                    format!("{}%", pct(m.left.codex)),
-                    format!("{}%", pct(m.granted.claude)),
-                    format!("{}%", pct(m.granted.codex)),
-                    counts.get(id).copied().unwrap_or(0),
-                ),
-                text,
-            ));
-        }
-        lines.push(Line::default());
-        lines.push(Line::styled("transfers", dim));
-        for t in &root.transactions {
-            let sign = if t.kind == TransferKind::Cut {
-                "-"
-            } else {
-                "+"
-            };
-            let amount = [("C", t.claude), ("X", t.codex)]
-                .into_iter()
-                .filter_map(|(p, v)| v.map(|v| format!("{p} {sign}{}%", pct(Some(v)))))
-                .collect::<Vec<_>>()
-                .join(" ");
-            let kind = serde_json::to_value(t.kind)
-                .ok()
-                .and_then(|v| v.as_str().map(str::to_string))
-                .unwrap_or_default();
-            lines.push(Line::from(vec![
-                Span::styled(t.at.format("%a %H:%M ").to_string(), dim),
-                Span::styled(format!("{kind:<11}"), accent),
-                Span::styled(
-                    format!("{} → {}  ", title_of(&t.from), title_of(&t.to)),
-                    text,
-                ),
-                Span::styled(amount, text),
-            ]));
-        }
-        let title = self
-            .selected_session
-            .as_deref()
-            .and_then(|id| self.get_instance(id))
-            .map_or_else(
-                || "Budget".to_string(),
-                |i| format!(" {} · budget ", i.title),
-            );
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(theme.border))
-            .title(Span::styled(title, Style::default().fg(theme.title)))
-            .padding(Padding::horizontal(1));
-        frame.render_widget(Paragraph::new(lines).block(block), area);
-    }
-
-    /// Whether `id` is the last row of the owners' Favorites section.
-    fn is_last_core_row(&self, id: &str) -> bool {
-        let Some(at) = self
+    /// The tree guide of a row in the owner's Favorites section: `└` for the
+    /// last of its siblings, `├` otherwise; `None` outside the section.
+    fn core_guide(&self, id: &str) -> Option<&'static str> {
+        let at = self
             .flat_items
             .iter()
-            .position(|item| matches!(item, Item::Session { id: sid, .. } if sid == id))
-        else {
-            return true;
+            .position(|item| matches!(item, Item::Session { id: sid, .. } if sid == id))?;
+        let Item::Session { depth, .. } = self.flat_items[at] else {
+            return None;
         };
-        !matches!(self.flat_items.get(at + 1), Some(Item::Session { id: next, .. })
-            if crate::session::owners::mark(next).is_some_and(|m| m.role == crate::session::owners::Role::Module))
+        let in_section = self.flat_items[..at]
+            .iter()
+            .rev()
+            .find_map(|item| match item {
+                Item::Group { path, .. } => Some(crate::session::is_owners_section_path(path)),
+                Item::Session { .. } => None,
+            })?;
+        if !in_section {
+            return None;
+        }
+        let next = self.flat_items[at + 1..]
+            .iter()
+            .find(|item| !matches!(item, Item::Session { depth: d, .. } if *d > depth));
+        Some(match next {
+            Some(Item::Session { depth: d, .. }) if *d == depth => "├",
+            _ => "└",
+        })
     }
 
     /// The budget-left suffix of an owner's tree entry (docs/guides/session-owners.md).
@@ -2306,16 +2183,13 @@ impl HomeView {
             } else {
                 (mark.left.claude, mark.granted.claude)
             };
-            let label = match mark.role {
-                Role::Worker => "worker ",
-                _ => "C ",
-            };
-            let label_color = if mark.role == Role::Worker {
-                theme.fresh_idle
+            // The tree already shows a row's place, so the compact suffix is only the plan and what is left.
+            let label = if codex && mark.role == Role::Worker {
+                "X "
             } else {
-                theme.dimmed
+                "C "
             };
-            spans.push(styled(label.into(), label_color));
+            spans.push(styled(label.into(), theme.dimmed));
             spans.push(styled(
                 format!("{}%", pct(left)),
                 tone_color(tone(left, granted, mark.over)),
@@ -2324,22 +2198,6 @@ impl HomeView {
         }
         spans.push(Span::raw(" "));
         match mark.role {
-            Role::Root => {
-                let marks = crate::session::owners::marks();
-                let out = crate::session::owners::handed_out(&marks);
-                spans.push(styled(
-                    format!(
-                        "left C {}% X {}%",
-                        pct(mark.left.claude),
-                        pct(mark.left.codex)
-                    ),
-                    theme.text,
-                ));
-                spans.push(styled(
-                    format!("  out C {} X {}", pct(out.claude), pct(out.codex)),
-                    theme.dimmed,
-                ));
-            }
             Role::Module => {
                 spans.extend(gauge("C", mark.left.claude, mark.granted.claude, 6));
                 spans.push(Span::raw("  "));
@@ -2359,7 +2217,9 @@ impl HomeView {
                     .module
                     .as_deref()
                     .and_then(|m| self.get_instance(m))
-                    .map(|m| crate::session::owners::short_title(&m.title).to_string());
+                    .map(|m| {
+                        crate::session::owners::short_title(&m.title, &mark.owner).to_string()
+                    });
                 spans.push(styled(
                     module.map_or_else(|| "worker".to_string(), |m| format!("worker · {m}")),
                     theme.fresh_idle,
@@ -3260,22 +3120,6 @@ impl HomeView {
                 self.system_health_scroll,
             );
             return;
-        }
-        if self.live_send.is_none() {
-            let root = self
-                .selected_session
-                .as_deref()
-                .and_then(crate::session::owners::mark)
-                .filter(|m| m.role == crate::session::owners::Role::Root);
-            if let Some(root) = root {
-                self.preview_outer_area = area;
-                self.preview_area = area;
-                self.preview_pane_area = area;
-                self.preview_visible_rows = area.height as usize;
-                self.sync_preview_capture_worker(None);
-                self.render_owner_budget(frame, area, theme, &root);
-                return;
-            }
         }
         let compact = area.width < responsive::STACKED_BREAKPOINT;
         let (border_color, title_color) = match self.view_mode {

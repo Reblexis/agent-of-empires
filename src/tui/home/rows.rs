@@ -239,9 +239,14 @@ impl HomeView {
     /// The owner's core in its Favorites section on top, then every other row.
     fn build_flat_items_hiding(&self, hide_stopped: bool) -> Vec<Item> {
         let pool = self.cloned_instances_in_active_view();
-        let core = owners_core(&pool, &crate::session::owners::marks());
-        let mut items = owners_section(&core);
-        let core_ids: HashSet<String> = core.iter().map(|i| i.id.clone()).collect();
+        let marks = crate::session::owners::marks();
+        let core = owners_core(&pool, &marks);
+        let owner = core
+            .first()
+            .and_then(|(i, _)| marks.get(&i.id))
+            .map_or("", |m| m.owner.as_str());
+        let mut items = owners_section(owner, &core);
+        let core_ids: HashSet<String> = core.iter().map(|(i, _)| i.id.clone()).collect();
         items.extend(self.build_group_items(hide_stopped, &core_ids));
         items
     }

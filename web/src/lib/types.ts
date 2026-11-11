@@ -590,7 +590,7 @@ export interface OwnerTransaction {
 export interface SessionOwner {
   owner: string;
   parent: string | null;
-  role: "root" | "module" | "worker";
+  role: "module" | "worker";
   /** Id of a worker's module; null for the root, a module, or a worker of no module. */
   module: string | null;
   left: PlanShares;

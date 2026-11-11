@@ -50,7 +50,8 @@ export function formatAmount(tx: OwnerTransaction): string {
   return [part("C", tx.claude), part("X", tx.codex)].filter(Boolean).join(" ") || "?";
 }
 
-const isLive = (s: SessionResponse) => s.archived_at == null && s.snoozed_until == null && s.trashed_at == null;
+// Idle and snoozed sessions stay in the tree, so every worker shows; archived and trashed ones have left it.
+const inTree = (s: SessionResponse) => s.archived_at == null && s.trashed_at == null;
 
 const byClaudeLimitThenTitle = (a: SessionResponse, b: SessionResponse) =>
   (b.owner?.granted.claude ?? -1) - (a.owner?.granted.claude ?? -1) || a.title.localeCompare(b.title);
@@ -59,17 +60,10 @@ function modulesOf(sessions: readonly SessionResponse[]): SessionResponse[] {
   return sessions.filter((s) => s.owner?.role === "module").sort(byClaudeLimitThenTitle);
 }
 
-export interface OwnerCore {
-  root: SessionResponse | null;
-  modules: SessionResponse[];
-}
-
-/** The root and its modules, as favorites shows them; null when nothing live is in the core. */
-export function buildCore(sessions: readonly SessionResponse[]): OwnerCore | null {
-  const live = sessions.filter(isLive);
-  const root = live.find((s) => s.owner?.role === "root") ?? null;
-  const modules = modulesOf(live);
-  return root || modules.length > 0 ? { root, modules } : null;
+/** The modules in the tree, as favorites shows them; null when there are none. */
+export function buildCore(sessions: readonly SessionResponse[]): SessionResponse[] | null {
+  const modules = modulesOf(sessions.filter(inTree));
+  return modules.length > 0 ? modules : null;
 }
 
 export interface NestedWorker {
@@ -78,7 +72,7 @@ export interface NestedWorker {
 }
 
 const workersOf = (sessions: readonly SessionResponse[], moduleId: string) =>
-  sessions.filter((s) => s.owner?.role === "worker" && s.owner.module === moduleId && s.trashed_at == null);
+  sessions.filter((s) => s.owner?.role === "worker" && s.owner.module === moduleId && inTree(s));
 
 /** A module's workers in tree order; a worker whose parent is not listed starts at depth 0. */
 export function moduleWorkers(sessions: readonly SessionResponse[], moduleId: string): NestedWorker[] {
@@ -102,10 +96,15 @@ export function workerCount(sessions: readonly SessionResponse[], moduleId: stri
   return workersOf(sessions, moduleId).length;
 }
 
-/** The title with the owner's `Central: ` style prefix removed. */
-export function moduleShortName(title: string): string {
+/** The title without the owner's own prefix (`Central: ` for owner `central`, any case); any other title stays whole. */
+export function moduleShortName(title: string, owner: string): string {
   const i = title.indexOf(": ");
-  return i >= 0 ? title.slice(i + 2) : title;
+  return i >= 0 && title.slice(0, i).toLowerCase() === owner.toLowerCase() ? title.slice(i + 2) : title;
+}
+
+/** What the owner handed out: its modules' grants per plan; an unknown grant counts as nothing. */
+export function ownerHandedOut(modules: readonly SessionResponse[], plan: Plan): number {
+  return modules.reduce((t, m) => t + (m.owner?.granted[plan] ?? 0), 0);
 }
 
 /** The plan a worker's agent runs on. */
@@ -116,7 +115,7 @@ export function workerPlan(session: SessionResponse): Plan {
 export function workerTag(session: SessionResponse, byId: ReadonlyMap<string, SessionResponse>): string | null {
   if (session.owner?.role !== "worker") return null;
   const module = session.owner.module ? byId.get(session.owner.module) : undefined;
-  return module ? `worker · ${moduleShortName(module.title)}` : "worker";
+  return module ? `worker · ${moduleShortName(module.title, session.owner.owner)}` : "worker";
 }
 
 export interface PlanBudget {
@@ -126,14 +125,14 @@ export interface PlanBudget {
   handedOut: number;
 }
 
-export interface BudgetModule {
+export interface BudgetChild {
   session: SessionResponse;
-  short: string;
   claudeLeft: number | null;
   codexLeft: number | null;
   claudeGranted: number | null;
   codexGranted: number | null;
-  workers: number;
+  /** Entries below this child, at any depth. */
+  below: number;
 }
 
 export interface BudgetTransaction extends OwnerTransaction {
@@ -142,37 +141,43 @@ export interface BudgetTransaction extends OwnerTransaction {
   amount: string;
 }
 
-export interface RootBudget {
+export interface ModuleBudget {
   plans: PlanBudget[];
-  modules: BudgetModule[];
+  children: BudgetChild[];
   transactions: BudgetTransaction[];
 }
 
-/** Sum of the modules' grants per plan; an unknown grant counts as nothing. */
-export function handedOut(sessions: readonly SessionResponse[], plan: Plan): number {
-  return modulesOf(sessions).reduce((t, m) => t + (m.owner?.granted[plan] ?? 0), 0);
+const childrenOf = (sessions: readonly SessionResponse[], id: string) =>
+  sessions.filter((s) => s.owner?.parent === id && inTree(s));
+
+function countBelow(sessions: readonly SessionResponse[], id: string, seen = new Set<string>([id])): number {
+  return childrenOf(sessions, id).reduce((n, c) => {
+    if (seen.has(c.id)) return n;
+    seen.add(c.id);
+    return n + 1 + countBelow(sessions, c.id, seen);
+  }, 0);
 }
 
-/** The root's grant, what is left of it and what it handed out, per plan; its modules; its transfers by title. */
-export function rootBudget(root: SessionResponse, sessions: readonly SessionResponse[]): RootBudget {
-  const titleOf = (id: string) => sessions.find((s) => s.id === id)?.title ?? (id === root.id ? root.title : id);
+/** A module's grant, what is left of it and what its direct children were granted, per plan; its children; its transfers by title. */
+export function moduleBudget(module: SessionResponse, sessions: readonly SessionResponse[]): ModuleBudget {
+  const titleOf = (id: string) => sessions.find((s) => s.id === id)?.title ?? (id === module.id ? module.title : id);
+  const children = childrenOf(sessions, module.id).sort(byClaudeLimitThenTitle);
   return {
     plans: (["claude", "codex"] as const).map((plan) => ({
       plan,
-      granted: root.owner?.granted[plan] ?? null,
-      left: root.owner?.left[plan] ?? null,
-      handedOut: handedOut(sessions, plan),
+      granted: module.owner?.granted[plan] ?? null,
+      left: module.owner?.left[plan] ?? null,
+      handedOut: children.reduce((t, c) => t + (c.owner?.granted[plan] ?? 0), 0),
     })),
-    modules: modulesOf(sessions).map((m) => ({
-      session: m,
-      short: moduleShortName(m.title),
-      claudeLeft: m.owner?.left.claude ?? null,
-      codexLeft: m.owner?.left.codex ?? null,
-      claudeGranted: m.owner?.granted.claude ?? null,
-      codexGranted: m.owner?.granted.codex ?? null,
-      workers: workerCount(sessions, m.id),
+    children: children.map((c) => ({
+      session: c,
+      claudeLeft: c.owner?.left.claude ?? null,
+      codexLeft: c.owner?.left.codex ?? null,
+      claudeGranted: c.owner?.granted.claude ?? null,
+      codexGranted: c.owner?.granted.codex ?? null,
+      below: countBelow(sessions, c.id),
     })),
-    transactions: (root.owner?.transactions ?? []).map((tx) => ({
+    transactions: (module.owner?.transactions ?? []).map((tx) => ({
       ...tx,
       fromTitle: titleOf(tx.from),
       toTitle: titleOf(tx.to),

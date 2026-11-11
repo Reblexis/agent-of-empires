@@ -2,7 +2,7 @@ import { lazy, Suspense } from "react";
 
 import { TerminalSessionStack } from "./TerminalSessionStack";
 import { ForecastBand } from "./ForecastBand";
-import { RootBudgetFrame } from "./OwnerBudget";
+import { BudgetFrame } from "./OwnerBudget";
 import { PairedShellPane } from "./PairedTerminal";
 import { BackgroundAgentsPanel } from "./acp/BackgroundAgentsPanel";
 import { TimelinePane } from "./TimelinePane";
@@ -137,7 +137,7 @@ export function MobileMainPane({
       )}
       <div className="relative flex-1 flex flex-col min-h-0 overflow-hidden">
         <div className={layerClass(view === "agent")} inert={view !== "agent"}>
-          <RootBudgetFrame session={activeSession} sessions={sessions}>
+          <BudgetFrame session={activeSession} sessions={sessions}>
             {activeSession?.view === "structured" ? (
               <Suspense fallback={null}>
                 <StructuredView
@@ -170,7 +170,7 @@ export function MobileMainPane({
                 />
               </div>
             )}
-          </RootBudgetFrame>
+          </BudgetFrame>
         </div>
 
         {pairedMounted && (

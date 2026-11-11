@@ -8,8 +8,9 @@ import {
   meterFill,
   meterTone,
   moduleShortName,
+  ownerHandedOut,
   moduleWorkers,
-  rootBudget,
+  moduleBudget,
   workerCount,
   workerPlan,
   workerTag,
@@ -38,41 +39,45 @@ function owned(id: string, title: string, o: OwnerOver | null, over: Partial<Ses
 
 const TX = (kind: OwnerTransaction["kind"], claude: number | null, codex: number | null): OwnerTransaction => ({
   at: "2026-11-10T19:00:00Z",
-  from: "root",
+  from: "central",
   to: "planner",
   claude,
   codex,
   kind,
   by: "central",
 });
-const ROOT = owned("root", "Central: Allocator", {
-  role: "root",
-  granted: [0.25, 0.1],
-  left: [0.21, 0.1],
-  transactions: [TX("cut", 0.005, null), TX("grant", 0.08, 0.03), { ...TX("default", 0.02, 0.01), to: "gone" }],
-});
+// The owner is the tree's root and no session: modules have no parent.
 const PLANNER = owned("planner", "Central: Planner", {
   role: "module",
-  parent: "root",
   granted: [0.08, 0.03],
   left: [0.0224, 0],
+  transactions: [
+    { ...TX("cut", 0.005, null), from: "planner", to: "w1" },
+    TX("grant", 0.08, 0.03),
+    { ...TX("default", 0.02, 0.01), from: "planner", to: "gone" },
+  ],
 });
-const ROUTER = owned("router", "Central: Router", { role: "module", parent: "root", granted: [0.02, 0.01] });
-const ASSISTANT = owned("assistant", "Central: Assistant", { role: "module", parent: "root", granted: [0.04, null] });
-const ALPHA = owned("alpha", "Alpha", { role: "module", parent: "root", granted: [0.02, null] });
+const ROUTER = owned("router", "Central: Router", { role: "module", granted: [0.02, 0.01] });
+const ASSISTANT = owned("assistant", "Central: Assistant", { role: "module", granted: [0.04, null] });
+const ALPHA = owned("alpha", "Alpha", { role: "module", granted: [0.02, null] });
 const SNOOZED = owned(
   "snoozed",
   "Central: Snoozed",
-  { role: "module", parent: "root", granted: [0.5, 0.5] },
+  { role: "module", granted: [0.5, 0.5] },
   { snoozed_until: "2099-01-01T00:00:00Z" },
 );
-const W1 = owned("w1", "Make aoe fast", { parent: "planner", module: "planner", left: [0.0043, null] });
+const W1 = owned("w1", "Make aoe fast", {
+  parent: "planner",
+  module: "planner",
+  granted: [0.01, null],
+  left: [0.0043, null],
+});
 const W1A = owned("w1a", "Sub of w1", { parent: "w1", module: "planner", left: [0.001, 0.002] }, { tool: "codex" });
-const W2 = owned("w2", "Daily posts", { parent: "planner", module: "planner" });
+const W2 = owned("w2", "Daily posts", { parent: "planner", module: "planner", granted: [0.02, 0.01] });
 const W1B = owned("w1b", "Another sub", { parent: "w1", module: "planner" });
 const STRAY = owned("stray", "Stray", { parent: "nowhere", module: null, left: [0.3, 0.3] });
 const PLAIN = owned("plain", "Plain", null);
-const ALL = [W1A, PLAIN, ROUTER, W2, ALPHA, STRAY, PLANNER, W1, SNOOZED, ROOT, ASSISTANT, W1B];
+const ALL = [W1A, PLAIN, ROUTER, W2, ALPHA, STRAY, PLANNER, W1, SNOOZED, ASSISTANT, W1B];
 
 describe("session owners", () => {
   it("formats a share as a percent of one weekly limit, two decimals, trailing zeros dropped", () => {
@@ -138,14 +143,12 @@ describe("session owners", () => {
     for (const [tx, amount] of cases) expect(formatAmount(tx), tx.kind).toBe(amount);
   });
 
-  it("builds the core: root first, then live modules by Claude limit desc, then title", () => {
-    const core = buildCore(ALL);
-    expect(core?.root?.id).toBe("root");
-    expect(core?.modules.map((s) => s.id)).toEqual(["planner", "assistant", "alpha", "router"]);
+  it("builds the core: every module in the tree, snoozed too, by Claude limit desc, then title", () => {
+    expect(buildCore(ALL)?.map((s) => s.id)).toEqual(["snoozed", "planner", "assistant", "alpha", "router"]);
     expect(buildCore([PLAIN, W1])).toBeNull();
-    const archivedRoot = { ...ROOT, archived_at: "2026-01-01T00:00:00Z" };
-    expect(buildCore([archivedRoot, PLANNER])).toEqual({ root: null, modules: [PLANNER] });
-    expect(buildCore([{ ...ROOT, trashed_at: "2026-01-01T00:00:00Z" }])).toBeNull();
+    const archived = { ...ROUTER, archived_at: "2026-01-01T00:00:00Z" };
+    expect(buildCore([archived, PLANNER])).toEqual([PLANNER]);
+    expect(buildCore([{ ...PLANNER, trashed_at: "2026-01-01T00:00:00Z" }])).toBeNull();
   });
 
   it("lists a module's workers nested by parent with their depth, and counts them at any depth", () => {
@@ -155,7 +158,8 @@ describe("session owners", () => {
       ["w1b", 1],
       ["w1a", 1],
     ]);
-    // A worker whose parent is not listed (trashed) still shows, at the top.
+    // A worker whose parent left the tree (trashed) still shows, at the top; an archived worker does not.
+    expect(workerCount([{ ...W2, archived_at: "2026-01-01T00:00:00Z" }, W1], "planner")).toBe(1);
     const trashedW1 = { ...W1, trashed_at: "2026-01-01T00:00:00Z" };
     expect(moduleWorkers([trashedW1, W1A, W2], "planner").map((w) => [w.session.id, w.depth])).toEqual([
       ["w2", 0],
@@ -169,11 +173,12 @@ describe("session owners", () => {
   it("names a module by its title without the owner prefix up to the first ': '", () => {
     const cases = [
       ["Central: Planner", "Planner"],
-      ["Central: Ops: Daily", "Ops: Daily"],
+      ["central: Ops: Daily", "Ops: Daily"],
       ["Planner", "Planner"],
-      ["a:b", "a:b"],
+      ["Telarchy: minimize steps", "Telarchy: minimize steps"], // only the owner's own prefix goes
     ];
-    for (const [title, short] of cases) expect(moduleShortName(title), title).toBe(short);
+    for (const [title, short] of cases) expect(moduleShortName(title, "central"), title).toBe(short);
+    expect(ownerHandedOut([PLANNER, ROUTER, ASSISTANT], "claude")).toBeCloseTo(0.14);
   });
 
   it("tags a worker with its module's short name, a moduleless worker plainly, and others not at all", () => {
@@ -183,7 +188,6 @@ describe("session owners", () => {
       [STRAY, "worker"],
       [owned("x", "x", { module: "gone" }), "worker"],
       [PLANNER, null],
-      [ROOT, null],
       [PLAIN, null],
     ];
     for (const [s, tag] of cases) expect(workerTag(s, byId), s.id).toBe(tag);
@@ -191,30 +195,28 @@ describe("session owners", () => {
     expect(workerPlan(W1)).toBe("claude");
   });
 
-  it("computes the root's budget per plan, the module table, and its transactions by title", () => {
-    const budget = rootBudget(ROOT, ALL);
+  it("computes a module's budget per plan, its direct children, and its transfers by title", () => {
+    const budget = moduleBudget(PLANNER, ALL);
     const [claude, codex] = budget.plans;
-    expect(claude).toMatchObject({ plan: "claude", granted: 0.25, left: 0.21 });
-    // Every module's grant counts toward handed out, snoozed or not: 0.08+0.04+0.02+0.02+0.5.
-    expect(claude.handedOut).toBeCloseTo(0.66);
-    expect(codex).toMatchObject({ plan: "codex", granted: 0.1, left: 0.1 });
-    expect(codex.handedOut).toBeCloseTo(0.54);
+    expect(claude).toMatchObject({ plan: "claude", granted: 0.08, left: 0.0224 });
+    // Handed out is its direct children's grants (w1 0.01 + w2 0.02), not the grandchildren's.
+    expect(claude.handedOut).toBeCloseTo(0.03);
+    expect(codex).toMatchObject({ plan: "codex", granted: 0.03, left: 0 });
+    expect(codex.handedOut).toBeCloseTo(0.01);
     expect(
-      budget.modules.map((m) => [m.short, m.claudeLeft, m.codexLeft, m.claudeGranted, m.codexGranted, m.workers]),
+      budget.children.map((c) => [c.session.id, c.claudeLeft, c.codexLeft, c.claudeGranted, c.codexGranted, c.below]),
     ).toEqual([
-      ["Snoozed", null, null, 0.5, 0.5, 0],
-      ["Planner", 0.0224, 0, 0.08, 0.03, 4],
-      ["Assistant", null, null, 0.04, null, 0],
-      ["Alpha", null, null, 0.02, null, 0],
-      ["Router", null, null, 0.02, 0.01, 0],
+      ["w2", null, null, 0.02, 0.01, 0],
+      ["w1", 0.0043, null, 0.01, null, 2],
     ]);
     expect(budget.transactions.map((t) => [t.kind, t.fromTitle, t.toTitle, t.amount, t.by])).toEqual([
-      ["cut", "Central: Allocator", "Central: Planner", "C -0.5%", "central"],
-      ["grant", "Central: Allocator", "Central: Planner", "C +8% X +3%", "central"],
-      ["default", "Central: Allocator", "gone", "C +2% X +1%", "central"], // an id that names no session shows as is
+      ["cut", "Central: Planner", "Make aoe fast", "C -0.5%", "central"],
+      ["grant", "central", "Central: Planner", "C +8% X +3%", "central"], // a name outside the tree shows as written
+      ["default", "Central: Planner", "gone", "C +2% X +1%", "central"],
     ]);
-    const bare = rootBudget(owned("r", "r", { role: "root" }), []);
+    const bare = moduleBudget(owned("m", "m", { role: "module" }), []);
     expect(bare.plans[0]).toMatchObject({ granted: null, left: null, handedOut: 0 });
+    expect(bare.children).toEqual([]);
     expect(bare.transactions).toEqual([]);
   });
 });
