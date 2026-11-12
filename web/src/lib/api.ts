@@ -866,6 +866,25 @@ export function markTipSeen(id: string): Promise<boolean> {
   return fetchOk("/api/app-state/tip-seen", jsonInit("POST", { id }));
 }
 
+export type CentralState = "paused" | "running";
+
+export async function fetchCentral(): Promise<CentralState | null> {
+  const r = await fetchJson<{ state: CentralState }>("/api/central");
+  return r?.state ?? null;
+}
+
+/** Pauses or resumes central; the server runs the state's hook first, so a failure carries its message. */
+export async function setCentral(state: CentralState): Promise<{ ok: true } | { ok: false; error: string }> {
+  try {
+    const res = await fetch("/api/central", jsonInit("POST", { state }));
+    if (res.ok) return { ok: true };
+    const body = (await res.json().catch(() => null)) as { error?: string; message?: string } | null;
+    return { ok: false, error: body?.error ?? body?.message ?? `Switch failed (${res.status})` };
+  } catch {
+    return { ok: false, error: "Could not reach the server" };
+  }
+}
+
 export function setShowTips(enabled: boolean): Promise<boolean> {
   return fetchOk("/api/tips/show", jsonInit("POST", { enabled }));
 }

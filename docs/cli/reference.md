@@ -16,6 +16,9 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe send`↴](#aoe-send)
 * [`aoe status`↴](#aoe-status)
 * [`aoe killall`↴](#aoe-killall)
+* [`aoe central`↴](#aoe-central)
+* [`aoe central pause`↴](#aoe-central-pause)
+* [`aoe central resume`↴](#aoe-central-resume)
 * [`aoe session`↴](#aoe-session)
 * [`aoe session start`↴](#aoe-session-start)
 * [`aoe session stop`↴](#aoe-session-stop)
@@ -168,6 +171,7 @@ Run without arguments to launch the TUI dashboard.
 * `send` — Send a message to a running agent session
 * `status` — Show session status summary
 * `killall` — Force-stop everything aoe is running: the serve daemon, all agent workers, and all aoe tmux sessions. Destructive and unprompted
+* `central` — Show, pause or resume the central agent's part in aoe. While paused, aoe ignores the owners file and every session is an ordinary one
 * `session` — Manage session lifecycle (start, stop, attach, etc.)
 * `group` — Manage groups for organizing sessions
 * `plugin` — Manage plugins (list, info, enable, disable, install, update, uninstall)
@@ -416,6 +420,35 @@ Force-stop everything aoe is running: the serve daemon, all agent workers, and a
 
   Default value: `5`
 * `--keep-daemon` — Leave the `aoe serve` daemon running; stop only workers and tmux sessions
+
+
+
+## `aoe central`
+
+Show, pause or resume the central agent's part in aoe. While paused, aoe ignores the owners file and every session is an ordinary one
+
+**Usage:** `aoe central [COMMAND]`
+
+###### **Subcommands:**
+
+* `pause` — Pause central: run `<app_dir>/central-hooks/paused`, then ignore the owners file so every session is an ordinary one
+* `resume` — Resume central: run `<app_dir>/central-hooks/running`, then honor the owners file again
+
+
+
+## `aoe central pause`
+
+Pause central: run `<app_dir>/central-hooks/paused`, then ignore the owners file so every session is an ordinary one
+
+**Usage:** `aoe central pause`
+
+
+
+## `aoe central resume`
+
+Resume central: run `<app_dir>/central-hooks/running`, then honor the owners file again
+
+**Usage:** `aoe central resume`
 
 
 

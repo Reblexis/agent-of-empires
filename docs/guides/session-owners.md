@@ -10,6 +10,9 @@ every deeper session (a worker) nested under its parent, each with the budget
 it has left and, for a session with an end, how far its work is, and each
 module's budget with what it granted and its transfers.
 
+The owner tree only shows while central is [running](central-pause.md); while
+it is paused aoe ignores the owners file.
+
 aoe computes nothing about money or ownership. Which sessions an owner holds,
 what each was granted and what it has left are the writer's business; aoe
 shows what was written and only arranges it. It never shows how much was used

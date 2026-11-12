@@ -4872,6 +4872,14 @@
         "web/src/components/sidebar/RowBadges.tsx",
         "web/src/lib/sessionOwners.ts"
       ]
+    },
+    {
+      "id": "sidebar.central-pause",
+      "kind": "vitest",
+      "risk": "medium",
+      "description": "The sidebar's Central switch shows whether the central agent is paused or running and flips it in one click, keeping the state and showing the hook's failure when the switch fails (docs/guides/central-pause.md).",
+      "specs": ["src/components/__tests__/CentralSwitch.test.tsx"],
+      "components": ["web/src/components/CentralSwitch.tsx", "web/src/components/WorkspaceSidebar.tsx"]
     }
   ]
 }

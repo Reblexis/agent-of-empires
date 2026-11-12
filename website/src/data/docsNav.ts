@@ -47,6 +47,7 @@ export const docsNav: NavSection[] = [
       { title: "Terminal View", href: "/guides/web/terminal/", description: "A real terminal in the browser, backed by your tmux session." },
       { title: "Inbox", href: "/guides/session-inbox/", description: "Your prompt queue: what to check, do, evaluate, answer, decide or learn next." },
       { title: "Session Forecast", href: "/guides/session-forecast/", description: "Stop now or continue: the agent's forecast card, pinned on the session." },
+      { title: "Central Pause", href: "/guides/central-pause/", description: "Pause or resume the central agent in one step; normal sessions run beside central ones." },
       { title: "Session Owners", href: "/guides/session-owners/", description: "An agent's session tree in favorites, with the budget each session has left." },
     ],
   },

@@ -2745,3 +2745,48 @@ mod tests {
         );
     }
 }
+
+#[derive(Deserialize)]
+pub struct SetCentralBody {
+    pub state: crate::session::central::State,
+}
+
+/// `GET /api/central`: the current mode. Spec: docs/guides/central-pause.md.
+pub async fn get_central() -> impl IntoResponse {
+    Json(serde_json::json!({"state": crate::session::central::current()}))
+}
+
+/// `POST /api/central`: runs the new state's hook, then records the state. The hook
+/// is the fixed file `<app_dir>/central-hooks/<state>`, never anything from the
+/// request, so it needs no elevation; `read_only` still blocks it.
+pub async fn set_central(
+    State(state): State<Arc<AppState>>,
+    body: Result<Json<SetCentralBody>, axum::extract::rejection::JsonRejection>,
+) -> impl IntoResponse {
+    if state.read_only {
+        return read_only_response();
+    }
+    let Json(SetCentralBody { state: wanted }) = match body {
+        Ok(b) => b,
+        Err(rej) => return rej.into_response(),
+    };
+    match tokio::task::spawn_blocking(move || crate::session::central::switch(wanted)).await {
+        Ok(Ok(())) => (StatusCode::OK, Json(serde_json::json!({"state": wanted}))).into_response(),
+        Ok(Err(e)) => {
+            tracing::warn!(target: "http.api.system", "Central switch failed: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            tracing::error!(target: "http.api.system", "Central switch panicked: {}", e);
+            api_error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                "Internal server error",
+            )
+        }
+    }
+}

@@ -5,6 +5,7 @@ use clap_complete::Shell;
 
 use super::acp::AcpCommands;
 use super::add::AddArgs;
+use super::central::CentralArgs;
 use super::cityhall::CityHallCommands;
 use super::extract_session_id::ExtractSessionIdArgs;
 use super::group::GroupCommands;
@@ -120,6 +121,10 @@ pub enum Commands {
     /// Force-stop everything aoe is running: the serve daemon, all agent
     /// workers, and all aoe tmux sessions. Destructive and unprompted.
     Killall(KillallArgs),
+
+    /// Show, pause or resume the central agent's part in aoe. While paused,
+    /// aoe ignores the owners file and every session is an ordinary one.
+    Central(CentralArgs),
 
     /// Internal: trap for `aoe stop`, which is not a command in aoe (stopping
     /// is always scoped to a noun). Redirects users to `session stop`,
@@ -292,6 +297,7 @@ pub const CLI_COMMAND_NAMES: &[&str] = &[
     "send",
     "status",
     "killall",
+    "central",
     "session",
     "group",
     "plugin",
@@ -330,6 +336,7 @@ pub fn command_name(command: &Commands) -> Option<&'static str> {
         Commands::Send(_) => "send",
         Commands::Status(_) => "status",
         Commands::Killall(_) => "killall",
+        Commands::Central(_) => "central",
         Commands::Stop { .. } => return None,
         Commands::Session { .. } => "session",
         Commands::Group { .. } => "group",

@@ -335,8 +335,12 @@ fn refresh() {
     }
 }
 
-/// The entry the owners file gives session `id`, if any.
+/// The entry the owners file gives session `id`, if any; none while central is paused
+/// (docs/guides/central-pause.md).
 pub fn mark(id: &str) -> Option<OwnerMark> {
+    if super::central::current() != super::central::State::Running {
+        return None;
+    }
     refresh();
     CACHE
         .read()
@@ -346,6 +350,9 @@ pub fn mark(id: &str) -> Option<OwnerMark> {
 
 /// Every entry, for one overlay per poll or frame.
 pub fn marks() -> HashMap<String, OwnerMark> {
+    if super::central::current() != super::central::State::Running {
+        return HashMap::new();
+    }
     refresh();
     CACHE
         .read()

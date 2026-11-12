@@ -198,20 +198,13 @@ describe("owner core in favorites", () => {
     expect(chip?.getAttribute("title")).toContain("granted Claude 1%");
   });
 
-  it("Active shows only the Central tree; repo groups and other favorites appear only under All", () => {
+  it("Active shows the Central tree beside ordinary active sessions, which run in parallel with it", () => {
     const outside = [
       ws("busy", "Running repo session", null, { status: "Running" }),
       ws("fav", "Favorited session", null, { status: "Running", favorited: true }),
     ];
     const rowTexts = () => screen.queryAllByTestId("sidebar-session-row").map((r) => r.textContent ?? "");
     window.localStorage.setItem("aoe-web-settings", JSON.stringify({ sidebarActiveOnly: true }));
-    renderSidebar([...WORKSPACES, ...outside]);
-    expect(screen.getAllByTestId("owner-core-module")).toHaveLength(3);
-    expect(rowTexts()).toEqual([]);
-    expect(screen.queryByText("No active sessions")).toBeNull();
-
-    cleanup();
-    window.localStorage.setItem("aoe-web-settings", JSON.stringify({ sidebarActiveOnly: false }));
     renderSidebar([...WORKSPACES, ...outside]);
     expect(screen.getAllByTestId("owner-core-module")).toHaveLength(3);
     expect(rowTexts().some((t) => t.includes("Running repo session"))).toBe(true);
