@@ -19,6 +19,11 @@ pub(crate) const CLOSE_CODE_GOING_AWAY: u16 = 1001;
 /// WebSocket close code 1013 ("try again later").
 pub(crate) const CLOSE_CODE_TRY_AGAIN_LATER: u16 = 1013;
 
+/// Close code we send when the session's tmux name moved (a rename) under an open
+/// live connection. The browser redials at once, without a banner, and the route
+/// resolves the new name.
+pub(crate) const CLOSE_CODE_SESSION_RENAMED: u16 = 4002;
+
 /// Total time we'll spend waiting for the tmux session + pane to be attachable before
 /// giving up and closing 1013.
 const TMUX_READY_TIMEOUT: Duration = Duration::from_millis(2000);

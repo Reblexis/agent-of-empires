@@ -73,13 +73,18 @@ The **Container** tab launches the container user's preferred shell, resolved in
 
 ## Reconnect
 
-If the WebSocket drops (network blip, tunnel re-auth, daemon restart), the terminal retries on a fast ladder (200 ms through 10 s), so transient warm-up failures recover in well under five seconds. A banner shows the state, and a permanently dead pane offers a manual retry instead of looping. The banner names the close code the server returned:
+If the WebSocket drops (network blip, tunnel re-auth, daemon restart), the terminal redials on a fast ladder (200 ms through 10 s) and then every 10 s until it is back; it never gives up on a network failure. What you type meanwhile is queued and sent, in order, when the connection opens. A drop that heals within a second shows no banner.
 
-| Code | Reason | Meaning |
-| ---- | ------ | ------- |
-| 1001 | `server shutdown` | Daemon is shutting down; retries normally. |
-| 1013 | `tmux_not_ready` | Pane was not capturable within 2s, usually a benign warm-up; retries normally. |
-| 4001 | `pty_dead` | The pane permanently exited; shows a retry banner. |
+| Code | Reason | What the terminal does |
+| ---- | ------ | ---------------------- |
+| 1001 | `server shutdown` | Redials until the daemon is back. |
+| 1013 | `tmux_not_ready`, `capture_failed` | The pane could not be read. Redials on the ladder; after seven refusals in a row it stops and offers Restart, which starts the session again. |
+| 4001 | `pty_dead` | The agent exited. Offers Restart. |
+| 4002 | `session_renamed` | Redials at once, without a banner. |
+
+Renaming a session while its terminal is open (the smart rename of a new session, `aoe session rename`, the dashboard) never costs input: the key or paste that found the old name gone is delivered to the session under its new name, and the terminal reconnects to that name by itself.
+
+A connection never stays open without a working terminal behind it. When the server can no longer read the pane it closes the connection, so the browser redials. The server also sends a heartbeat every 3 seconds; a browser that hears nothing for 10 seconds treats the connection as dead and redials at once, and it runs the same check the moment the tab becomes visible or the network returns. A connection attempt that has not opened within 8 seconds is abandoned and retried.
 
 A network interruption can leave the old connection open on the server while the browser reconnects. The server pings each live connection every five seconds and releases its terminal ownership after 15 seconds without a pong. A visible viewer at the live edge then reclaims the vacant size lock automatically; typing on other devices does not wait for that recovery. A healthy idle browser answers pings without any typing.
 

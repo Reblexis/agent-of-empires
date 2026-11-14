@@ -4,6 +4,7 @@ import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { applyPatch, frameLines, useLiveTerminal } from "./useLiveTerminal";
 import { forgetAllScreens } from "../lib/screenCache";
+import { retryDelayMs } from "../lib/wsBackoff";
 
 vi.mock("../lib/token", () => ({ getToken: () => null }));
 vi.mock("../lib/deviceBinding", () => ({ getOrCreateDeviceBindingSecret: () => "test-secret" }));
@@ -197,7 +198,7 @@ describe("reconnect", () => {
       });
       ws.readyState = FakeWS.CLOSED;
       act(() => ws.onclose?.(new CloseEvent("close", { code: 1006 })));
-      act(() => vi.advanceTimersByTime(60_000));
+      act(() => vi.advanceTimersByTime(1_000));
       const next = FakeWS.sockets[1]!;
       next.open();
       expect(next.json()).toEqual(
@@ -323,6 +324,152 @@ describe("size owner", () => {
       act(() => result.current.manualReconnect());
       FakeWS.sockets[1]!.open();
       expect(result.current.state.paneDead).toBe(false);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  // Viktor, 14 Nov 2026: the terminal "sometimes doesnt allow me to enter ... and i have to click differet tab and
+  // back and it shows reconnecing". docs/guides/web/terminal.md, "Reconnect".
+  it("a renamed session redials at once with no banner, and keys typed meanwhile arrive in order", () => {
+    const { result, ws } = mount();
+    ws.readyState = FakeWS.CLOSED;
+    act(() => ws.onclose?.(new CloseEvent("close", { code: 4002 })));
+    expect(FakeWS.sockets).toHaveLength(2);
+    expect(result.current.state).toMatchObject({ connected: true, reconnecting: false, disconnectedLong: false });
+
+    act(() => {
+      result.current.sendData("a");
+      result.current.sendData("b");
+    });
+    const replacement = FakeWS.sockets[1]!;
+    replacement.open();
+    expect(replacement.bytes()).toEqual(["a", "b"]);
+  });
+
+  it("redials a connection that went silent past the heartbeat window", () => {
+    vi.useFakeTimers();
+    try {
+      const { result, ws } = mount();
+      ws.deliver({ type: "hb" });
+      act(() => vi.advanceTimersByTime(9_000));
+      expect(FakeWS.sockets).toHaveLength(1);
+      act(() => vi.advanceTimersByTime(4_000));
+      expect(ws.readyState).toBe(FakeWS.CLOSED);
+      expect(FakeWS.sockets).toHaveLength(2);
+      expect(result.current.state.connected).toBe(false);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps a connection whose heartbeats keep arriving, and one to a server that sends none", () => {
+    vi.useFakeTimers();
+    try {
+      const { ws, unmount } = mount();
+      for (let i = 0; i < 10; i += 1) {
+        ws.deliver({ type: "hb" });
+        act(() => vi.advanceTimersByTime(3_000));
+      }
+      expect(FakeWS.sockets).toHaveLength(1);
+      unmount();
+
+      FakeWS.sockets.length = 0;
+      mount();
+      act(() => vi.advanceTimersByTime(120_000));
+      expect(FakeWS.sockets).toHaveLength(1);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("checks for a dead connection the moment the tab becomes visible", () => {
+    vi.useFakeTimers();
+    try {
+      const { ws } = mount();
+      ws.deliver({ type: "hb" });
+      vi.setSystemTime(Date.now() + 60_000);
+      act(() => document.dispatchEvent(new Event("visibilitychange")));
+      expect(ws.readyState).toBe(FakeWS.CLOSED);
+      act(() => vi.advanceTimersByTime(250));
+      expect(FakeWS.sockets).toHaveLength(2);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("abandons a connection attempt that has not opened within 8 seconds", () => {
+    vi.useFakeTimers();
+    try {
+      const { ws } = mount(false);
+      act(() => vi.advanceTimersByTime(8_500));
+      expect(ws.readyState).toBe(FakeWS.CLOSED);
+      expect(FakeWS.sockets).toHaveLength(2);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("never gives up on a network failure", () => {
+    vi.useFakeTimers();
+    try {
+      const { result } = mount();
+      for (let i = 0; i < 20; i += 1) {
+        const current = FakeWS.sockets[FakeWS.sockets.length - 1]!;
+        current.readyState = FakeWS.CLOSED;
+        act(() => current.onclose?.(new CloseEvent("close", { code: 1006 })));
+        act(() => vi.advanceTimersByTime(retryDelayMs(i + 1)));
+      }
+      expect(FakeWS.sockets).toHaveLength(21);
+      expect(result.current.state).toMatchObject({ gaveUp: false, paneDead: false });
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops after seven refusals in a row and offers a restart", () => {
+    vi.useFakeTimers();
+    try {
+      const { result } = mount();
+      for (let i = 0; i < 7; i += 1) {
+        const current = FakeWS.sockets[FakeWS.sockets.length - 1]!;
+        current.readyState = FakeWS.CLOSED;
+        act(() => current.onclose?.(new CloseEvent("close", { code: 1013 })));
+        act(() => vi.advanceTimersByTime(retryDelayMs(i + 1)));
+      }
+      act(() => vi.advanceTimersByTime(60_000));
+      expect(FakeWS.sockets).toHaveLength(7);
+      expect(result.current.state).toMatchObject({ gaveUp: true, reconnecting: false });
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+    }
+  });
+
+  it("shows no banner for a drop that heals within a second", () => {
+    vi.useFakeTimers();
+    try {
+      const { result, ws } = mount();
+      ws.readyState = FakeWS.CLOSED;
+      act(() => ws.onclose?.(new CloseEvent("close", { code: 1006 })));
+      expect(result.current.state).toMatchObject({ reconnecting: true, disconnectedLong: false });
+      act(() => vi.advanceTimersByTime(250));
+      FakeWS.sockets[1]!.open();
+      act(() => vi.advanceTimersByTime(5_000));
+      expect(result.current.state).toMatchObject({ connected: true, disconnectedLong: false });
+
+      const second = FakeWS.sockets[1]!;
+      second.readyState = FakeWS.CLOSED;
+      act(() => second.onclose?.(new CloseEvent("close", { code: 1006 })));
+      act(() => vi.advanceTimersByTime(250));
+      act(() => vi.advanceTimersByTime(1_000));
+      expect(result.current.state).toMatchObject({ connected: false, disconnectedLong: true });
     } finally {
       vi.clearAllTimers();
       vi.useRealTimers();

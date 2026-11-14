@@ -45,6 +45,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use tracing::{debug, warn};
 
+use super::pane::CLOSE_CODE_SESSION_RENAMED;
 use super::pane::{
     close_early, wait_for_tmux_ready, PaneReadiness, CLOSE_CODE_GOING_AWAY, CLOSE_CODE_PTY_DEAD,
     CLOSE_CODE_TRY_AGAIN_LATER,
@@ -88,6 +89,10 @@ const DEFAULT_WINDOW_LINES: usize = 50;
 /// Detect a vanished browser promptly so its terminal lock cannot strand a reconnect.
 const PING_INTERVAL: Duration = Duration::from_secs(5);
 const PONG_IDLE_TIMEOUT: Duration = Duration::from_secs(15);
+/// App-level heartbeat: the browser cannot see WebSocket pings, and an idle pane sends no frames.
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(3);
+/// How long a closing connection keeps delivering input that was already on the wire.
+const CLOSE_DRAIN: Duration = Duration::from_secs(2);
 /// Floor between drift re-asserts (see the capture loop).
 const REASSERT_MIN_INTERVAL: Duration = Duration::from_secs(2);
 /// After a drift target proves unreachable (same geometry didn't move after
@@ -169,12 +174,13 @@ fn paste_payload(mut text: String, submit: bool) -> String {
 /// Paste, then Enter after the agent's paste-burst delay when submitting. A live input
 /// channel (tmux 3.8) is the pane's single writer, so the paste and the Enter ride it to
 /// stay ordered with keystrokes; otherwise tmux's paste path takes them.
-fn deliver_paste(tmux_name: &str, text: &str, submit: bool, enter_delay_ms: u64) {
+/// `false` when tmux refused it.
+fn deliver_paste(tmux_name: &str, text: &str, submit: bool, enter_delay_ms: u64) -> bool {
     #[cfg(unix)]
     if crate::tmux::vt::input_mode(tmux_name).is_some()
         && deliver_paste_via_channel(tmux_name, text, submit, enter_delay_ms)
     {
-        return;
+        return true;
     }
     let session = crate::tmux::Session::from_name(tmux_name);
     let result = if submit {
@@ -184,7 +190,64 @@ fn deliver_paste(tmux_name: &str, text: &str, submit: bool, enter_delay_ms: u64)
     };
     if let Err(e) = result {
         warn!(target: "terminal.ws", tmux = %tmux_name, kind = "live", "paste failed: {}", e);
+        return false;
     }
+    true
+}
+
+/// Raw keystrokes to the pane; `false` when tmux refused them.
+fn deliver_input(tmux_name: &str, bytes: Vec<u8>) -> bool {
+    #[cfg(unix)]
+    let bytes = pane_input_bytes(tmux_name, bytes);
+    // A live VT channel with socket input (ours or another surface's) is the pane's
+    // single input writer; otherwise input goes through tmux send-keys.
+    #[cfg(unix)]
+    if crate::tmux::vt::input_mode(tmux_name).is_some()
+        && crate::tmux::vt::try_send_input(tmux_name, &bytes)
+    {
+        return true;
+    }
+    match crate::tmux::Session::from_name(tmux_name).send_raw_bytes(&bytes) {
+        Ok(()) => true,
+        Err(e) => {
+            warn!(target: "terminal.ws", tmux = %tmux_name, kind = "live", "send_raw_bytes failed: {}", e);
+            false
+        }
+    }
+}
+
+/// The session's current tmux name, by its immutable id tail. A connection outlives
+/// a rename of its session, so the name it was opened with can go stale.
+pub(crate) type NameResolver = Arc<dyn Fn() -> String + Send + Sync>;
+
+/// The name the session is live under now, when that is no longer `current`.
+fn renamed_to(resolve: Option<&NameResolver>, current: &str) -> Option<String> {
+    let resolve = resolve?;
+    crate::tmux::refresh_session_cache();
+    let now = resolve();
+    (now != current && crate::tmux::Session::from_name(&now).exists()).then_some(now)
+}
+
+/// Deliver through `send`; when tmux refuses and the session turns out to have been
+/// renamed, deliver to the new name and return it.
+fn deliver_following_rename(
+    resolve: Option<&NameResolver>,
+    current: &str,
+    send: impl Fn(&str) -> bool,
+) -> Option<String> {
+    if send(current) {
+        return None;
+    }
+    let moved = renamed_to(resolve, current)?;
+    send(&moved);
+    Some(moved)
+}
+
+fn close_message(code: u16, reason: &'static str) -> Message {
+    Message::Close(Some(axum::extract::ws::CloseFrame {
+        code,
+        reason: reason.into(),
+    }))
 }
 
 /// `send_keys_with_delay` over the input channel; `false` when the channel is gone before
@@ -497,9 +560,13 @@ pub async fn live_terminal_ws(
     }
     let instances = state.instances.read().await;
     let target = instances.iter().find(|i| i.id == id).map(|inst| {
+        let (rid, rtitle) = (inst.id.clone(), inst.title.clone());
+        let resolve: NameResolver =
+            Arc::new(move || crate::tmux::Session::resolve_name(&rid, &rtitle));
         (
             crate::tmux::Session::resolve_name(&inst.id, &inst.title),
             crate::agents::send_keys_enter_delay(&inst.tool),
+            resolve,
         )
     });
     drop(instances);
@@ -508,7 +575,7 @@ pub async fn live_terminal_ws(
     let shutdown = state.shutdown.clone();
 
     match target {
-        Some((tmux_name, enter_delay_ms)) => ws
+        Some((tmux_name, enter_delay_ms, resolve)) => ws
             .protocols(["aoe-auth"])
             .on_upgrade(move |socket| {
                 handle_live_ws(
@@ -518,6 +585,7 @@ pub async fn live_terminal_ws(
                     shutdown,
                     LiveTransport::Grid,
                     enter_delay_ms,
+                    Some(resolve),
                 )
             })
             .into_response(),
@@ -640,6 +708,7 @@ async fn live_shell_ws(
                 shutdown,
                 LiveTransport::Snapshot,
                 0,
+                None,
             )
         })
         .into_response()
@@ -653,6 +722,7 @@ async fn handle_live_ws(
     shutdown: tokio_util::sync::CancellationToken,
     transport: LiveTransport,
     enter_delay_ms: u64,
+    resolve: Option<NameResolver>,
 ) {
     handle_live_ws_inner(
         socket,
@@ -661,6 +731,7 @@ async fn handle_live_ws(
         shutdown,
         transport,
         enter_delay_ms,
+        resolve,
         #[cfg(test)]
         false,
     )
@@ -683,6 +754,7 @@ impl Drop for CaptureCycleWitness {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_live_ws_inner(
     mut socket: WebSocket,
     tmux_name: String,
@@ -690,6 +762,7 @@ async fn handle_live_ws_inner(
     shutdown: tokio_util::sync::CancellationToken,
     transport: LiveTransport,
     enter_delay_ms: u64,
+    resolve: Option<NameResolver>,
     #[cfg(test)] witness_cycles: bool,
 ) {
     match wait_for_tmux_ready(&tmux_name).await {
@@ -757,11 +830,62 @@ async fn handle_live_ws_inner(
     let capture_tx = out_tx.clone();
     let capture_tmux = tmux_name.clone();
     let capture_owner = owner_id.clone();
+    let capture_resolve = resolve.clone();
+    // Where the session went when a rename ended this connection, so the size lock is
+    // released under the name it now lives at.
+    let moved_to: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
+    let capture_moved = Arc::clone(&moved_to);
+    // Cancelled when the capture loop ends for any reason: a connection without one is
+    // closed, never left open over a frozen screen.
+    let capture_done = tokio_util::sync::CancellationToken::new();
+    let capture_done_guard = capture_done.clone().drop_guard();
     #[cfg(unix)]
     let capture_osc52 = osc52;
     #[cfg(unix)]
     let capture_vt = vt.clone();
     let capture_task = tokio::spawn(async move {
+        let _capture_done_guard = capture_done_guard;
+        // The pane can no longer be read under this name: a rename redials at once
+        // (4002), anything else on the retry ladder (1013).
+        let end_unreadable = || async {
+            let resolve = capture_resolve.clone();
+            let name = capture_tmux.clone();
+            let moved = tokio::task::spawn_blocking(move || renamed_to(resolve.as_ref(), &name))
+                .await
+                .ok()
+                .flatten();
+            let close = match moved {
+                Some(new_name) => {
+                    tracing::info!(target: "terminal.ws", tmux = %capture_tmux, to = %new_name, kind = "live", "session renamed under a live connection; closing 4002");
+                    *capture_moved.lock().unwrap_or_else(|e| e.into_inner()) = Some(new_name);
+                    close_message(CLOSE_CODE_SESSION_RENAMED, "session_renamed")
+                }
+                None => {
+                    warn!(target: "terminal.ws", tmux = %capture_tmux, kind = "live", "pane capture failed, closing 1013");
+                    close_message(CLOSE_CODE_TRY_AGAIN_LATER, "capture_failed")
+                }
+            };
+            let _ = capture_tx.send(close).await;
+        };
+        // Same check for a pane that still answers but may have moved; `false` keeps going.
+        let end_if_renamed = || async {
+            let resolve = capture_resolve.clone();
+            let name = capture_tmux.clone();
+            let Some(new_name) =
+                tokio::task::spawn_blocking(move || renamed_to(resolve.as_ref(), &name))
+                    .await
+                    .ok()
+                    .flatten()
+            else {
+                return false;
+            };
+            tracing::info!(target: "terminal.ws", tmux = %capture_tmux, to = %new_name, kind = "live", "session renamed under a live connection; closing 4002");
+            *capture_moved.lock().unwrap_or_else(|e| e.into_inner()) = Some(new_name);
+            let _ = capture_tx
+                .send(close_message(CLOSE_CODE_SESSION_RENAMED, "session_renamed"))
+                .await;
+            true
+        };
         #[cfg(unix)]
         let mut osc52_seen = capture_osc52
             .as_ref()
@@ -837,9 +961,17 @@ async fn handle_live_ws_inner(
                     let name = capture_tmux.clone();
                     // Advance the probe clock even on failure, or a tmux that cannot answer
                     // would be re-forked on every capture cycle instead of once a second.
-                    let probed =
-                        tokio::task::spawn_blocking(move || window_pane_count(&name)).await;
-                    pane_count = (probed.ok().flatten().or(pane_count.0), Instant::now());
+                    let probed = tokio::task::spawn_blocking(move || window_pane_count(&name))
+                        .await
+                        .ok()
+                        .flatten();
+                    // tmux no longer answers for this name: the grid may still stream a
+                    // renamed session's output, while input and sizing target a name
+                    // that is gone.
+                    if probed.is_none() && end_if_renamed().await {
+                        break;
+                    }
+                    pane_count = (probed.or(pane_count.0), Instant::now());
                 }
                 outcome = match live_grid {
                     Some(ch) if grid_transport_eligible(pane_count.0, lines) => {
@@ -854,7 +986,10 @@ async fn handle_live_ws_inner(
                                 grid_incomplete = sample.incomplete;
                                 CaptureOutcome::Frame(sample.content, sample.cursor)
                             }
-                            Err(_) => break,
+                            Err(_) => {
+                                end_unreadable().await;
+                                break;
+                            }
                         }
                     }
                     _ => {
@@ -872,7 +1007,10 @@ async fn handle_live_ws_inner(
                                 CaptureOutcome::Frame(content, cursor)
                             }
                             Ok(Ok(_)) => CaptureOutcome::Dead,
-                            _ => break,
+                            _ => {
+                                end_unreadable().await;
+                                break;
+                            }
                         }
                     }
                 };
@@ -893,7 +1031,10 @@ async fn handle_live_ws_inner(
                         CaptureOutcome::Frame(content, cursor)
                     }
                     Ok(Ok(_)) => CaptureOutcome::Dead,
-                    _ => break,
+                    _ => {
+                        end_unreadable().await;
+                        break;
+                    }
                 };
             }
 
@@ -1249,12 +1390,12 @@ async fn handle_live_ws_inner(
                 CaptureOutcome::Dead => {
                     // Pane looks gone, or capture-pane returned an empty frame.
                     dead_probes += 1;
+                    if end_if_renamed().await {
+                        break;
+                    }
                     if dead_probes >= 3 {
                         let _ = capture_tx
-                            .send(Message::Close(Some(axum::extract::ws::CloseFrame {
-                                code: CLOSE_CODE_PTY_DEAD,
-                                reason: "pty_dead".into(),
-                            })))
+                            .send(close_message(CLOSE_CODE_PTY_DEAD, "pty_dead"))
                             .await;
                         break;
                     }
@@ -1292,8 +1433,16 @@ async fn handle_live_ws_inner(
         let mut ping = tokio::time::interval(PING_INTERVAL);
         ping.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         ping.tick().await; // arm: first tick fires immediately otherwise
+        let mut heartbeat = tokio::time::interval(HEARTBEAT_INTERVAL);
+        heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let heartbeat_json = live_json(&LiveServerMessage::Heartbeat);
         loop {
             tokio::select! {
+                _ = heartbeat.tick() => {
+                    if ws_sender.send(Message::Text(heartbeat_json.clone().into())).await.is_err() {
+                        break;
+                    }
+                }
                 msg = out_rx.recv() => {
                     match msg {
                         Some(Message::Close(frame)) => {
@@ -1321,8 +1470,24 @@ async fn handle_live_ws_inner(
     // frames must not keep renewing that connection's ownership indefinitely.
     let mut last_pong_at = tokio::time::Instant::now();
     // Recv loop: input bytes + control messages, until close/shutdown.
+    // Once this connection is closing (its close frame is queued), keep delivering what
+    // the browser sent before that frame reached it, then stop.
+    let mut tmux_name = tmux_name;
+    let mut drain_until: Option<tokio::time::Instant> = None;
     loop {
+        if let Some(new_name) = moved_to.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            tmux_name = new_name;
+        }
         tokio::select! {
+            _ = capture_done.cancelled(), if drain_until.is_none() => {
+                drain_until = Some(tokio::time::Instant::now() + CLOSE_DRAIN);
+            }
+            _ = async {
+                match drain_until {
+                    Some(at) => tokio::time::sleep_until(at).await,
+                    None => std::future::pending().await,
+                }
+            } => break,
             _ = tokio::time::sleep_until(last_pong_at + PONG_IDLE_TIMEOUT) => {
                 warn!(target: "terminal.ws", tmux = %tmux_name, kind = "live", "live ws peer stopped answering pings; releasing ownership");
                 break;
@@ -1340,24 +1505,25 @@ async fn handle_live_ws_inner(
                         let send_nudge = Arc::clone(&nudge);
                         let name = tmux_name.clone();
                         let bytes = data.to_vec();
-                        // A live VT channel with socket input (ours or another surface's)
-                        // is the pane's single input writer; otherwise input goes through
-                        // tmux send-keys.
-                        let _ = tokio::task::spawn_blocking(move || {
-                            #[cfg(unix)]
-                            let bytes = pane_input_bytes(&name, bytes);
-                            #[cfg(unix)]
-                            if crate::tmux::vt::input_mode(&name).is_some()
-                                && crate::tmux::vt::try_send_input(&name, &bytes)
-                            {
-                                return;
-                            }
-                            let session = crate::tmux::Session::from_name(&name);
-                            if let Err(e) = session.send_raw_bytes(&bytes) {
-                                warn!(target: "terminal.ws", tmux = %name, kind = "live", "send_raw_bytes failed: {}", e);
-                            }
+                        let input_resolve = resolve.clone();
+                        let moved = tokio::task::spawn_blocking(move || {
+                            deliver_following_rename(input_resolve.as_ref(), &name, |target| {
+                                deliver_input(target, bytes.clone())
+                            })
                         })
-                        .await;
+                        .await
+                        .ok()
+                        .flatten();
+                        if let Some(new_name) = moved {
+                            tracing::info!(target: "terminal.ws", tmux = %tmux_name, to = %new_name, kind = "live", "input followed a renamed session; closing 4002");
+                            *moved_to.lock().unwrap_or_else(|e| e.into_inner()) = Some(new_name);
+                            let _ = out_tx
+                                .send(close_message(CLOSE_CODE_SESSION_RENAMED, "session_renamed"))
+                                .await;
+                            drain_until
+                                .get_or_insert(tokio::time::Instant::now() + CLOSE_DRAIN);
+                            continue;
+                        }
                         // Capture the echo promptly rather than waiting out
                         // the current sleep.
                         send_nudge.notify_one();
@@ -1496,11 +1662,25 @@ async fn handle_live_ws_inner(
                                     continue;
                                 }
                                 let name = tmux_name.clone();
+                                let paste_resolve = resolve.clone();
                                 // Awaited like binary input, so it lands after earlier keystrokes.
-                                let _ = tokio::task::spawn_blocking(move || {
-                                    deliver_paste(&name, &text, submit, enter_delay_ms)
+                                let moved = tokio::task::spawn_blocking(move || {
+                                    deliver_following_rename(paste_resolve.as_ref(), &name, |target| {
+                                        deliver_paste(target, &text, submit, enter_delay_ms)
+                                    })
                                 })
-                                .await;
+                                .await
+                                .ok()
+                                .flatten();
+                                if let Some(new_name) = moved {
+                                    *moved_to.lock().unwrap_or_else(|e| e.into_inner()) = Some(new_name);
+                                    let _ = out_tx
+                                        .send(close_message(CLOSE_CODE_SESSION_RENAMED, "session_renamed"))
+                                        .await;
+                                    drain_until
+                                        .get_or_insert(tokio::time::Instant::now() + CLOSE_DRAIN);
+                                    continue;
+                                }
                                 nudge.notify_one();
                             }
                             LiveClientMessage::Resync => {
@@ -1535,7 +1715,11 @@ async fn handle_live_ws_inner(
 
     // Release the size-owner lock if we held it.
     {
-        let name = tmux_name.clone();
+        let name = moved_to
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .take()
+            .unwrap_or_else(|| tmux_name.clone());
         let who = owner_id.clone();
         let _ = tokio::task::spawn_blocking(move || {
             crate::tmux::Session::from_name(&name).release_size_owner(&who);
@@ -2083,11 +2267,9 @@ mod tests {
     fn a_resize_whose_reseed_missed_withholds_frames_until_it_lands() {
         use futures_util::FutureExt;
 
-        let home = crate::session::test_support::isolate_app_dir();
-        let _socket = crate::session::test_support::EnvGuard::set(&[(
-            "AOE_TMUX_SOCKET",
-            home.path().join("tmux.sock"),
-        )]);
+        let _home = crate::session::test_support::isolate_app_dir();
+        let _socket =
+            crate::session::test_support::EnvGuard::set(&[("AOE_TMUX_SOCKET", test_tmux_socket())]);
         if crate::tmux::tmux_command().arg("-V").output().is_err() {
             eprintln!("Skipping test: tmux unavailable");
             return;
@@ -2149,6 +2331,7 @@ mod tests {
                                 shutdown,
                                 LiveTransport::Grid,
                                 0,
+                                None,
                                 true,
                             )
                             .await;
@@ -2256,5 +2439,250 @@ mod tests {
             Some(1),
             crate::tmux::vt::SCROLLBACK_LINES + 1
         ));
+    }
+
+    /// The tmux socket is cached for the process on first use, so every test here names
+    /// the same one, in a directory that outlives them all.
+    #[cfg(unix)]
+    fn test_tmux_socket() -> std::path::PathBuf {
+        static DIR: std::sync::LazyLock<tempfile::TempDir> =
+            std::sync::LazyLock::new(|| tempfile::tempdir().expect("socket dir"));
+        DIR.path().join("tmux.sock")
+    }
+
+    /// Open a live connection to `name` over a real socket and hand the client to `check`.
+    #[cfg(unix)]
+    fn with_live_client<F, Fut>(name: &str, resolve: Option<NameResolver>, check: F)
+    where
+        F: FnOnce(
+            tokio_tungstenite::WebSocketStream<
+                tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+            >,
+        ) -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        use futures_util::FutureExt;
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let shutdown = tokio_util::sync::CancellationToken::new();
+            let route_shutdown = shutdown.clone();
+            let name = name.to_string();
+            let router = axum::Router::new().route(
+                "/live",
+                axum::routing::get(move |ws: WebSocketUpgrade| {
+                    let name = name.clone();
+                    let shutdown = route_shutdown.clone();
+                    let resolve = resolve.clone();
+                    async move {
+                        ws.on_upgrade(move |socket| async move {
+                            handle_live_ws_inner(
+                                socket,
+                                name,
+                                false,
+                                shutdown,
+                                LiveTransport::Snapshot,
+                                0,
+                                resolve,
+                                false,
+                            )
+                            .await;
+                        })
+                    }
+                }),
+            );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server_shutdown = shutdown.clone();
+            let server = tokio::spawn(async move {
+                axum::serve(listener, router)
+                    .with_graceful_shutdown(server_shutdown.cancelled_owned())
+                    .await
+                    .unwrap();
+            });
+            let (client, _) = tokio_tungstenite::connect_async(format!("ws://{address}/live"))
+                .await
+                .unwrap();
+            let checked = std::panic::AssertUnwindSafe(check(client))
+                .catch_unwind()
+                .await;
+            shutdown.cancel();
+            let _ = tokio::time::timeout(Duration::from_secs(5), server).await;
+            if let Err(panic) = checked {
+                std::panic::resume_unwind(panic);
+            }
+        });
+    }
+
+    /// Read until the server closes the connection; its close code, and whether a
+    /// heartbeat arrived first.
+    #[cfg(unix)]
+    async fn read_until_close(
+        client: &mut tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    ) -> Option<u16> {
+        use tokio_tungstenite::tungstenite::Message as Msg;
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                match client.next().await {
+                    Some(Ok(Msg::Close(frame))) => return frame.map(|f| u16::from(f.code)),
+                    Some(Ok(_)) => {}
+                    _ => return None,
+                }
+            }
+        })
+        .await
+        .expect("the server closes the connection")
+    }
+
+    #[cfg(unix)]
+    async fn first_frame(
+        client: &mut tokio_tungstenite::WebSocketStream<
+            tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+        >,
+    ) {
+        use tokio_tungstenite::tungstenite::Message as Msg;
+        tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                if let Some(Ok(Msg::Text(text))) = client.next().await {
+                    let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+                    if value["type"] == "frame" {
+                        return;
+                    }
+                }
+            }
+        })
+        .await
+        .expect("first frame");
+    }
+
+    #[cfg(unix)]
+    fn cat_session(name: &str) -> Option<crate::tmux::test_helpers::TmuxTestSession> {
+        if crate::tmux::tmux_command().arg("-V").output().is_err() {
+            eprintln!("Skipping test: tmux unavailable");
+            return None;
+        }
+        let pane = crate::tmux::test_helpers::TmuxTestSession::new(name);
+        let output = crate::tmux::tmux_command()
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                pane.name(),
+                "-x",
+                "40",
+                "-y",
+                "6",
+                "exec cat",
+            ])
+            .output()
+            .expect("create pane");
+        assert!(output.status.success());
+        let target = crate::tmux::test_helpers::only_pane_id(pane.name());
+        crate::tmux::test_helpers::wait_for_pane_command(&target, "cat");
+        Some(pane)
+    }
+
+    /// Viktor, 14 Nov 2026: the web terminal "sometimes doesnt allow me to enter ... and i
+    /// have to click differet tab and back". Every case in the log was a new session
+    /// renamed while its terminal was open. docs/guides/web/terminal.md, "Reconnect".
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn typing_reaches_a_session_renamed_while_its_terminal_is_open() {
+        use tokio_tungstenite::tungstenite::Message as Msg;
+        let _home = crate::session::test_support::isolate_app_dir();
+        let _socket =
+            crate::session::test_support::EnvGuard::set(&[("AOE_TMUX_SOCKET", test_tmux_socket())]);
+        let Some(pane) = cat_session("aoe_Wei_abcd1234") else {
+            return;
+        };
+        let renamed = crate::tmux::test_helpers::TmuxTestSession::new("aoe_Renamed_abcd1234");
+        let current = Arc::new(std::sync::Mutex::new(pane.name().to_string()));
+        let resolver_current = Arc::clone(&current);
+        let resolve: NameResolver = Arc::new(move || resolver_current.lock().unwrap().clone());
+        let old_name = pane.name().to_string();
+        let new_name = renamed.name().to_string();
+        with_live_client(&old_name.clone(), Some(resolve), |mut client| async move {
+            first_frame(&mut client).await;
+            let output = crate::tmux::tmux_command()
+                .args(["rename-session", "-t", &old_name, &new_name])
+                .output()
+                .expect("rename");
+            assert!(output.status.success());
+            *current.lock().unwrap() = new_name.clone();
+            client
+                .send(Msg::Binary(b"typed-after-rename".to_vec().into()))
+                .await
+                .unwrap();
+            assert_eq!(
+                read_until_close(&mut client).await,
+                Some(CLOSE_CODE_SESSION_RENAMED),
+                "the browser is told to redial under the new name"
+            );
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let shown = crate::tmux::tmux_command()
+                    .args(["capture-pane", "-p", "-t", &new_name])
+                    .output()
+                    .expect("capture");
+                if String::from_utf8_lossy(&shown.stdout).contains("typed-after-rename") {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the keystrokes never reached the pane"
+                );
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        drop(pane);
+    }
+
+    /// docs/guides/web/terminal.md, "Reconnect": a connection never stays open without a
+    /// working terminal behind it, and an idle one still hears a heartbeat.
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn a_connection_whose_pane_vanished_closes_instead_of_freezing() {
+        use tokio_tungstenite::tungstenite::Message as Msg;
+        let _home = crate::session::test_support::isolate_app_dir();
+        let _socket =
+            crate::session::test_support::EnvGuard::set(&[("AOE_TMUX_SOCKET", test_tmux_socket())]);
+        let Some(pane) = cat_session("aoe_Gone_abcd5678") else {
+            return;
+        };
+        // A second session keeps the tmux server up once the first is killed.
+        let Some(_keeper) = cat_session("aoe_Keeper_abcd9999") else {
+            return;
+        };
+        let name = pane.name().to_string();
+        with_live_client(&name.clone(), None, |mut client| async move {
+            first_frame(&mut client).await;
+            let heard = tokio::time::timeout(HEARTBEAT_INTERVAL * 3, async {
+                loop {
+                    if let Some(Ok(Msg::Text(text))) = client.next().await {
+                        if text.as_str() == r#"{"type":"hb"}"# {
+                            return;
+                        }
+                    }
+                }
+            })
+            .await;
+            heard.expect("an idle connection hears a heartbeat");
+            let output = crate::tmux::tmux_command()
+                .args(["kill-session", "-t", &name])
+                .output()
+                .expect("kill");
+            assert!(output.status.success());
+            let code = read_until_close(&mut client).await;
+            assert!(
+                matches!(code, Some(CLOSE_CODE_TRY_AGAIN_LATER | CLOSE_CODE_PTY_DEAD)),
+                "closed with {code:?}"
+            );
+        });
     }
 }

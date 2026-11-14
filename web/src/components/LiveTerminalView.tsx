@@ -321,9 +321,8 @@ export function LiveTerminalView({ session, active = true, surface = "agent", te
       <TerminalConnectionBanners
         connected={live.state.connected}
         reconnecting={live.state.reconnecting}
-        retryCount={live.state.retryCount}
-        retryCountdown={live.state.retryCountdown}
-        maxRetries={live.maxRetries}
+        disconnectedLong={live.state.disconnectedLong}
+        gaveUp={live.state.gaveUp}
         onRetry={live.manualReconnect}
         paneDead={live.state.paneDead}
         onRestart={retryEnsure}

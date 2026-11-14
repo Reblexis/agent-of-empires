@@ -88,6 +88,9 @@ pub enum LiveServerMessage {
     /// `false` is the capture fallback, which cannot suppress a half-drawn repaint.
     #[serde(rename = "transport")]
     Transport { grid: bool },
+    /// Sent every few seconds so a viewer can tell a silent pane from a dead connection.
+    #[serde(rename = "hb")]
+    Heartbeat,
 }
 
 /// Client to daemon. Binary messages are pane input and carry no envelope.
@@ -225,6 +228,10 @@ mod tests {
             (
                 LiveServerMessage::Transport { grid: true },
                 serde_json::json!({"type": "transport", "grid": true}),
+            ),
+            (
+                LiveServerMessage::Heartbeat,
+                serde_json::json!({"type": "hb"}),
             ),
         ];
         for (message, expected) in cases {

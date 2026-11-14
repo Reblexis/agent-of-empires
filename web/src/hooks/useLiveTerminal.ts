@@ -17,6 +17,17 @@ const encodeControl = (message: LiveClientMessage) => JSON.stringify(message);
 
 // Mirrors CLOSE_CODE_PTY_DEAD in src/server/pane.rs.
 const CLOSE_CODE_PTY_DEAD = 4001;
+// Mirrors CLOSE_CODE_SESSION_RENAMED and CLOSE_CODE_TRY_AGAIN_LATER in src/server/pane.rs.
+const CLOSE_CODE_SESSION_RENAMED = 4002;
+const CLOSE_CODE_TRY_AGAIN_LATER = 1013;
+/** The server sends a heartbeat every 3 s; a connection silent for this long is dead. */
+const STALE_AFTER_MS = 10_000;
+const STALE_CHECK_MS = 2_000;
+const CONNECT_TIMEOUT_MS = 8_000;
+/** A second rename close this soon after a silent redial takes the ordinary retry path. */
+const SILENT_REDIAL_MIN_GAP_MS = 2_000;
+/** A drop that heals within this long shows no banner. */
+const BANNER_DELAY_MS = 1_000;
 const MAX_PENDING_INPUT_BYTES = 64 * 1024;
 /** Floor between two scrollback downloads, so a pane whose history keeps failing to align cannot hold the server on
  *  the wide, slow window. */
@@ -41,6 +52,10 @@ export type LiveFrame = Omit<FrameMessage, "type" | "seq" | "pane0"> & {
 export interface LiveTerminalState {
   connected: boolean;
   reconnecting: boolean;
+  /** Disconnected for longer than a blip: the reconnecting banner may show. */
+  disconnectedLong: boolean;
+  /** The server kept refusing the pane; redialing stopped until Restart. */
+  gaveUp: boolean;
   retryCount: number;
   retryCountdown: number;
   frame: LiveFrame | null;
@@ -55,6 +70,8 @@ export interface LiveTerminalState {
 const INITIAL_STATE: LiveTerminalState = {
   connected: false,
   reconnecting: false,
+  disconnectedLong: false,
+  gaveUp: false,
   retryCount: 0,
   retryCountdown: 0,
   frame: null,
@@ -75,6 +92,9 @@ export function useLiveTerminal(
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const retryCountRef = useRef(0);
+  // Consecutive closes where the server refused the pane (1013).
+  const refusalsRef = useRef(0);
+  const bannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const connectRef = useRef<(() => void) | null>(null);
   const desiredRef = useRef<{
     resize: { cols: number; rows: number } | null;
@@ -129,7 +149,9 @@ export function useLiveTerminal(
     pendingInputRef.current = [];
     if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
     if (countdownRef.current) clearInterval(countdownRef.current);
+    if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
     retryCountRef.current = 0;
+    refusalsRef.current = 0;
     // A screen this page showed before draws at once while the socket connects, over its remembered scrollback.
     const memoryKey = screenKey(sessionId, wsPath);
     historyRef.current = recallHistory(memoryKey) ?? null;
@@ -149,10 +171,72 @@ export function useLiveTerminal(
       inflater?.dispose();
       inflater = null;
     };
+    let lastMessageAt = Date.now();
+    let heartbeatSeen = false;
+    let lastSilentRedial = Number.NEGATIVE_INFINITY;
+    let openTimer: ReturnType<typeof setTimeout> | null = null;
+    const detach = (ws: WebSocket) => {
+      ws.onopen = null;
+      ws.onmessage = null;
+      ws.onclose = null;
+      ws.close();
+    };
+
+    /** The current socket is gone (closed, silent, or never opened): redial, or stop for a dead or refused pane. */
+    function handleClosed(code: number) {
+      disposeInflater();
+      if (openTimer) clearTimeout(openTimer);
+      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
+      if (countdownRef.current) clearInterval(countdownRef.current);
+      // The session moved to a new tmux name: the same terminal, one redial away.
+      if (code === CLOSE_CODE_SESSION_RENAMED && Date.now() - lastSilentRedial >= SILENT_REDIAL_MIN_GAP_MS) {
+        lastSilentRedial = Date.now();
+        connect();
+        return;
+      }
+      const paneDead = code === CLOSE_CODE_PTY_DEAD;
+      if (code === CLOSE_CODE_TRY_AGAIN_LATER) refusalsRef.current += 1;
+      const gaveUp = !paneDead && refusalsRef.current >= MAX_RETRIES;
+      setState((prev) => ({ ...prev, connected: false, isOwner: false, paneDead, gaveUp }));
+      if (paneDead || gaveUp) {
+        if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
+        setState((prev) => ({
+          ...prev,
+          reconnecting: false,
+          disconnectedLong: false,
+          retryCount: retryCountRef.current,
+          retryCountdown: 0,
+        }));
+        return;
+      }
+      retryCountRef.current += 1;
+      const count = retryCountRef.current;
+      const delayMs = retryDelayMs(count);
+      let countdown = Math.ceil(delayMs / 1000);
+      setState((prev) => ({ ...prev, reconnecting: true, retryCount: count, retryCountdown: countdown }));
+      bannerTimerRef.current ??= setTimeout(() => {
+        bannerTimerRef.current = null;
+        setState((prev) => (prev.connected || !prev.reconnecting ? prev : { ...prev, disconnectedLong: true }));
+      }, BANNER_DELAY_MS);
+      // Past the ladder a hidden tab waits for its visibility event instead of dialing every 10 s.
+      if (count > MAX_RETRIES && document.visibilityState === "hidden") return;
+      countdownRef.current = setInterval(() => {
+        countdown -= 1;
+        if (countdown > 0) {
+          setState((prev) => ({ ...prev, retryCountdown: countdown }));
+        }
+      }, 1000);
+      retryTimerRef.current = setTimeout(() => {
+        if (countdownRef.current) clearInterval(countdownRef.current);
+        connect();
+      }, delayMs);
+    }
 
     function connect() {
       if (disposed) return;
       disposeInflater();
+      heartbeatSeen = false;
+      lastMessageAt = Date.now();
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
       const url = wsPath.startsWith("/")
         ? `${proto}//${location.host}${wsPath}`
@@ -171,6 +255,12 @@ export function useLiveTerminal(
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
       sentWindowRef.current = null;
+      if (openTimer) clearTimeout(openTimer);
+      openTimer = setTimeout(() => {
+        if (wsRef.current !== ws || ws.readyState !== WebSocket.CONNECTING) return;
+        detach(ws);
+        handleClosed(0);
+      }, CONNECT_TIMEOUT_MS);
 
       const flushPendingInput = () => {
         if (wsRef.current !== ws || ws.readyState !== WebSocket.OPEN) return;
@@ -181,6 +271,10 @@ export function useLiveTerminal(
 
       ws.onopen = () => {
         if (wsRef.current !== ws) return;
+        if (openTimer) clearTimeout(openTimer);
+        if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
+        bannerTimerRef.current = null;
+        lastMessageAt = Date.now();
         if (!telemetrySeenRef.current) {
           telemetrySeenRef.current = true;
           reportTelemetrySeen("web_terminal");
@@ -189,6 +283,8 @@ export function useLiveTerminal(
           ...prev,
           connected: true,
           reconnecting: false,
+          disconnectedLong: false,
+          gaveUp: false,
           paneDead: false,
         }));
         ws.send(encodeControl({ type: "claim_if_vacant" }));
@@ -215,6 +311,10 @@ export function useLiveTerminal(
         } catch {
           return;
         }
+        if (msg.type === "hb") {
+          heartbeatSeen = true;
+          return;
+        }
         if (msg.type === "size_owner") {
           const owner = msg.is_owner;
           setState((prev) => (prev.isOwner === owner ? prev : { ...prev, isOwner: owner }));
@@ -234,6 +334,7 @@ export function useLiveTerminal(
         if (!hasReceivedData) {
           hasReceivedData = true;
           retryCountRef.current = 0;
+          refusalsRef.current = 0;
         }
         let content: string;
         let lines: string[];
@@ -296,6 +397,7 @@ export function useLiveTerminal(
 
       ws.onmessage = (event: MessageEvent) => {
         if (wsRef.current !== ws) return;
+        lastMessageAt = Date.now();
         if (typeof event.data === "string") {
           stats.wireBytes += event.data.length;
           handleMessageText(event.data);
@@ -308,52 +410,32 @@ export function useLiveTerminal(
 
       ws.onclose = (event: CloseEvent) => {
         if (disposed || wsRef.current !== ws) return;
-        disposeInflater();
-        const paneDead = event.code === CLOSE_CODE_PTY_DEAD;
-        setState((prev) => ({ ...prev, connected: false, isOwner: false, paneDead }));
-        if (paneDead) {
-          retryCountRef.current = MAX_RETRIES;
-        }
-        if (retryCountRef.current < MAX_RETRIES) {
-          retryCountRef.current += 1;
-          const count = retryCountRef.current;
-          const delayMs = retryDelayMs(count);
-          let countdown = Math.ceil(delayMs / 1000);
-          setState((prev) => ({
-            ...prev,
-            reconnecting: true,
-            retryCount: count,
-            retryCountdown: countdown,
-          }));
-          countdownRef.current = setInterval(() => {
-            countdown -= 1;
-            if (countdown > 0) {
-              setState((prev) => ({ ...prev, retryCountdown: countdown }));
-            }
-          }, 1000);
-          retryTimerRef.current = setTimeout(() => {
-            if (countdownRef.current) clearInterval(countdownRef.current);
-            connect();
-          }, delayMs);
-        } else {
-          setState((prev) => ({
-            ...prev,
-            reconnecting: false,
-            retryCount: retryCountRef.current,
-            retryCountdown: 0,
-          }));
-        }
+        handleClosed(event.code);
       };
     }
     connectRef.current = connect;
     connect();
 
+    // A socket can stay OPEN long after its network path died (sleep, a changed network): the browser reports
+    // nothing, keys go nowhere. Silence past the heartbeat window is the only signal.
+    const redialIfStale = () => {
+      const ws = wsRef.current;
+      if (!ws || ws.readyState !== WebSocket.OPEN || !heartbeatSeen) return false;
+      if (Date.now() - lastMessageAt < STALE_AFTER_MS) return false;
+      detach(ws);
+      handleClosed(0);
+      return true;
+    };
+    const staleTimer = setInterval(redialIfStale, STALE_CHECK_MS);
+
     const tryAutoReconnect = () => {
+      if (redialIfStale()) return;
       const readyState = wsRef.current?.readyState;
       if (readyState === WebSocket.OPEN || readyState === WebSocket.CONNECTING) return;
       if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
       if (countdownRef.current) clearInterval(countdownRef.current);
       retryCountRef.current = 0;
+      refusalsRef.current = 0;
       connect();
     };
     const onVisibility = () => {
@@ -367,6 +449,10 @@ export function useLiveTerminal(
       disposeInflater();
       stopVisibility();
       stopNetwork();
+      clearInterval(staleTimer);
+      if (openTimer) clearTimeout(openTimer);
+      if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
+      bannerTimerRef.current = null;
       if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
       if (countdownRef.current) clearInterval(countdownRef.current);
       const ws = wsRef.current;
@@ -460,10 +546,12 @@ export function useLiveTerminal(
     if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
     if (countdownRef.current) clearInterval(countdownRef.current);
     retryCountRef.current = 0;
+    refusalsRef.current = 0;
     setState((prev) => ({
       ...prev,
       connected: false,
       reconnecting: true,
+      gaveUp: false,
       retryCount: 0,
       retryCountdown: 0,
     }));
