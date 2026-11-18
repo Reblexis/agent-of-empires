@@ -31,6 +31,8 @@ For sandboxed sessions, the **Container** tab launches the container user's logi
 
 If the WebSocket drops (network blip, tunnel re-auth, daemon restart), the terminal reconnects on a fast-start retry ladder (200ms, 400ms, 800ms, 1.5s, 3s, 6s, 10s) so transient warm-up failures recover in well under five seconds. A disconnect banner shows the current state; a permanently dead pane surfaces a manual retry button instead of looping.
 
+Renaming a session, including the automatic rename to a descriptive title, does not interrupt an open terminal: the view keeps streaming and typing keeps reaching the same pane. If the server can no longer read the pane from tmux for any other reason, it closes the connection so the terminal reconnects instead of staying open but unresponsive.
+
 ### Terminal WebSocket close codes
 
 When the browser fails to reach a working terminal, the disconnect banner shows the close code returned by the server:
@@ -43,6 +45,7 @@ When the browser fails to reach a working terminal, the disconnect banner shows 
 | 1011 | `pty_reader_failed`   | Server could not clone the PTY reader handle.                                                           | Retry with normal backoff. |
 | 1011 | `pty_writer_failed`   | Server could not take the PTY writer handle.                                                            | Retry with normal backoff. |
 | 1013 | `tmux_not_ready`      | Pane did not become attachable within 2s. Usually a benign warm-up on first session open.              | Retry with normal backoff. |
+| 1013 | `capture_failed`      | The live view could no longer read the pane from tmux.                                                 | Retry with normal backoff. |
 | 4001 | `pty_dead`            | PTY relay was running but the pane permanently exited.                                                  | Show "Click retry" banner. |
 
 ## Read-only mode

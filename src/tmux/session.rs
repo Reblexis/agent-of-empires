@@ -608,6 +608,40 @@ impl Session {
         Ok(())
     }
 
+    /// tmux's own id for this session (`$N`). Unlike the name, it never
+    /// changes while the session lives, so a long-lived connection can find
+    /// the session again after a rename.
+    pub fn tmux_session_id(&self) -> Option<String> {
+        let exact = format!("={}:", self.name);
+        let out = crate::tmux::tmux_command()
+            .args(["display-message", "-p", "-t", &exact, "#{session_id}"])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        id.starts_with('$').then_some(id)
+    }
+
+    /// The current name of the session with tmux id `session_id` (`$N`), or
+    /// `None` when no such session is alive.
+    pub fn name_for_tmux_session_id(session_id: &str) -> Option<String> {
+        let out = crate::tmux::tmux_command()
+            .args(["list-sessions", "-F", "#{session_id}\t#{session_name}"])
+            .output()
+            .ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .find_map(|line| {
+                let (id, name) = line.split_once('\t')?;
+                (id == session_id).then(|| name.to_string())
+            })
+    }
+
     pub fn rename(&self, new_name: &str) -> Result<()> {
         if !self.exists() {
             return Ok(());

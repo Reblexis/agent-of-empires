@@ -70,7 +70,7 @@
 //!     servers ignore the unknown message type harmlessly.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use axum::extract::ws::{Message, WebSocket, WebSocketUpgrade};
@@ -209,6 +209,56 @@ struct LiveSettings {
     /// Client advertised `caps.deflate`: frames go out as the compressed
     /// binary stream instead of JSON text. Set-once (a client never revokes).
     deflate: AtomicBool,
+}
+
+/// The tmux session a live connection is bound to. A session is renamed in
+/// tmux whenever its title changes, so the name captured at connect goes
+/// stale under an open terminal; the tmux session id does not. Every tmux
+/// call reads the current name from here, and [`LiveTarget::follow_rename`]
+/// adopts the new one.
+struct LiveTarget {
+    name: RwLock<String>,
+    session_id: Option<String>,
+}
+
+impl LiveTarget {
+    /// Blocking (forks tmux once to read the session id).
+    fn bind(name: String) -> Self {
+        let session_id = crate::tmux::Session::from_name(&name).tmux_session_id();
+        Self {
+            name: RwLock::new(name),
+            session_id,
+        }
+    }
+
+    fn name(&self) -> String {
+        self.name
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    /// Re-resolve the session by its tmux id. Returns true when it lives on
+    /// under a different name, which is now the one [`Self::name`] returns.
+    /// Blocking (forks tmux).
+    fn follow_rename(&self) -> bool {
+        let Some(session_id) = self.session_id.as_deref() else {
+            return false;
+        };
+        let Some(current) = crate::tmux::Session::name_for_tmux_session_id(session_id) else {
+            return false;
+        };
+        let mut name = self
+            .name
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if *name == current {
+            return false;
+        }
+        debug!(target: "terminal.ws", from = %*name, to = %current, kind = "live", "session renamed, following");
+        *name = current;
+        true
+    }
 }
 
 /// JSON control frame telling the client whether it currently owns the
@@ -465,6 +515,14 @@ async fn handle_live_ws(
         }
     }
 
+    let target = {
+        let name = tmux_name.clone();
+        match tokio::task::spawn_blocking(move || LiveTarget::bind(name)).await {
+            Ok(target) => Arc::new(target),
+            Err(_) => return,
+        }
+    };
+
     let settings = Arc::new(LiveSettings {
         window_lines: AtomicUsize::new(DEFAULT_WINDOW_LINES),
         fast: AtomicBool::new(true),
@@ -508,7 +566,7 @@ async fn handle_live_ws(
     let capture_settings = Arc::clone(&settings);
     let capture_nudge = Arc::clone(&nudge);
     let capture_tx = out_tx.clone();
-    let capture_tmux = tmux_name.clone();
+    let capture_target = Arc::clone(&target);
     let capture_owner = owner_id.clone();
     #[cfg(unix)]
     let capture_osc52 = osc52;
@@ -536,7 +594,7 @@ async fn handle_live_ws(
             let outcome: CaptureOutcome;
             #[cfg(unix)]
             {
-                let name = capture_tmux.clone();
+                let name = capture_target.name();
                 outcome = match tokio::task::spawn_blocking(move || {
                     crate::tmux::Session::from_name(&name)
                         .capture_window_composited_with_cursor(lines)
@@ -550,12 +608,34 @@ async fn handle_live_ws(
                         CaptureOutcome::Frame(content, cursor)
                     }
                     Ok(Ok(_)) => CaptureOutcome::Dead,
-                    _ => break,
+                    _ => {
+                        // The session may only have been renamed (a title
+                        // change renames it in tmux): adopt the new name and
+                        // capture again. Anything else leaves this connection
+                        // unable to show or reach the pane, so close it and
+                        // let the client reconnect instead of leaving a
+                        // socket that looks connected but drops every key.
+                        let renamed = Arc::clone(&capture_target);
+                        if tokio::task::spawn_blocking(move || renamed.follow_rename())
+                            .await
+                            .unwrap_or(false)
+                        {
+                            continue;
+                        }
+                        warn!(target: "terminal.ws", tmux = %capture_target.name(), kind = "live", "capture failed, closing 1013");
+                        let _ = capture_tx
+                            .send(Message::Close(Some(axum::extract::ws::CloseFrame {
+                                code: CLOSE_CODE_TRY_AGAIN_LATER,
+                                reason: "capture_failed".into(),
+                            })))
+                            .await;
+                        break;
+                    }
                 };
             }
             #[cfg(not(unix))]
             {
-                let name = capture_tmux.clone();
+                let name = capture_target.name();
                 outcome = match tokio::task::spawn_blocking(move || {
                     crate::tmux::Session::from_name(&name)
                         .capture_window_composited_with_cursor(lines)
@@ -569,7 +649,29 @@ async fn handle_live_ws(
                         CaptureOutcome::Frame(content, cursor)
                     }
                     Ok(Ok(_)) => CaptureOutcome::Dead,
-                    _ => break,
+                    _ => {
+                        // The session may only have been renamed (a title
+                        // change renames it in tmux): adopt the new name and
+                        // capture again. Anything else leaves this connection
+                        // unable to show or reach the pane, so close it and
+                        // let the client reconnect instead of leaving a
+                        // socket that looks connected but drops every key.
+                        let renamed = Arc::clone(&capture_target);
+                        if tokio::task::spawn_blocking(move || renamed.follow_rename())
+                            .await
+                            .unwrap_or(false)
+                        {
+                            continue;
+                        }
+                        warn!(target: "terminal.ws", tmux = %capture_target.name(), kind = "live", "capture failed, closing 1013");
+                        let _ = capture_tx
+                            .send(Message::Close(Some(axum::extract::ws::CloseFrame {
+                                code: CLOSE_CODE_TRY_AGAIN_LATER,
+                                reason: "capture_failed".into(),
+                            })))
+                            .await;
+                        break;
+                    }
                 };
             }
 
@@ -584,7 +686,7 @@ async fn handle_live_ws(
                         && last_heartbeat.elapsed() >= SIZE_OWNER_HEARTBEAT
                     {
                         last_heartbeat = std::time::Instant::now();
-                        let name = capture_tmux.clone();
+                        let name = capture_target.name();
                         let who = capture_owner.clone();
                         let still_owner = tokio::task::spawn_blocking(move || {
                             crate::tmux::Session::from_name(&name).refresh_size_owner(&who)
@@ -617,7 +719,7 @@ async fn handle_live_ws(
                         let rows = capture_settings.screen_rows.load(Ordering::Relaxed) as u16;
                         if cols > 0 && rows > 0 {
                             last_reclaim = std::time::Instant::now();
-                            let name = capture_tmux.clone();
+                            let name = capture_target.name();
                             let who = capture_owner.clone();
                             let claimed = tokio::task::spawn_blocking(move || {
                                 let session = crate::tmux::Session::from_name(&name);
@@ -677,7 +779,7 @@ async fn handle_live_ws(
                                 last_reassert = std::time::Instant::now();
                                 warn!(
                                     target: "terminal.ws",
-                                    tmux = %capture_tmux,
+                                    tmux = %capture_target.name(),
                                     kind = "live",
                                     pane_cols = c.pane_width,
                                     pane_rows = c.pane_height,
@@ -690,7 +792,7 @@ async fn handle_live_ws(
                                 // and a drift seen in that window IS the new
                                 // owner's grid. Resizing unverified here would
                                 // stomp it; instead demote on the spot.
-                                let name = capture_tmux.clone();
+                                let name = capture_target.name();
                                 let who = capture_owner.clone();
                                 let still_owner = tokio::task::spawn_blocking(move || {
                                     crate::tmux::Session::from_name(&name)
@@ -857,7 +959,8 @@ async fn handle_live_ws(
                             continue;
                         }
                         let send_nudge = Arc::clone(&nudge);
-                        let name = tmux_name.clone();
+                        let send_target = Arc::clone(&target);
+                        let name = target.name();
                         let bytes = data.to_vec();
                         // A VT channel held by another surface remains the
                         // pane's single input writer. Otherwise this snapshot
@@ -868,9 +971,23 @@ async fn handle_live_ws(
                                 return;
                             }
                             let session = crate::tmux::Session::from_name(&name);
-                            if let Err(e) = session.send_raw_bytes(&bytes) {
-                                warn!(target: "terminal.ws", tmux = %name, kind = "live", "send_raw_bytes failed: {}", e);
+                            let Err(e) = session.send_raw_bytes(&bytes) else {
+                                return;
+                            };
+                            // A rename since the last capture: deliver the
+                            // keys to the same session under its new name.
+                            if send_target.follow_rename() {
+                                let name = send_target.name();
+                                #[cfg(unix)]
+                                if crate::tmux::vt::try_send_input(&name, &bytes) {
+                                    return;
+                                }
+                                let session = crate::tmux::Session::from_name(&name);
+                                if session.send_raw_bytes(&bytes).is_ok() {
+                                    return;
+                                }
                             }
+                            warn!(target: "terminal.ws", tmux = %name, kind = "live", "send_raw_bytes failed: {}", e);
                         })
                         .await;
                         // Capture the echo promptly rather than waiting out
@@ -897,7 +1014,7 @@ async fn handle_live_ws(
                                 // the owner resizes the shared window. A
                                 // non-owner keeps rendering best-effort at the
                                 // owner's grid and shows a "take over" banner.
-                                let name = tmux_name.clone();
+                                let name = target.name();
                                 let who = owner_id.clone();
                                 let owned = tokio::task::spawn_blocking(move || {
                                     let session = crate::tmux::Session::from_name(&name);
@@ -937,7 +1054,7 @@ async fn handle_live_ws(
                                 // bound input buffer can flush. Claim only an
                                 // unheld or stale lock; unlike `claim`, this
                                 // never takes control from another viewer.
-                                let name = tmux_name.clone();
+                                let name = target.name();
                                 let who = owner_id.clone();
                                 let owned = tokio::task::spawn_blocking(move || {
                                     crate::tmux::Session::from_name(&name)
@@ -955,7 +1072,7 @@ async fn handle_live_ws(
                                 // Explicit take-over: steal the lock even from
                                 // a live holder, then size the window to our
                                 // grid so this client renders correctly.
-                                let name = tmux_name.clone();
+                                let name = target.name();
                                 let who = owner_id.clone();
                                 let cols = settings.screen_cols.load(Ordering::Relaxed) as u16;
                                 let rows = settings.screen_rows.load(Ordering::Relaxed) as u16;
@@ -991,7 +1108,7 @@ async fn handle_live_ws(
                     Some(Ok(Message::Close(_))) | None => break,
                     Some(Ok(_)) => {} // Ping/Pong handled by axum
                     Some(Err(e)) => {
-                        debug!(target: "terminal.ws", tmux = %tmux_name, kind = "live", "ws recv error: {}", e);
+                        debug!(target: "terminal.ws", tmux = %target.name(), kind = "live", "ws recv error: {}", e);
                         break;
                     }
                 }
@@ -1018,14 +1135,14 @@ async fn handle_live_ws(
     // With another live viewer still connected, the lock stays held by
     // whoever owns it; this disconnect doesn't disturb the survivor.
     {
-        let name = tmux_name.clone();
+        let name = target.name();
         let who = owner_id.clone();
         let _ = tokio::task::spawn_blocking(move || {
             crate::tmux::Session::from_name(&name).release_size_owner(&who);
         })
         .await;
     }
-    debug!(target: "terminal.ws", tmux = %tmux_name, kind = "live", "live ws closed");
+    debug!(target: "terminal.ws", tmux = %target.name(), kind = "live", "live ws closed");
 }
 
 /// Serialize one snapshot frame. `rows` (pane height) and `history`
@@ -1363,5 +1480,55 @@ mod tests {
             c2.len(),
             frame2.len()
         );
+    }
+    /// Viktor, 2026-11-17: "i cant type into it all of a sudden and i chave
+    /// to click different session and back". The open terminal kept the
+    /// session's old tmux name after the automatic title rename.
+    #[test]
+    #[serial_test::serial]
+    fn typing_still_reaches_the_session_after_it_is_renamed() {
+        use crate::tmux::test_helpers::TmuxTestSession;
+        if std::process::Command::new("tmux")
+            .arg("-V")
+            .output()
+            .is_err()
+        {
+            eprintln!("Skipping test: tmux not available");
+            return;
+        }
+        let before = TmuxTestSession::new("aoe_test_live_rename_before");
+        let after = TmuxTestSession::new("aoe_test_live_rename_after");
+        let created = crate::tmux::tmux_command()
+            .args(["new-session", "-d", "-s", before.name(), "cat"])
+            .output()
+            .expect("tmux new-session");
+        assert!(created.status.success());
+
+        let target = LiveTarget::bind(before.name().to_string());
+        assert!(!target.follow_rename(), "no rename yet, nothing to follow");
+
+        let renamed = crate::tmux::tmux_command()
+            .args(["rename-session", "-t", before.name(), after.name()])
+            .output()
+            .expect("tmux rename-session");
+        assert!(renamed.status.success());
+        assert!(crate::tmux::Session::from_name(&target.name())
+            .send_raw_bytes(b"x")
+            .is_err());
+
+        assert!(target.follow_rename(), "the renamed session must be found");
+        assert_eq!(target.name(), after.name());
+        crate::tmux::Session::from_name(&target.name())
+            .send_raw_bytes(b"typed")
+            .expect("keys reach the renamed session");
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        let seen = crate::tmux::Session::from_name(&target.name())
+            .capture_pane(10)
+            .expect("capture");
+        assert!(
+            seen.contains("typed"),
+            "pane shows the typed keys: {seen:?}"
+        );
+        drop((before, after));
     }
 }
