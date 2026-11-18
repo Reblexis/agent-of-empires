@@ -14,6 +14,7 @@ export function useLiveEdgeScroll({
   returnToLive,
   forwardModeRef,
   scheduleViewSync,
+  softKeyboard,
 }: {
   scrollerRef: RefObject<HTMLDivElement | null>;
   lineH: number;
@@ -23,6 +24,8 @@ export function useLiveEdgeScroll({
   returnToLive: (rows: number) => void;
   forwardModeRef: RefObject<boolean>;
   scheduleViewSync: () => void;
+  /** A soft keyboard can cover the bottom of the pane (a touch device). */
+  softKeyboard: boolean;
 }) {
   // No programmatic scroll while a finger is down: it cancels the native gesture on iOS.
   const touchActiveRef = useRef(false);
@@ -31,24 +34,30 @@ export function useLiveEdgeScroll({
     width: 0,
     maxHeight: 0,
   });
-  // Pixel top of the cursor row, sticky across mid-redraw frames that hide the cursor.
-  const cursorAnchorRef = useRef<number | null>(null);
+  // The cursor row's distance (px) from the end of the content, sticky across mid-redraw frames that hide the
+  // cursor. Measured from the end, where the cursor lives: output that arrives while the cursor is hidden (an
+  // agent printing its whole history again after a resize) moves the end, and a position kept from the top
+  // would hold the view thousands of rows up in the history.
+  const cursorFromEndRef = useRef<number | null>(null);
   useEffect(() => {
-    cursorAnchorRef.current = null;
+    cursorFromEndRef.current = null;
   }, [lineH]);
-  // The live-edge scroll target is the bottom. Only when the keyboard has shrunk the container so far that the
+  // The live-edge scroll target is the bottom. Only when a soft keyboard has shrunk the container so far that the
   // bottom would hide the cursor is the cursor anchored near the viewport bottom, so the agent's prompt stays
   // visible; otherwise what an agent draws below its prompt (a subagent list, a status line) stays in view.
+  // Without a soft keyboard a shorter container (a banner, a panel, a smaller window) covers nothing.
   const liveScrollTarget = useCallback(
     (el: HTMLDivElement) => {
       const bottom = Math.max(0, el.scrollHeight - el.clientHeight);
-      const shrunken = latchRef.current.maxHeight - el.clientHeight > lineH * 1.5;
-      const anchor = cursorAnchorRef.current;
-      if (!shrunken || anchor == null || anchor >= bottom) return bottom;
+      const shrunken = softKeyboard && latchRef.current.maxHeight - el.clientHeight > lineH * 1.5;
+      const fromEnd = cursorFromEndRef.current;
+      if (!shrunken || fromEnd == null) return bottom;
+      const anchor = el.scrollHeight - fromEnd;
+      if (anchor >= bottom) return bottom;
       // One spare line keeps the input box border visible.
       return Math.min(bottom, Math.max(0, anchor + 2 * lineH - el.clientHeight));
     },
-    [lineH],
+    [lineH, softKeyboard],
   );
   const geomRef = useRef({ target: -1, clientHeight: 0, scrollTop: 0 });
   // Sticky "reading, do not follow the tail" latch. It re-attaches only at the literal bottom (onScroll), on a
@@ -125,7 +134,7 @@ export function useLiveEdgeScroll({
   return {
     touchActiveRef,
     latchRef,
-    cursorAnchorRef,
+    cursorFromEndRef,
     liveDetachedRef,
     forceLiveRef,
     liveScrollTarget,

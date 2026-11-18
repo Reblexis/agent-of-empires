@@ -370,7 +370,7 @@ export function MobileLiveTerminal({
   const {
     touchActiveRef,
     latchRef,
-    cursorAnchorRef,
+    cursorFromEndRef,
     liveDetachedRef,
     forceLiveRef,
     liveScrollTarget,
@@ -387,6 +387,7 @@ export function MobileLiveTerminal({
     returnToLive,
     forwardModeRef,
     scheduleViewSync,
+    softKeyboard: coarse,
   });
 
   // A tap raises the keyboard; focus() must stay synchronous for iOS. A click ending a selection is left alone.
@@ -760,13 +761,13 @@ export function MobileLiveTerminal({
         `live terminal view moved up without an upward scroll: scrollTop ${r(prev.top)} -> ${r(el.scrollTop)}, ` +
           `scrollHeight ${prev.height} -> ${el.scrollHeight}, clientHeight ${el.clientHeight}, ` +
           `target ${r(liveScrollTarget(el))}, reading ${readingRef.current}, detached ${liveDetachedRef.current}, ` +
-          `coarse ${coarse}, latchHeight ${latchRef.current.maxHeight}, cursorAnchor ${cursorAnchorRef.current ?? "none"}, ` +
+          `coarse ${coarse}, latchHeight ${latchRef.current.maxHeight}, cursorFromEnd ${cursorFromEndRef.current ?? "none"}, ` +
           `lineH ${lineH}, spacer ${st.spacer}, lines ${st.lines}, renderRows ${st.renderRows}, ` +
           `frameRows ${st.frameRows}, history ${st.history}, cols ${st.cols}`,
         { level: "warn", target: "live-terminal.jump" },
       );
     },
-    [coarse, lineH, liveScrollTarget, selectionHeld, touchActiveRef, liveDetachedRef, latchRef, cursorAnchorRef],
+    [coarse, lineH, liveScrollTarget, selectionHeld, touchActiveRef, liveDetachedRef, latchRef, cursorFromEndRef],
   );
   // `initialReadingRow` is applied once, on the first frame that reaches it (or the first streamed one); until
   // then the pane sits "at the bottom" of too little content, and no scroll event may save, forget, or leave
@@ -784,7 +785,9 @@ export function MobileLiveTerminal({
     }
   }, [onScroll, reportJumpIfUnasked, forwardModeRef, atBottom, scrollMemoryKey, lineH]);
   useLayoutEffect(() => {
-    if (live.top != null) cursorAnchorRef.current = live.top;
+    if (live.top != null && scrollerRef.current) {
+      cursorFromEndRef.current = scrollerRef.current.scrollHeight - live.top;
+    }
     // Reopening a session the reader left mid-history: put them back on those lines before the first pin can
     // take them to the live tail.
     const restoreEl = scrollerRef.current;
@@ -828,7 +831,7 @@ export function MobileLiveTerminal({
     lineH,
     live,
     renderRowCount,
-    cursorAnchorRef,
+    cursorFromEndRef,
     liveDetachedRef,
     pinIfWasAtBottom,
     syncView,
