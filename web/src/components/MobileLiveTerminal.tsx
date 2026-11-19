@@ -981,7 +981,7 @@ export function MobileLiveTerminal({
           type="button"
           onClick={jumpToLatest}
           aria-label="Back to live"
-          className={`absolute ${coarse ? "right-[60px] bottom-3" : "right-3 bottom-16"} z-10 w-10 h-10 rounded-full bg-surface-800/90 border border-surface-700/30 text-text-secondary flex items-center justify-center shadow-lg backdrop-blur-sm active:scale-95 motion-safe:animate-[fadeIn_200ms_ease-out]`}
+          className={`absolute ${coarse ? "right-[60px] bottom-3" : "right-[calc(var(--aoe-covered-right,0px)+0.75rem)] bottom-16"} z-10 w-10 h-10 rounded-full bg-surface-800/90 border border-surface-700/30 text-text-secondary flex items-center justify-center shadow-lg backdrop-blur-sm active:scale-95 motion-safe:animate-[fadeIn_200ms_ease-out]`}
         >
           <StrokeIcon size={16} strokeWidth="2" hidden>
             <polyline points="6 9 12 15 18 9" />
