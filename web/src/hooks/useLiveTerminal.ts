@@ -7,7 +7,14 @@ import { buttonMouseBytes, wheelMouseBytes } from "../lib/liveMouse";
 import { createFrameInflater, supportsFrameDeflate, type FrameInflater } from "../lib/frameStream";
 import { MAX_RETRIES, retryDelayMs } from "../lib/wsBackoff";
 import { reportTelemetrySeen } from "../lib/api";
-import { recallHistory, recallScreen, rememberHistory, rememberScreen, screenKey } from "../lib/screenCache";
+import {
+  noteGrid,
+  recallFittingScreen,
+  recallHistory,
+  rememberHistory,
+  rememberScreen,
+  screenKey,
+} from "../lib/screenCache";
 import { HISTORY_CAP_LINES, mergeFrame, type HistoryCache } from "../lib/liveHistory";
 import type { LiveClientMessage, LivePane0, LiveServerMessage } from "../lib/generated/liveWire";
 
@@ -41,12 +48,18 @@ export interface LiveStats {
 }
 
 type FrameMessage = Extract<LiveServerMessage, { type: "frame" }>;
+type LiveDataMessage = Extract<LiveServerMessage, { type: "frame" | "patch" }>;
+/** Longest a socket's first screens wait for the pane to take this page's size. */
+const FIRST_SCREEN_HOLD_MS = 600;
 
 export type LiveFrame = Omit<FrameMessage, "type" | "seq" | "pane0"> & {
   lines?: string[];
   seq?: number;
   receivedAt?: number;
   pane0?: LivePane0 | null;
+  /** The grid this page had asked for when the frame was streamed at that size; null when streamed at another
+   *  size (another device controls it); absent on a prefetched picture. */
+  grid?: { cols: number; rows: number } | null;
 };
 
 export interface LiveTerminalState {
@@ -112,6 +125,8 @@ export function useLiveTerminal(
   const downloadingRef = useRef(false);
   const lastDownloadRef = useRef(Number.NEGATIVE_INFINITY);
   const sentWindowRef = useRef<number | null>(null);
+  // Whether the frame on screen came from the stream (not a remembered or prefetched stand-in).
+  const streamShownRef = useRef(false);
 
   const { state, setState } = useSnapshotStore(() => INITIAL_STATE);
 
@@ -157,7 +172,8 @@ export function useLiveTerminal(
     historyRef.current = recallHistory(memoryKey) ?? null;
     downloadingRef.current = false;
     lastDownloadRef.current = Number.NEGATIVE_INFINITY;
-    const recalled = recallScreen(memoryKey);
+    const recalled = recallFittingScreen(sessionId, wsPath);
+    streamShownRef.current = false;
     // Display only: a prefetched screen carries no history count, so it must not replace the copy.
     const shown = recalled && historyRef.current ? mergeFrame(historyRef.current, recalled).frame : recalled;
     // Reading mode is the pane's choice (a restored reading position enters it before the stream starts), so the
@@ -292,6 +308,9 @@ export function useLiveTerminal(
         if (desired.resize) {
           ws.send(encodeControl({ type: "resize", ...desired.resize }));
         }
+        // The pane may still have the size of whoever showed it last: its first screens wait for the resize.
+        hold = { queue: [], replies: 0 };
+        holdTimer = setTimeout(() => releaseHold(true), FIRST_SCREEN_HOLD_MS);
         syncWindow();
         ws.send(encodeControl({ type: "cadence", fast: desired.fast }));
         ws.send(encodeControl({ type: "caps", deflate: supportsFrameDeflate(), patch: true }));
@@ -303,6 +322,25 @@ export function useLiveTerminal(
       // The last frame as the server sent it: patches apply to these rows, not to the rendered copy.
       let wireLines: string[] | null = null;
       let resyncPending = false;
+      // Screens withheld since this socket opened, until the server has answered this page's resize (the reply to
+      // `claim_if_vacant`, then the reply to `resize`, sent on open or once the terminal has measured itself) and,
+      // when this page controls the size, a screen at that size arrived.
+      let hold: { queue: LiveDataMessage[]; replies: number } | null = null;
+      let owner = false;
+      let holdTimer: ReturnType<typeof setTimeout> | null = null;
+      const releaseHold = (force: boolean) => {
+        if (!hold || wsRef.current !== ws) return;
+        if (!force) {
+          if (hold.replies < 2) return;
+          const last = hold.queue.at(-1);
+          if (owner && last?.rows !== desiredRef.current.resize?.rows) return;
+        }
+        const queue = hold.queue;
+        hold = null;
+        if (holdTimer) clearTimeout(holdTimer);
+        holdTimer = null;
+        for (const msg of queue) applyData(msg);
+      };
       const handleMessageText = (text: string) => {
         if (wsRef.current !== ws) return;
         let msg: LiveServerMessage;
@@ -316,8 +354,13 @@ export function useLiveTerminal(
           return;
         }
         if (msg.type === "size_owner") {
-          const owner = msg.is_owner;
-          setState((prev) => (prev.isOwner === owner ? prev : { ...prev, isOwner: owner }));
+          owner = msg.is_owner;
+          const isOwner = owner;
+          setState((prev) => (prev.isOwner === isOwner ? prev : { ...prev, isOwner }));
+          if (hold) {
+            hold.replies += 1;
+            releaseHold(false);
+          }
           return;
         }
         if (msg.type === "transport") {
@@ -331,6 +374,14 @@ export function useLiveTerminal(
           return;
         }
         if (msg.type !== "frame" && msg.type !== "patch") return;
+        if (hold) {
+          hold.queue.push(msg);
+          releaseHold(false);
+          return;
+        }
+        applyData(msg);
+      };
+      const applyData = (msg: LiveDataMessage) => {
         if (!hasReceivedData) {
           hasReceivedData = true;
           retryCountRef.current = 0;
@@ -358,6 +409,7 @@ export function useLiveTerminal(
         }
         lastSeq = msg.seq;
         wireLines = lines;
+        const grid = desiredRef.current.resize;
         const received: LiveFrame = {
           content,
           lines,
@@ -370,7 +422,9 @@ export function useLiveTerminal(
           mouse: msg.mouse,
           mouseSgr: msg.mouseSgr,
           pane0: msg.pane0,
+          grid: owner && grid && grid.rows === msg.rows ? { ...grid } : null,
         };
+        streamShownRef.current = true;
         rememberScreen(memoryKey, received);
         // Splice the frame onto the local scrollback copy, and download the whole history (one wide frame) whenever
         // the copy is incomplete.
@@ -509,9 +563,14 @@ export function useLiveTerminal(
       // tmux re-wraps its whole history to a new width, so the copy is stale.
       if (prev && prev.cols !== cols) historyRef.current = null;
       desiredRef.current.resize = { cols, rows };
+      noteGrid(wsPath, { cols, rows });
+      // A stand-in drawn at another size comes down; the stream's first screen replaces it.
+      if (!streamShownRef.current && sessionId && !recallFittingScreen(sessionId, wsPath)) {
+        setState((prev) => (prev.frame ? { ...prev, frame: null } : prev));
+      }
       sendIfOpen(encodeControl({ type: "resize", cols, rows }));
     },
-    [sendIfOpen],
+    [sendIfOpen, sessionId, wsPath, setState],
   );
 
   const setWindow = useCallback((lines: number) => setWindowInternal(lines), [setWindowInternal]);

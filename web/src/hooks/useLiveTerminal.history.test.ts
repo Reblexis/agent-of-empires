@@ -36,6 +36,8 @@ class FakeWS {
   open() {
     this.readyState = FakeWS.OPEN;
     act(() => this.onopen?.({} as Event));
+    this.deliver({ type: "size_owner", is_owner: false });
+    this.deliver({ type: "size_owner", is_owner: false });
   }
   deliver(payload: unknown) {
     act(() => this.onmessage?.({ data: JSON.stringify(payload) } as MessageEvent));

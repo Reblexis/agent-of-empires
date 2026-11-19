@@ -23,7 +23,7 @@ import {
   type FocusTerminalDetail,
 } from "../lib/terminalFocus";
 import { isSessionActive } from "../lib/session";
-import { recallScreen, screenKey } from "../lib/screenCache";
+import { recallFittingScreen } from "../lib/screenCache";
 import { recallReadingRow } from "../lib/liveScrollMemory";
 
 interface Props {
@@ -270,7 +270,7 @@ export function LiveTerminalView({ session, active = true, surface = "agent", te
   // Until the live stream has a frame (while the session is ensured, and for the render after it is ready), a
   // screen this page remembers (or the sidebar prefetched) stands in. A frameless render in between collapses the
   // pane to one empty screen: the content flashes away and the browser resets the scroll position.
-  const remembered = live.state.frame ? undefined : recallScreen(screenKey(session.id, wsPath));
+  const remembered = live.state.frame ? undefined : recallFittingScreen(session.id, wsPath);
   if (ensureState === "pending" && !remembered) {
     return (
       <div className="flex-1 flex items-center justify-center bg-surface-950 text-text-dim">

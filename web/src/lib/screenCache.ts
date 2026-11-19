@@ -15,6 +15,8 @@ export const PREFETCH_INTERVAL_MS = 10_000;
 const screens = new Map<string, LiveFrame>();
 const lastPrefetch = new Map<string, number>();
 const histories = new Map<string, HistoryCache>();
+/** The grid this page's terminal last asked for, per terminal surface. */
+const grids = new Map<string, { cols: number; rows: number }>();
 
 /** One entry per session and terminal surface (agent pane, paired shells). */
 export const screenKey = (sessionId: string, wsPath: string) => `${sessionId} ${wsPath}`;
@@ -28,6 +30,23 @@ export function rememberScreen(key: string, frame: LiveFrame) {
 
 export function recallScreen(key: string): LiveFrame | undefined {
   return screens.get(key);
+}
+
+/** A terminal surface on this page measured itself. */
+export function noteGrid(wsPath: string, grid: { cols: number; rows: number }) {
+  grids.set(wsPath, grid);
+}
+
+/** The remembered screen, when it was drawn at the size this page's terminal has now: one drawn at another size
+ *  (a narrower window, another device) would show wrongly wrapped until the stream replaces it. A screen streamed
+ *  while another device controlled the size (`grid: null`) is what the stream will show again. */
+export function recallFittingScreen(sessionId: string, wsPath: string): LiveFrame | undefined {
+  const frame = screens.get(screenKey(sessionId, wsPath));
+  if (!frame || frame.grid === null) return frame;
+  const want = grids.get(wsPath);
+  if (!want) return undefined;
+  if (frame.grid) return frame.grid.cols === want.cols && frame.grid.rows === want.rows ? frame : undefined;
+  return frame.rows === want.rows ? frame : undefined;
 }
 
 export function rememberHistory(key: string, cache: HistoryCache) {
@@ -71,4 +90,5 @@ export function forgetAllScreens() {
   screens.clear();
   lastPrefetch.clear();
   histories.clear();
+  grids.clear();
 }

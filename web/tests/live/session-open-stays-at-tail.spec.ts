@@ -192,3 +192,63 @@ for (const [index, c] of CASES.entries()) {
     }
   });
 }
+
+// Viktor, 19 Nov 2026: "just now the loading is a bit weird and sometimmes it doesnt format correctly cutting at
+// half etc". docs/guides/web/terminal.md: the live stream's first screen is the pane at this browser's size.
+test("loading is a bit weird, formatted wrong and cut at half: a pane last shown narrower never draws at its old width", async ({
+  browser,
+}, testInfo) => {
+  test.setTimeout(120_000);
+  const serve = await spawnAoeServe({
+    authMode: "none",
+    workerIndex: testInfo.workerIndex,
+    parallelIndex: testInfo.parallelIndex,
+    seedFn: (e) => {
+      spawnSync(resolveAoeBinary(), ["hooks", "approve"], { env: e.env });
+      seedSession(e, "alpha-agent", "alpha", false);
+    },
+  });
+  const front = await frontendUrl(serve.baseUrl, 5390 + testInfo.parallelIndex);
+  const open = async (viewport: { width: number; height: number }) => {
+    const ctx = await browser.newContext({ viewport });
+    await ctx.addInitScript(() => {
+      localStorage.setItem("aoe-web-settings", JSON.stringify({ sidebarActiveOnly: false }));
+      // The longest row of every picture the terminal paints.
+      const widths: number[] = [];
+      (window as unknown as { __widths: number[] }).__widths = widths;
+      const sample = () => {
+        const rows = document.querySelectorAll("[data-live-content] > div");
+        if (rows.length > 0) {
+          let longest = 0;
+          for (const row of rows) longest = Math.max(longest, (row.textContent ?? "").trimEnd().length);
+          if (longest > 0) widths.push(longest);
+        }
+        requestAnimationFrame(sample);
+      };
+      requestAnimationFrame(sample);
+    });
+    const page = await ctx.newPage();
+    await page.goto(front.url);
+    await clickSidebarSession(page, "alpha-agent");
+    await waitReady(page, "alpha");
+    await page.waitForTimeout(1500);
+    const widths = await page.evaluate(() => (window as unknown as { __widths: number[] }).__widths);
+    await ctx.close();
+    return widths;
+  };
+  try {
+    const narrow = await open({ width: 800, height: 600 });
+    const narrowCols = Math.max(...narrow.slice(-5));
+    // A new page, so nothing is remembered: every picture comes from the live stream.
+    const wide = await open(WIDE);
+    const settled = Math.max(...wide.slice(-5));
+    expect(settled, "the wide window fits the whole 108-character line").toBeGreaterThan(narrowCols);
+    expect(
+      Math.min(...wide),
+      `no picture at the old ${narrowCols}-column width (longest row per painted picture: ${wide.slice(0, 40).join(" ")})`,
+    ).toBeGreaterThan(narrowCols);
+  } finally {
+    front.stop();
+    await serve.stop();
+  }
+});

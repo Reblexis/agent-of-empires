@@ -31,9 +31,13 @@ class FakeWS {
   close() {
     this.readyState = FakeWS.CLOSED;
   }
-  open() {
+  /** `answered`: the server's two replies (to the claim, to the resize) that end the wait for the pane's size. */
+  open(answered = true) {
     this.readyState = FakeWS.OPEN;
     act(() => this.onopen?.({} as Event));
+    if (!answered) return;
+    this.deliver({ type: "size_owner", is_owner: false });
+    this.deliver({ type: "size_owner", is_owner: false });
   }
   deliver(payload: unknown) {
     act(() => this.onmessage?.({ data: JSON.stringify(payload) } as MessageEvent));
@@ -528,5 +532,80 @@ describe("remembered screens", () => {
     FakeWS.sockets.at(-1)!.deliver(frame(1, "agent\n"));
     hook.rerender({ id: "a", path: "terminal/live-ws?index=0" });
     expect(hook.result.current.state.frame).toBeNull();
+  });
+});
+
+// Viktor, 19 Nov 2026: "just now the loading is a bit weird and sometimmes it doesnt format correctly cutting at
+// half etc". A session last shown in a narrower window streamed its first screen at that old size, then was resized.
+describe("loading is a bit weird, formatted wrong and cut at half: the first screen waits for the pane's size", () => {
+  const sized = (seq: number, rows: number) => ({ ...frame(seq, `screen ${seq}\n`), rows });
+  function openWithGrid() {
+    const mounted = mount(false);
+    act(() => mounted.result.current.sendResize(121, 46));
+    mounted.ws.open(false);
+    return mounted;
+  }
+
+  it("holds a screen at the pane's old size until the resize is answered, then shows the resized one", () => {
+    const { result, ws } = openWithGrid();
+    ws.deliver({ type: "size_owner", is_owner: true });
+    ws.deliver(sized(1, 31));
+    expect(result.current.state.frame).toBeNull();
+    ws.deliver({ type: "size_owner", is_owner: true });
+    expect(result.current.state.frame).toBeNull();
+    ws.deliver(sized(2, 46));
+    expect(result.current.state.frame).toMatchObject({ seq: 2, rows: 46 });
+  });
+
+  it("shows the screen as it is once another device turns out to control the size", () => {
+    const { result, ws } = openWithGrid();
+    ws.deliver({ type: "size_owner", is_owner: false });
+    ws.deliver(sized(1, 31));
+    expect(result.current.state.frame).toBeNull();
+    ws.deliver({ type: "size_owner", is_owner: false });
+    expect(result.current.state.frame).toMatchObject({ seq: 1, rows: 31 });
+  });
+
+  it("never waits longer than 0.6 s", () => {
+    vi.useFakeTimers();
+    try {
+      const { result, ws } = openWithGrid();
+      ws.deliver(sized(1, 31));
+      act(() => void vi.advanceTimersByTime(590));
+      expect(result.current.state.frame).toBeNull();
+      act(() => void vi.advanceTimersByTime(20));
+      expect(result.current.state.frame).toMatchObject({ seq: 1 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("a remembered screen drawn at another size", () => {
+  const sized = (seq: number, rows: number) => ({ ...frame(seq, `screen ${seq}\n`), rows });
+  function showAt(hook: { result: { current: ReturnType<typeof useLiveTerminal> } }, cols: number, rows: number) {
+    act(() => hook.result.current.sendResize(cols, rows));
+    const ws = FakeWS.sockets.at(-1)!;
+    ws.open(false);
+    ws.deliver({ type: "size_owner", is_owner: true });
+    ws.deliver({ type: "size_owner", is_owner: true });
+    ws.deliver(sized(1, rows));
+  }
+
+  it("does not stand in after the window changed size; the same size still shows at once", () => {
+    const first = renderHook(({ id }) => useLiveTerminal(id, "live-ws"), { initialProps: { id: "a" } });
+    showAt(first, 70, 31);
+    expect(first.result.current.state.frame).toMatchObject({ rows: 31, grid: { cols: 70, rows: 31 } });
+    first.unmount();
+
+    const same = renderHook(() => useLiveTerminal("a", "live-ws"));
+    expect(same.result.current.state.frame).toMatchObject({ rows: 31 });
+    // The terminal measures itself in the wider window: the 70-column picture comes down.
+    act(() => same.result.current.sendResize(121, 46));
+    expect(same.result.current.state.frame).toBeNull();
+    same.unmount();
+
+    const later = renderHook(() => useLiveTerminal("a", "live-ws"));
+    expect(later.result.current.state.frame).toBeNull();
   });
 });

@@ -6,7 +6,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
-import { forgetAllScreens, rememberScreen, screenKey } from "../../lib/screenCache";
+import { forgetAllScreens, noteGrid, rememberScreen, screenKey } from "../../lib/screenCache";
 import { LiveTerminalView } from "../LiveTerminalView";
 import { makeSession } from "./fixtures";
 
@@ -48,6 +48,7 @@ describe("LiveTerminalView remembered screen", () => {
       mouse: false,
       mouseSgr: false,
     });
+    noteGrid("live-ws", { cols: 80, rows: 2 });
     render(<LiveTerminalView session={session} />);
     expect(screen.queryByText("Starting session...")).toBeNull();
     expect(document.body.textContent).toContain("remembered screen text");
