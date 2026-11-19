@@ -40,11 +40,11 @@ What you type shows up at once, without waiting for the server to echo it, the w
 
 ### Switching sessions
 
-Opening a session shows a screen at once instead of a "Starting session..." placeholder:
+Opening a session shows a loading animation until its live screen arrives; an older picture of the session is never shown in its place. Behind the animation the terminal is already laid out, so the reading position and the history are ready the moment the live screen lands:
 
-- The browser remembers the last screen of the 32 sessions it showed most recently, per terminal (agent pane, each paired shell), for as long as the page stays open. Opening one of them draws that screen immediately while the session is started (if it was stopped) and its live stream connects, which takes a few round trips to the server; the live stream then replaces it. The scrollback copy (see above) of the 8 most recently shown sessions is remembered too, so their history scrolls at once; for the others scrolling up waits for the download.
-- Resting the pointer on a session in the sidebar fetches its current agent screen in the background (at most once every 10 seconds per session), so a session not yet opened in this page also appears at once when clicked.
-- Without a remembered or prefetched screen (the first open on a touch device, say), the placeholder shows until the stream connects.
+- The browser remembers the last screen of the 32 sessions it showed most recently, per terminal (agent pane, each paired shell), for as long as the page stays open. Opening one of them lays that screen out under the loading animation while the session is started (if it was stopped) and its live stream connects, which takes a few round trips to the server; the live stream then replaces it. The scrollback copy (see above) of the 8 most recently shown sessions is remembered too, so their history scrolls at once; for the others scrolling up waits for the download.
+- Resting the pointer on a session in the sidebar fetches its current agent screen in the background (at most once every 10 seconds per session), so a session not yet opened in this page is laid out the same way when clicked.
+- Without a remembered or prefetched screen (the first open on a touch device, say), the animation shows alone, with "Starting session...", until the stream connects.
 - A session never draws at another size than this browser's terminal. A remembered or prefetched screen stands in only when it was drawn at the size the terminal has now; one from a narrower window or another device is skipped, and so is any prefetched screen before this page has opened its first session. The live stream's first screen is the pane already resized to this browser: the wait is at most 0.6 seconds, and the screen shows as it is when another device controls the size. Text an agent printed while the pane was narrower keeps its line breaks.
 
 ## Width

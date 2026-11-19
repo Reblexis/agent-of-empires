@@ -47,6 +47,15 @@ const SURFACES = {
 };
 
 /** Touch-device agent terminal: chrome around the capture-snapshot live pane (MobileLiveTerminal). */
+function LoadingRing() {
+  return (
+    <span
+      aria-hidden="true"
+      className="h-6 w-6 rounded-full border-2 border-surface-700 border-t-brand-500 motion-safe:animate-spin"
+    />
+  );
+}
+
 export function LiveTerminalView({ session, active = true, surface = "agent", terminalIndex = 0 }: Props) {
   const base = SURFACES[surface];
   const { focusTarget, dataTerm } = base;
@@ -273,7 +282,12 @@ export function LiveTerminalView({ session, active = true, surface = "agent", te
   const remembered = live.state.frame ? undefined : recallFittingScreen(session.id, wsPath);
   if (ensureState === "pending" && !remembered) {
     return (
-      <div className="flex-1 flex items-center justify-center bg-surface-950 text-text-dim">
+      <div
+        role="status"
+        aria-label="Loading session"
+        className="flex-1 flex flex-col items-center justify-center gap-3 bg-surface-950 text-text-dim"
+      >
+        <LoadingRing />
         <span className="text-xs">Starting session...</span>
       </div>
     );
@@ -346,6 +360,17 @@ export function LiveTerminalView({ session, active = true, surface = "agent", te
           focusSelf();
         }}
       >
+        {/* Until the live screen arrives the loading animation covers the pane: an older picture of the session is
+           never shown. The remembered screen stays laid out underneath so the reading position holds. */}
+        {!live.state.frame && !live.state.paneDead && !live.state.gaveUp && (
+          <div
+            role="status"
+            aria-label="Loading session"
+            className="pointer-events-none absolute inset-0 z-[5] flex items-center justify-center bg-[var(--term-bg)] text-text-dim"
+          >
+            <LoadingRing />
+          </div>
+        )}
         <MobileLiveTerminal
           frame={live.state.frame ?? remembered ?? null}
           liveStats={live.state.stats}

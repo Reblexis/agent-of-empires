@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 //
-// Opening a session shows its remembered screen at once instead of the
-// "Starting session..." placeholder (docs/guides/web/terminal.md,
-// "Switching sessions").
+// Viktor, 2026-11-19: "i feel like a loading animation would be better". Opening a session shows a loading
+// animation until the live screen arrives, never an older picture; the remembered screen is laid out underneath so
+// the reading position holds (docs/guides/web/terminal.md, "Switching sessions").
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
@@ -38,7 +38,7 @@ afterEach(() => cleanup());
 const session = makeSession({ id: "sess-1" });
 
 describe("LiveTerminalView remembered screen", () => {
-  it("shows the session's remembered screen while it is being started", () => {
+  it("shows a loading animation over the remembered screen while the session is being started", () => {
     rememberScreen(screenKey("sess-1", "live-ws"), {
       content: "remembered screen text\n❯ \n",
       rows: 2,
@@ -52,10 +52,14 @@ describe("LiveTerminalView remembered screen", () => {
     render(<LiveTerminalView session={session} />);
     expect(screen.queryByText("Starting session...")).toBeNull();
     expect(document.body.textContent).toContain("remembered screen text");
+    const loading = screen.getByRole("status", { name: "Loading session" });
+    expect(loading.className).toContain("absolute inset-0");
+    expect(loading.className).toContain("bg-[var(--term-bg)]");
   });
 
   it("shows the placeholder when nothing is remembered", () => {
     render(<LiveTerminalView session={session} />);
     expect(screen.getByText("Starting session...")).toBeTruthy();
+    expect(screen.getByRole("status", { name: "Loading session" })).toBeTruthy();
   });
 });
