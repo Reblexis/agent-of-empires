@@ -16,13 +16,12 @@ opt-in through the panel picker; existing layouts drop those two starter tabs
 once and disable their auto-open preferences, preserving additional terminals and their running shells. Manually reopened
 tabs stay open. Auto-open preferences still apply to new sessions.
 
-Beside a terminal session the right dock lies over the terminal instead of
-beside it. The terminal keeps its full width and its column count whether the
-dock is open, closed or dragged wider, so the agent never redraws for a panel;
-the dock covers the terminal's right edge while it is open. The **Back to
-live** button stays clear of the dock. Beside a structured-view session, or a
-file opened from the diff or files tab, the dock sits next to the main pane and
-covers nothing.
+The right dock always sits next to the main pane and never covers it: terminal
+text stops at the dock's edge. Beside a terminal session the dock's width stays
+set aside while the dock is closed, so opening or closing it never changes the
+terminal's width and the agent never redraws for a panel; the closed dock
+leaves an empty strip. Beside a structured-view session, or a file opened from
+the diff or files tab, a closed dock gives its room to the main pane.
 
 The last tab you choose follows you between sessions and survives reload in the
 same browser. A destination keeps its own tab placement, collapse state and

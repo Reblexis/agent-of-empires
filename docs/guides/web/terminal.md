@@ -49,7 +49,7 @@ Opening a session shows a screen at once instead of a "Starting session..." plac
 
 ## Width
 
-On a desktop the agent terminal keeps its column count. The count comes from the widest the terminal has been in this browser on this screen at the chosen font size. When the terminal gets narrower (the session sidebar opens or is dragged wider, the browser window shrinks) the text is drawn smaller so the same columns still fit, and returns to full size when the room comes back; tmux is not resized and the agent does not redraw. Rows are held the same way.
+On a desktop the agent terminal keeps its column count. The count comes from the widest the terminal has been in this browser on this screen at the chosen font size. When the terminal gets narrower (the session sidebar opens or is dragged wider, the browser window shrinks) the text is drawn smaller so the same columns still fit, and returns to full size when the room comes back; tmux is not resized and the agent does not redraw. Rows are held the same way. The right dock never changes the terminal's width by opening or closing: its room stays set aside beside a terminal session (see [Dashboard](dashboard.md)).
 
 The columns change only when the terminal becomes wider than it has ever been, when it becomes narrower than 70% of that width (the text would be too small, so it re-wraps at full size), when the font size setting changes, or when another device takes the session over. Paired terminals in the dock and touch devices size to the space they have.
 

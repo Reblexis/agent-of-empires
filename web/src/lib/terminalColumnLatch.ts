@@ -7,7 +7,7 @@ import { safeGetItem, safeSetItem } from "./safeStorage";
 /** Below this share of the widest width the text would be too small: re-wrap at full size instead. */
 export const MIN_FIT = 0.7;
 
-const STORAGE_PREFIX = "aoe-term-width-latch:";
+const STORAGE_PREFIX = "aoe-term-width-latch2:";
 
 export interface ColumnFit {
   cols: number;
