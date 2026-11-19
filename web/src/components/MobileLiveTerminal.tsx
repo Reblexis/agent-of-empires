@@ -1,3 +1,4 @@
+import { fitColumns, loadColumnLatch, saveColumnLatch } from "../lib/terminalColumnLatch";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, RefObject } from "react";
 import type { AnsiSegment } from "../lib/ansi";
@@ -95,6 +96,9 @@ export interface MobileLiveTerminalProps {
   /** Identifies this pane in the per-session reading-position memory (lib/liveScrollMemory), where scrolling
    *  records the reader's place. Omitted: no memory. */
   scrollMemoryKey?: string;
+  /** Keep the column count across width changes, shared by every pane with this key (the desktop agent
+   *  terminal). A narrower pane draws the same columns in smaller text instead of resizing tmux. */
+  columnLatchKey?: string;
   /** The remembered row to reopen on (recalled by the parent at mount); null opens at the live tail. */
   initialReadingRow?: number | null;
   /** Draw plain typing at the cursor before the server echoes it; only while this browser's keys reach the pane. */
@@ -150,6 +154,7 @@ export function MobileLiveTerminal({
   keyboardOpen,
   predictEcho = false,
   scrollMemoryKey,
+  columnLatchKey,
   initialReadingRow = null,
 }: MobileLiveTerminalProps) {
   const { settings, update } = useWebSettings();
@@ -184,17 +189,26 @@ export function MobileLiveTerminal({
   );
   const { value: frame, held: selectionHeld } = useSelectionHold(streamFrame, scrollerRef, absorbExposedHistory);
 
-  const lineH = fontSize * LINE_RATIO;
+  // Text scale that makes the kept columns fit a narrower pane; 1 at full size (see terminalColumnLatch).
+  const keepColumns = !coarse && !!columnLatchKey;
+  const [fit, setFit] = useState(1);
+  const renderFontSize = keepColumns ? fontSize * fit : fontSize;
+  const lineH = renderFontSize * LINE_RATIO;
   // Glyph advance measured in the scroller after fonts load, so cols sent to tmux match the real font.
   const measureRef = useRef<HTMLSpanElement>(null);
   const [charW, setCharW] = useState(() => fontSize * 0.6);
+  // The same glyph at the unscaled font size: the kept column count derives from it.
+  const baseMeasureRef = useRef<HTMLSpanElement>(null);
+  const [baseCharW, setBaseCharW] = useState(() => fontSize * 0.6);
   const remeasure = useCallback(() => {
     const w = (measureRef.current?.getBoundingClientRect().width ?? 0) / 20;
     if (w > 0) setCharW((prev) => (Math.abs(prev - w) > 0.01 ? w : prev));
+    const base = (baseMeasureRef.current?.getBoundingClientRect().width ?? 0) / 20;
+    if (base > 0) setBaseCharW((prev) => (Math.abs(prev - base) > 0.01 ? base : prev));
   }, []);
   useLayoutEffect(() => {
     remeasure();
-  }, [remeasure, fontSize, fontFamily]);
+  }, [remeasure, renderFontSize, fontSize, fontFamily]);
   useEffect(() => {
     const fonts = (document as Document & { fonts?: { ready: Promise<unknown> } }).fonts;
     // No FontFaceSet in jsdom; the layout-effect measure stands.
@@ -627,7 +641,17 @@ export function MobileLiveTerminal({
       const width = el.clientWidth;
       const height = el.clientHeight;
       if (width <= 0 || height <= 0) return;
-      const cols = Math.floor(width / charW);
+      let cols = Math.floor(width / charW);
+      let rowLineH = lineH;
+      let kept: { latchWidth: number; fit: number; stored: number } | null = null;
+      if (keepColumns && columnLatchKey && baseCharW > 0) {
+        const stored = loadColumnLatch(columnLatchKey);
+        const next = fitColumns(width, baseCharW, stored);
+        cols = next.cols;
+        // Rows are held with the columns: smaller text shows more history above an unchanged screen.
+        rowLineH = fontSize * LINE_RATIO;
+        kept = { latchWidth: next.latchWidth, fit: next.fit, stored };
+      }
       const latch = latchRef.current;
       const widthChanged = Math.abs(width - latch.width) > 1;
       // Mid-pinch, or with the keyboard up before a latch exists, only the render width may change.
@@ -641,9 +665,13 @@ export function MobileLiveTerminal({
       } else if (height > latch.maxHeight) {
         latch.maxHeight = height;
       }
-      const rows = Math.floor(latch.maxHeight / lineH);
+      const rows = Math.floor(latch.maxHeight / rowLineH);
       // Implausibly small means a hidden or transitioning container.
       if (cols < 20 || rows < 5) return;
+      if (kept && columnLatchKey) {
+        if (kept.latchWidth !== kept.stored) saveColumnLatch(columnLatchKey, kept.latchWidth);
+        setFit(kept.fit);
+      }
       rowsRef.current = rows;
       setRenderCols(cols);
       sendResize(cols, rows);
@@ -659,7 +687,21 @@ export function MobileLiveTerminal({
       ro.disconnect();
       if (timer) clearTimeout(timer);
     };
-  }, [active, charW, lineH, latchRef, sendResize, setWindow, pinIfWasAtBottom, keyboardOpen, pinchGeneration]);
+  }, [
+    active,
+    charW,
+    lineH,
+    latchRef,
+    sendResize,
+    setWindow,
+    pinIfWasAtBottom,
+    keyboardOpen,
+    pinchGeneration,
+    keepColumns,
+    columnLatchKey,
+    baseCharW,
+    fontSize,
+  ]);
 
   // Opening the keyboard means typing: return to the live prompt before the viewport shrinks. Focus counts only
   // on touch, where it is the keyboard opening; a desktop click focuses just so the physical keyboard types.
@@ -897,7 +939,7 @@ export function MobileLiveTerminal({
         }`}
         style={
           {
-            fontSize: `${fontSize}px`,
+            fontSize: `${renderFontSize}px`,
             fontFamily,
             lineHeight: `${lineH}px`,
             // A variable, so a re-measure restyles mounted rows without re-rendering them.
@@ -921,6 +963,14 @@ export function MobileLiveTerminal({
           aria-hidden="true"
           className="absolute whitespace-pre"
           style={{ visibility: "hidden", pointerEvents: "none" }}
+        >
+          MMMMMMMMMMMMMMMMMMMM
+        </span>
+        <span
+          ref={baseMeasureRef}
+          aria-hidden="true"
+          className="absolute whitespace-pre"
+          style={{ visibility: "hidden", pointerEvents: "none", fontSize: `${fontSize}px` }}
         >
           MMMMMMMMMMMMMMMMMMMM
         </span>

@@ -371,6 +371,7 @@ export function LiveTerminalView({ session, active = true, surface = "agent", te
           bottomAlign={surface === "agent"}
           keyboardOpen={keyboardOpen}
           scrollMemoryKey={scrollMemoryKey}
+          columnLatchKey={surface === "agent" ? "agent" : undefined}
           initialReadingRow={initialReadingRow}
           predictEcho={live.state.connected && live.state.isOwner}
         />

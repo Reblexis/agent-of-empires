@@ -47,6 +47,12 @@ Opening a session shows a screen at once instead of a "Starting session..." plac
 - Without a remembered or prefetched screen (the first open on a touch device, say), the placeholder shows until the stream connects.
 - A session never draws at another size than this browser's terminal. A remembered or prefetched screen stands in only when it was drawn at the size the terminal has now; one from a narrower window or another device is skipped, and so is any prefetched screen before this page has opened its first session. The live stream's first screen is the pane already resized to this browser: the wait is at most 0.6 seconds, and the screen shows as it is when another device controls the size. Text an agent printed while the pane was narrower keeps its line breaks.
 
+## Width
+
+On a desktop the agent terminal keeps its column count. The count comes from the widest the terminal has been in this browser on this screen at the chosen font size. When the terminal gets narrower (the session sidebar opens or is dragged wider, the browser window shrinks) the text is drawn smaller so the same columns still fit, and returns to full size when the room comes back; tmux is not resized and the agent does not redraw. Rows are held the same way.
+
+The columns change only when the terminal becomes wider than it has ever been, when it becomes narrower than 70% of that width (the text would be too small, so it re-wraps at full size), when the font size setting changes, or when another device takes the session over. Paired terminals in the dock and touch devices size to the space they have.
+
 ## Copy and scroll
 
 The terminal uses tmux for scrollback and selection, so no modifier keys are involved. Scroll with the wheel or a one-finger swipe. Select by click-dragging; dragging past the top edge scrolls into scrollback and extends the selection, and releasing copies to your system clipboard automatically. While the mouse button is held over the text the view does not follow new output, so the text stays under the pointer.
