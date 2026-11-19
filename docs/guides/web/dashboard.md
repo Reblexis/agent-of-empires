@@ -20,8 +20,9 @@ Beside a terminal session the right dock lies over the terminal instead of
 beside it. The terminal keeps its full width and its column count whether the
 dock is open, closed or dragged wider, so the agent never redraws for a panel;
 the dock covers the terminal's right edge while it is open. The **Back to
-live** button stays clear of the dock. Beside a structured-view session the
-dock sits next to the conversation and the conversation reflows.
+live** button stays clear of the dock. Beside a structured-view session, or a
+file opened from the diff or files tab, the dock sits next to the main pane and
+covers nothing.
 
 The last tab you choose follows you between sessions and survives reload in the
 same browser. A destination keeps its own tab placement, collapse state and

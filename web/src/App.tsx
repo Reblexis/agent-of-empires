@@ -2001,7 +2001,7 @@ function AppContent({
           <ContentSplit
             collapsed={rightDockCollapsed}
             onToggleCollapse={toggleRightDock}
-            overlay={!!activeSession && activeSession.view !== "structured"}
+            overlay={!!activeSession && activeSession.view !== "structured" && !selectedFilePath}
             left={
               <div className="flex-1 flex flex-col min-h-0 overflow-hidden relative">
                 {activeSessionId && (
