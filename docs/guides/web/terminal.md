@@ -49,9 +49,11 @@ Opening a session shows a loading animation until its live screen arrives; an ol
 
 ## Width
 
-On a desktop the agent terminal keeps its column count. The count comes from the widest the terminal has been in this browser on this screen at the chosen font size. When the terminal gets narrower (the session sidebar opens or is dragged wider, the browser window shrinks) the text is drawn smaller so the same columns still fit, and returns to full size when the room comes back; tmux is not resized and the agent does not redraw. Rows are held the same way. The right dock never changes the terminal's width by opening or closing: its room stays set aside beside a terminal session (see [Dashboard](dashboard.md)).
+A session keeps the column count it has. An agent prints its whole conversation again whenever its pane's columns change, on top of the old lines tmux has just re-wrapped, which leaves duplicated, broken text in the history; so the columns are not the browser's to change.
 
-The columns change only when the terminal becomes wider than it has ever been, when it becomes narrower than 70% of that width (the text would be too small, so it re-wraps at full size), when the font size setting changes, or when another device takes the session over. Paired terminals in the dock and touch devices size to the space they have.
+On a desktop the agent terminal asks for the columns that fit its room at the chosen font size. The server keeps the pane's present columns when they are within 70% of that in either direction and were last set at the same font size. The browser draws the pane's columns in the room it has: smaller text when the pane is wider than the room, an empty margin on the right when it is narrower. tmux is not resized and the agent does not redraw. The session sidebar, the right dock, the browser window, another screen and another desktop browser therefore never re-wrap a session. Rows follow the room's height at the chosen font size.
+
+The columns change only the first time a session is opened, when the room and the pane differ by more than 70% (the text would be too small, or most of the room empty), when the font size setting changes, or when a touch device takes the session over. The right dock never changes the terminal's width by opening or closing: its room stays set aside beside a terminal session (see [Dashboard](dashboard.md)). Paired terminals in the dock and touch devices size to the space they have.
 
 ## Copy and scroll
 

@@ -6,6 +6,8 @@ export interface MockHandle {
   wsMessages: Buffer[];
   /** Everything sent on the live-ws route, input bytes and JSON control. */
   liveMessages: Buffer[];
+  /** The pane's columns after each resize the mock server answered. */
+  livePaneCols: number[];
   liveInput: Buffer[];
   waitForLiveReady: () => Promise<void>;
   /** Switch to explicit frames and await the real reducer's debug frame counter. */
@@ -14,7 +16,7 @@ export interface MockHandle {
 }
 
 type LiveFrameMessage = Extract<LiveServerMessage, { type: "frame" }>;
-type LiveFrameDefaults = Pick<LiveFrameMessage, "cursor" | "altScreen" | "mouse" | "mouseSgr" | "pane0">;
+type LiveFrameDefaults = Pick<LiveFrameMessage, "cursor" | "altScreen" | "mouse" | "mouseSgr" | "pane0" | "cols">;
 type LiveFrameFields = Omit<LiveFrameMessage, "type" | "seq" | keyof LiveFrameDefaults> & Partial<LiveFrameDefaults>;
 
 /** `history` numbered scrollback lines, then a `rows`-tall screen with a prompt on its first line. */
@@ -45,6 +47,7 @@ function liveFrameMessage(seq: number, frame: LiveFrameFields): LiveServerMessag
     ...frame,
     type: "frame",
     seq,
+    cols: frame.cols ?? 0,
     cursor: frame.cursor ?? null,
     altScreen: frame.altScreen ?? false,
     mouse: frame.mouse ?? false,
@@ -57,6 +60,9 @@ export async function mockTerminalApis(
   page: Page,
   opts: {
     liveHistory?: number;
+    /** Columns the session's pane has before this page opens it, sized at the page's own text scale. Like the
+     *  server, the mock keeps a pane's columns while they are within 70% of what a keeping viewer asks for. */
+    paneCols?: number;
     /** History line text by 1-based line number; defaults to a short line that never wraps. */
     liveHistoryLine?: (i: number) => string;
     delayLiveWindowShrinkMs?: number;
@@ -84,6 +90,7 @@ export async function mockTerminalApis(
   const handle: MockHandle = {
     wsMessages: [],
     liveMessages: [],
+    livePaneCols: [],
     liveInput: [],
     waitForLiveReady: async () => {
       await page.evaluate(() => document.fonts.ready.then(() => undefined));
@@ -176,15 +183,17 @@ export async function mockTerminalApis(
     liveSockets.push(socket);
     let rows = 24;
     let window = 24;
+    let paneCols = opts.paneCols ?? 0;
+    let sized = paneCols > 0;
     const history = opts.liveHistory ?? 120;
     const reply = (responseRows = rows, responseWindow = window) => {
       if (customFrames) return;
       try {
         send(
-          liveFrameMessage(
-            socket.frames + 1,
-            makeLiveFrame({ rows: responseRows, history, window: responseWindow, line: opts.liveHistoryLine }),
-          ),
+          liveFrameMessage(socket.frames + 1, {
+            ...makeLiveFrame({ rows: responseRows, history, window: responseWindow, line: opts.liveHistoryLine }),
+            cols: paneCols,
+          }),
         );
         socket.frames++;
       } catch {
@@ -205,6 +214,12 @@ export async function mockTerminalApis(
           send({ type: "size_owner", is_owner: true });
         } else if (control.type === "resize" && control.rows) {
           rows = control.rows;
+          // src/tmux/session.rs `kept_cols`.
+          const keeps =
+            !!control.keep && sized && paneCols * 10 >= control.cols * 7 && control.cols * 10 >= paneCols * 7;
+          if (!keeps) paneCols = control.cols;
+          sized = sized || !!control.keep;
+          handle.livePaneCols.push(paneCols);
           window = Math.max(window, rows);
           send({ type: "size_owner", is_owner: true });
           reply();

@@ -1,4 +1,4 @@
-import { fitColumns, loadColumnLatch, saveColumnLatch } from "../lib/terminalColumnLatch";
+import { columnsScale, MIN_DRAWN_FIT, paneFit } from "../lib/terminalPaneFit";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, RefObject } from "react";
 import type { AnsiSegment } from "../lib/ansi";
@@ -64,7 +64,7 @@ export interface MobileLiveTerminalProps {
   active: boolean;
   /** Off the live edge: the capture window is widened and the jump-to-latest button shows. */
   reading: boolean;
-  sendResize: (cols: number, rows: number) => void;
+  sendResize: (cols: number, rows: number, keep?: string) => void;
   setWindow: (lines: number) => void;
   setCadence: (fast: boolean) => void;
   enterReading: (rows: number) => void;
@@ -98,7 +98,7 @@ export interface MobileLiveTerminalProps {
   scrollMemoryKey?: string;
   /** Keep the column count across width changes, shared by every pane with this key (the desktop agent
    *  terminal). A narrower pane draws the same columns in smaller text instead of resizing tmux. */
-  columnLatchKey?: string;
+  keepPaneColumns?: boolean;
   /** The remembered row to reopen on (recalled by the parent at mount); null opens at the live tail. */
   initialReadingRow?: number | null;
   /** Draw plain typing at the cursor before the server echoes it; only while this browser's keys reach the pane. */
@@ -154,7 +154,7 @@ export function MobileLiveTerminal({
   keyboardOpen,
   predictEcho = false,
   scrollMemoryKey,
-  columnLatchKey,
+  keepPaneColumns,
   initialReadingRow = null,
 }: MobileLiveTerminalProps) {
   const { settings, update } = useWebSettings();
@@ -189,17 +189,21 @@ export function MobileLiveTerminal({
   );
   const { value: frame, held: selectionHeld } = useSelectionHold(streamFrame, scrollerRef, absorbExposedHistory);
 
-  // Text scale that makes the kept columns fit a narrower pane; 1 at full size (see terminalColumnLatch).
-  const keepColumns = !coarse && !!columnLatchKey;
+  // A session keeps the columns it has (see terminalPaneFit): this terminal asks for the columns that fit its room
+  // and draws whatever columns the pane has, in smaller text when the pane is wider than the room.
+  const keepColumns = !coarse && !!keepPaneColumns;
+  const paneCols = keepColumns ? (frame?.cols ?? 0) : 0;
+  const [roomWidth, setRoomWidth] = useState(0);
+  // The glyph advance at the unscaled font size: the columns asked for, and the text scale, derive from it.
+  const baseMeasureRef = useRef<HTMLSpanElement>(null);
+  const [baseCharW, setBaseCharW] = useState(() => fontSize * 0.6);
+  const idealFit = keepColumns ? paneFit(roomWidth, baseCharW, paneCols) : 1;
   const [fit, setFit] = useState(1);
-  const renderFontSize = keepColumns ? fontSize * fit : fontSize;
+  const renderFontSize = fontSize * fit;
   const lineH = renderFontSize * LINE_RATIO;
   // Glyph advance measured in the scroller after fonts load, so cols sent to tmux match the real font.
   const measureRef = useRef<HTMLSpanElement>(null);
   const [charW, setCharW] = useState(() => fontSize * 0.6);
-  // The same glyph at the unscaled font size: the kept column count derives from it.
-  const baseMeasureRef = useRef<HTMLSpanElement>(null);
-  const [baseCharW, setBaseCharW] = useState(() => fontSize * 0.6);
   const remeasure = useCallback(() => {
     const w = (measureRef.current?.getBoundingClientRect().width ?? 0) / 20;
     if (w > 0) setCharW((prev) => (Math.abs(prev - w) > 0.01 ? w : prev));
@@ -215,6 +219,23 @@ export function MobileLiveTerminal({
     fonts?.ready?.then(() => remeasure()).catch(() => {});
   }, [remeasure]);
 
+  // Glyph advances do not always scale with the font size (hinting snaps them to whole pixels), so the scale that
+  // should fit is checked against the glyph as drawn and lowered until the pane's columns really fit the room.
+  const idealFitRef = useRef(1);
+  useLayoutEffect(() => {
+    if (idealFitRef.current !== idealFit) {
+      idealFitRef.current = idealFit;
+      setFit(idealFit);
+      return;
+    }
+    if (idealFit >= 1 || fit <= MIN_DRAWN_FIT) return;
+    const cell = (measureRef.current?.getBoundingClientRect().width ?? 0) / 20;
+    const needed = paneCols * cell;
+    if (cell > 0 && needed > roomWidth + 0.5) {
+      setFit(Math.max(MIN_DRAWN_FIT, Math.floor(fit * (roomWidth / needed) * 1000) / 1000));
+    }
+  }, [idealFit, fit, paneCols, roomWidth]);
+
   const rowsRef = useRef(0);
   const readingRef = useRef(reading);
   useEffect(() => {
@@ -224,7 +245,9 @@ export function MobileLiveTerminal({
   const [parseCache] = useState(() => new LineParseCache());
   const parsedLines = useMemo(() => (frame ? parseCache.lines(frame.lines ?? frame.content) : []), [frame, parseCache]);
   // Columns rendered at; wrapping keeps a frame readable when another client widened the window.
-  const [renderCols, setRenderCols] = useState(0);
+  const [gridCols, setRenderCols] = useState(0);
+  // Lines wrap at the pane's own columns when they are known, never at the narrower room's.
+  const renderCols = paneCols > 0 ? paneCols : gridCols;
   const echo = useLocalEcho({ enabled: predictEcho, reading, frame, lines: parsedLines, renderCols });
   const lines = echo.lines;
   const [wrapCache] = useState(
@@ -643,14 +666,12 @@ export function MobileLiveTerminal({
       if (width <= 0 || height <= 0) return;
       let cols = Math.floor(width / charW);
       let rowLineH = lineH;
-      let kept: { latchWidth: number; fit: number; stored: number } | null = null;
-      if (keepColumns && columnLatchKey && baseCharW > 0) {
-        const stored = loadColumnLatch(columnLatchKey);
-        const next = fitColumns(width, baseCharW, stored);
-        cols = next.cols;
-        // Rows are held with the columns: smaller text shows more history above an unchanged screen.
+      const keeping = keepColumns && baseCharW > 0;
+      if (keeping) {
+        // Ask at the full font size; the server answers with the columns the pane keeps.
+        cols = Math.floor(width / baseCharW);
+        // Rows come from the full font size too: smaller text shows more history above an unchanged screen.
         rowLineH = fontSize * LINE_RATIO;
-        kept = { latchWidth: next.latchWidth, fit: next.fit, stored };
       }
       const latch = latchRef.current;
       const widthChanged = Math.abs(width - latch.width) > 1;
@@ -668,13 +689,11 @@ export function MobileLiveTerminal({
       const rows = Math.floor(latch.maxHeight / rowLineH);
       // Implausibly small means a hidden or transitioning container.
       if (cols < 20 || rows < 5) return;
-      if (kept && columnLatchKey) {
-        if (kept.latchWidth !== kept.stored) saveColumnLatch(columnLatchKey, kept.latchWidth);
-        setFit(kept.fit);
-      }
+      if (keeping) setRoomWidth(width);
       rowsRef.current = rows;
       setRenderCols(cols);
-      sendResize(cols, rows);
+      if (keeping) sendResize(cols, rows, columnsScale(fontSize));
+      else sendResize(cols, rows);
       if (!readingRef.current) setWindow(rows * LIVE_WINDOW_SCREENS);
     };
     const ro = new ResizeObserver(() => {
@@ -698,7 +717,6 @@ export function MobileLiveTerminal({
     keyboardOpen,
     pinchGeneration,
     keepColumns,
-    columnLatchKey,
     baseCharW,
     fontSize,
   ]);

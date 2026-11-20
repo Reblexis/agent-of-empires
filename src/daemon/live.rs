@@ -39,6 +39,10 @@ pub struct LivePane0 {
 pub struct LivePaneMeta {
     /// Rows of live screen at the end of `content`; the rest is history.
     pub rows: u16,
+    /// Columns of the pane as tmux has it, which a viewer that keeps columns draws in the room it has; 0 when
+    /// unknown.
+    #[serde(default)]
+    pub cols: u16,
     /// Lines in the pane's scrollback.
     pub history: u32,
     pub cursor: Option<LiveCursor>,
@@ -100,7 +104,15 @@ pub enum LiveServerMessage {
 pub enum LiveClientMessage {
     /// Claim the size lock and set the pane's grid.
     #[serde(rename = "resize")]
-    Resize { cols: u16, rows: u16 },
+    Resize {
+        cols: u16,
+        rows: u16,
+        /// Keep the pane's present columns when they are close to `cols` and were set at this text scale (see
+        /// `tmux::kept_cols`). Absent: the pane takes `cols`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        #[cfg_attr(feature = "typescript", ts(optional))]
+        keep: Option<String>,
+    },
     /// Total capture window, history included.
     #[serde(rename = "window")]
     Window { lines: usize },
@@ -165,6 +177,7 @@ mod tests {
     fn meta() -> LivePaneMeta {
         LivePaneMeta {
             rows: 24,
+            cols: 100,
             history: 40,
             cursor: Some(LiveCursor { x: 3, y: 1 }),
             alt_screen: true,
@@ -192,7 +205,7 @@ mod tests {
                 },
                 serde_json::json!({
                     "type": "frame", "seq": 7, "content": "hi\n",
-                    "rows": 24, "history": 40, "cursor": {"x": 3, "y": 1},
+                    "rows": 24, "cols": 100, "history": 40, "cursor": {"x": 3, "y": 1},
                     "altScreen": true, "mouse": true, "mouseSgr": true,
                     "pane0": {"cols": 40, "rows": 10, "left": 41, "top": 0},
                 }),
@@ -210,7 +223,7 @@ mod tests {
                 },
                 serde_json::json!({
                     "type": "patch", "seq": 8, "base": 7, "shift": 2, "lines": [[0, "a"]],
-                    "rows": 24, "history": 0, "cursor": null,
+                    "rows": 24, "cols": 0, "history": 0, "cursor": null,
                     "altScreen": false, "mouse": false, "mouseSgr": false,
                     "pane0": null,
                 }),
@@ -249,8 +262,20 @@ mod tests {
     fn the_control_messages_are_what_the_daemon_accepts() {
         let cases: Vec<(LiveClientMessage, serde_json::Value)> = vec![
             (
-                LiveClientMessage::Resize { cols: 80, rows: 24 },
+                LiveClientMessage::Resize {
+                    cols: 80,
+                    rows: 24,
+                    keep: None,
+                },
                 serde_json::json!({"type": "resize", "cols": 80, "rows": 24}),
+            ),
+            (
+                LiveClientMessage::Resize {
+                    cols: 80,
+                    rows: 24,
+                    keep: Some("14".into()),
+                },
+                serde_json::json!({"type": "resize", "cols": 80, "rows": 24, "keep": "14"}),
             ),
             (
                 LiveClientMessage::Window { lines: 2000 },

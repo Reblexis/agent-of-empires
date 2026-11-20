@@ -1533,10 +1533,25 @@ async fn handle_live_ws_inner(
                             continue;
                         };
                         match control {
-                            LiveClientMessage::Resize { cols, rows } => {
+                            LiveClientMessage::Resize { cols, rows, keep } => {
                                 if cols == 0 || rows == 0 {
                                     continue;
                                 }
+                                // A session keeps the columns it has: a viewer that asks to keep them gets the
+                                // pane's present columns when they are close to what it asked for, and draws
+                                // them in the room it has. Everything below works with the kept count.
+                                let cols = match keep.clone() {
+                                    Some(tag) => {
+                                        let name = tmux_name.clone();
+                                        tokio::task::spawn_blocking(move || {
+                                            crate::tmux::Session::from_name(&name)
+                                                .cols_for_viewer(&tag, cols)
+                                        })
+                                        .await
+                                        .unwrap_or(cols)
+                                    }
+                                    None => cols,
+                                };
                                 settings.screen_rows.store(rows as u64, Ordering::Relaxed);
                                 settings.screen_cols.store(cols as u64, Ordering::Relaxed);
                                 // Never let the capture window clip the screen.
@@ -1565,6 +1580,9 @@ async fn handle_live_ws_inner(
                                     );
                                     #[cfg(not(unix))]
                                     let owned = resize_and_reseed(&session, &who, cols, rows);
+                                    if let (true, Some(tag)) = (owned, keep) {
+                                        session.set_cols_tag(&tag);
+                                    }
                                     owned
                                 })
                                 .await
@@ -1834,6 +1852,7 @@ fn frame_meta(cursor: Option<&crate::tmux::PaneCursor>) -> LivePaneMeta {
     let (origin_x, origin_y) = pane0.map_or((0, 0), |p| (p.left, p.top));
     LivePaneMeta {
         rows: cursor.map_or(0, |c| c.pane_height),
+        cols: cursor.map_or(0, |c| c.pane_width),
         history: cursor.map_or(0, |c| c.history_size),
         cursor: cursor.filter(|c| c.visible).map(|c| LiveCursor {
             x: c.x.saturating_add(origin_x),

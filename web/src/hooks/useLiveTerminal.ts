@@ -52,7 +52,9 @@ type LiveDataMessage = Extract<LiveServerMessage, { type: "frame" | "patch" }>;
 /** Longest a socket's first screens wait for the pane to take this page's size. */
 const FIRST_SCREEN_HOLD_MS = 600;
 
-export type LiveFrame = Omit<FrameMessage, "type" | "seq" | "pane0"> & {
+export type LiveFrame = Omit<FrameMessage, "type" | "seq" | "pane0" | "cols"> & {
+  /** Columns of the pane as tmux has it; absent or 0 when unknown (a prefetched picture). */
+  cols?: number;
   lines?: string[];
   seq?: number;
   receivedAt?: number;
@@ -110,7 +112,7 @@ export function useLiveTerminal(
   const bannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const connectRef = useRef<(() => void) | null>(null);
   const desiredRef = useRef<{
-    resize: { cols: number; rows: number } | null;
+    resize: { cols: number; rows: number; keep?: string } | null;
     window: number | null;
     fast: boolean;
   }>({ resize: null, window: null, fast: true });
@@ -416,6 +418,7 @@ export function useLiveTerminal(
           seq: msg.seq,
           receivedAt: performance.now(),
           rows: msg.rows,
+          cols: msg.cols,
           history: msg.history,
           cursor: msg.cursor,
           altScreen: msg.altScreen,
@@ -557,18 +560,18 @@ export function useLiveTerminal(
   );
 
   const sendResize = useCallback(
-    (cols: number, rows: number) => {
+    (cols: number, rows: number, keep?: string) => {
       const prev = desiredRef.current.resize;
-      if (prev && prev.cols === cols && prev.rows === rows) return;
+      if (prev && prev.cols === cols && prev.rows === rows && prev.keep === keep) return;
       // tmux re-wraps its whole history to a new width, so the copy is stale.
       if (prev && prev.cols !== cols) historyRef.current = null;
-      desiredRef.current.resize = { cols, rows };
+      desiredRef.current.resize = keep ? { cols, rows, keep } : { cols, rows };
       noteGrid(wsPath, { cols, rows });
       // A stand-in drawn at another size comes down; the stream's first screen replaces it.
       if (!streamShownRef.current && sessionId && !recallFittingScreen(sessionId, wsPath)) {
         setState((prev) => (prev.frame ? { ...prev, frame: null } : prev));
       }
-      sendIfOpen(encodeControl({ type: "resize", cols, rows }));
+      sendIfOpen(encodeControl({ type: "resize", ...desiredRef.current.resize }));
     },
     [sendIfOpen, sessionId, wsPath, setState],
   );

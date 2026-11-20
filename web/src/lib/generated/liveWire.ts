@@ -10,6 +10,11 @@ export type LivePaneMeta = {
  */
 rows: number, 
 /**
+ * Columns of the pane as tmux has it, which a viewer that keeps columns draws in the room it has; 0 when
+ * unknown.
+ */
+cols: number, 
+/**
  * Lines in the pane's scrollback.
  */
 history: number, cursor: LiveCursor | null, 
@@ -32,6 +37,11 @@ export type LiveServerMessage = { "type": "frame", seq: number, content: string,
  */
 rows: number, 
 /**
+ * Columns of the pane as tmux has it, which a viewer that keeps columns draws in the room it has; 0 when
+ * unknown.
+ */
+cols: number, 
+/**
  * Lines in the pane's scrollback.
  */
 history: number, cursor: LiveCursor | null, 
@@ -52,6 +62,11 @@ mouseSgr: boolean, pane0: LivePane0 | null, } | { "type": "patch", seq: number, 
  */
 rows: number, 
 /**
+ * Columns of the pane as tmux has it, which a viewer that keeps columns draws in the room it has; 0 when
+ * unknown.
+ */
+cols: number, 
+/**
  * Lines in the pane's scrollback.
  */
 history: number, cursor: LiveCursor | null, 
@@ -68,4 +83,9 @@ mouse: boolean,
  */
 mouseSgr: boolean, pane0: LivePane0 | null, } | { "type": "size_owner", is_owner: boolean, } | { "type": "clipboard", text: string, } | { "type": "transport", grid: boolean, } | { "type": "hb" };
 
-export type LiveClientMessage = { "type": "resize", cols: number, rows: number, } | { "type": "window", lines: number, } | { "type": "cadence", fast: boolean, } | { "type": "claim_if_vacant" } | { "type": "claim" } | { "type": "caps", deflate: boolean, patch: boolean, } | { "type": "resync" } | { "type": "paste", text: string, submit: boolean, };
+export type LiveClientMessage = { "type": "resize", cols: number, rows: number, 
+/**
+ * Keep the pane's present columns when they are close to `cols` and were set at this text scale (see
+ * `tmux::kept_cols`). Absent: the pane takes `cols`.
+ */
+keep?: string, } | { "type": "window", lines: number, } | { "type": "cadence", fast: boolean, } | { "type": "claim_if_vacant" } | { "type": "claim" } | { "type": "caps", deflate: boolean, patch: boolean, } | { "type": "resync" } | { "type": "paste", text: string, submit: boolean, };
