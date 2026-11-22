@@ -107,8 +107,8 @@ pub enum LiveClientMessage {
     Resize {
         cols: u16,
         rows: u16,
-        /// Keep the pane's present columns when they are close to `cols` and were set at this text scale (see
-        /// `tmux::kept_cols`). Absent: the pane takes `cols`.
+        /// Keep the pane's present grid when it was set at this text scale and `cols` is neither wider nor far
+        /// narrower (see `tmux::kept_grid`). Absent: the pane takes `cols` and `rows`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         #[cfg_attr(feature = "typescript", ts(optional))]
         keep: Option<String>,

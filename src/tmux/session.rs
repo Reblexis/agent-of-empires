@@ -47,21 +47,27 @@ impl PaneEnvMutation {
 /// Cross-process size-owner lock, stored as tmux user options on the session.
 const SIZE_OWNER_OPT: &str = "@aoe_size_owner";
 
-/// The text scale a viewer last set this pane's columns at (see `kept_cols`).
+/// The text scale a viewer last set this pane's columns at (see `kept_grid`).
 const COLS_TAG_OPT: &str = "@aoe_cols_tag";
 /// A stored tag every viewer's scale matches: set by hand on panes sized before the rule existed.
 const COLS_TAG_ANY: &str = "*";
 
-/// The columns a pane gets when a viewer that keeps columns asks for `want`.
+/// The (columns, rows) a pane gets when a viewer that keeps the grid asks for `want`.
 ///
 /// An agent reprints its whole conversation whenever its pane's columns change, on top of the lines tmux has just
-/// re-wrapped, so a session keeps the columns it has (docs/guides/web/terminal.md, "Width"): the pane's present
-/// `pane` columns stand while they are within 70% of `want` in either direction and were set at the viewer's own
-/// text scale `tag`. The viewer draws them in the room it has.
-pub fn kept_cols(pane: u16, stored_tag: Option<&str>, tag: &str, want: u16) -> u16 {
+/// re-wrapped, and a change of rows alone makes it erase or repeat lines of its history, so a session keeps the
+/// grid it has (docs/guides/web/terminal.md, "Width"): the pane's present `pane` grid stands while its columns are
+/// at least the viewer's, at most the viewer's divided by 0.7, and were set at the viewer's own text scale `tag`.
+/// The viewer draws the pane's columns across its whole width, in smaller text when the pane is wider.
+pub fn kept_grid(
+    pane: (u16, u16),
+    stored_tag: Option<&str>,
+    tag: &str,
+    want: (u16, u16),
+) -> (u16, u16) {
     let same_scale = stored_tag.is_some_and(|stored| stored == tag || stored == COLS_TAG_ANY);
-    let (have, asked) = (u32::from(pane), u32::from(want));
-    if same_scale && pane > 0 && have * 10 >= asked * 7 && asked * 10 >= have * 7 {
+    let (have, asked) = (u32::from(pane.0), u32::from(want.0));
+    if same_scale && pane.0 > 0 && pane.1 > 0 && have >= asked && asked * 10 >= have * 7 {
         pane
     } else {
         want
@@ -1600,13 +1606,13 @@ impl Session {
         )
     }
 
-    /// The columns this session's pane gets when a viewer at text scale `tag` asks for `want` (see `kept_cols`).
-    /// A pane that cannot be read takes `want`.
-    pub fn cols_for_viewer(&self, tag: &str, want: u16) -> u16 {
+    /// The (columns, rows) this session's pane gets when a viewer at text scale `tag` asks for `want` (see
+    /// `kept_grid`). A pane that cannot be read takes `want`.
+    pub fn grid_for_viewer(&self, tag: &str, want: (u16, u16)) -> (u16, u16) {
         let Some(tag) = cols_tag(tag) else {
             return want;
         };
-        let format = format!("#{{pane_width}}|#{{{COLS_TAG_OPT}}}");
+        let format = format!("#{{pane_width}}|#{{pane_height}}|#{{{COLS_TAG_OPT}}}");
         let mut command = crate::tmux::tmux_command();
         command.args(["display-message", "-p", "-t", &self.name, "-F", &format]);
         let deadline = crate::tmux::TmuxCommandDeadline::new();
@@ -1617,11 +1623,15 @@ impl Session {
             return want;
         }
         let line = String::from_utf8_lossy(&output.stdout);
-        let Some((width, stored)) = line.trim().split_once('|') else {
+        let mut fields = line.trim().splitn(3, '|');
+        let (Some(width), Some(height), Some(stored)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
             return want;
         };
         let stored = (!stored.is_empty()).then_some(stored);
-        kept_cols(width.parse().unwrap_or(0), stored, tag, want)
+        let pane = (width.parse().unwrap_or(0), height.parse().unwrap_or(0));
+        kept_grid(pane, stored, tag, want)
     }
 
     /// Record the text scale the pane's columns were just set at.
@@ -3000,51 +3010,72 @@ mod tests {
     // Viktor, 2026-11-19: "now the bug is back again please look at it deeply and figure out root cause". Three
     // column changes in one day (dock, sidebar, a new layout) each made the agent reprint over re-wrapped history.
     #[test]
-    fn a_session_keeps_its_columns_when_the_viewer_has_a_little_more_or_less_room() {
-        // Narrower room (sidebar or dock opened, smaller window): the pane stands, the viewer shrinks its text.
-        assert_eq!(kept_cols(178, Some("14"), "14", 141), 178);
-        // Wider room: the pane stands, the viewer leaves a margin.
-        assert_eq!(kept_cols(121, Some("14"), "14", 141), 121);
-        assert_eq!(kept_cols(141, Some("14"), "14", 141), 141);
-        // Exactly 70% either way still keeps.
-        assert_eq!(kept_cols(100, Some("14"), "14", 70), 100);
-        assert_eq!(kept_cols(70, Some("14"), "14", 100), 70);
+    fn a_session_keeps_its_grid_when_the_viewer_has_a_little_less_room() {
+        // Narrower or shorter room (sidebar or dock opened, smaller window): the grid stands, the text shrinks.
+        assert_eq!(kept_grid((178, 34), Some("14"), "14", (141, 31)), (178, 34));
+        assert_eq!(kept_grid((141, 34), Some("14"), "14", (141, 31)), (141, 34));
+        // A taller room keeps the rows too: history fills the room above the screen.
+        assert_eq!(kept_grid((141, 31), Some("14"), "14", (141, 37)), (141, 31));
+        // Exactly 70% still keeps.
+        assert_eq!(kept_grid((100, 30), Some("14"), "14", (70, 30)), (100, 30));
+    }
+
+    // Viktor, 2026-11-21: "the text in cc terminal doesn't render across the full space .. horizontally". A small
+    // window shrank Daily goals from 86 to 56 columns; back in his 73-column room the pane stayed at 56.
+    #[test]
+    fn terminal_text_does_not_fill_the_panel_width() {
+        assert_eq!(kept_grid((56, 31), Some("14"), "14", (73, 34)), (73, 34));
+        assert_eq!(kept_grid((121, 31), Some("14"), "14", (141, 31)), (141, 31));
+        assert_eq!(kept_grid((70, 30), Some("14"), "14", (71, 30)), (71, 30));
+    }
+
+    // Viktor, 2026-11-21: "there are vertical render issues too". In a tmux pane running Claude Code, rows 34 to
+    // 31 and back erased five lines of its history and printed two twice (measured).
+    #[test]
+    fn a_shorter_or_taller_window_does_not_change_a_sessions_rows() {
+        let cases = [(31, 34), (34, 31), (25, 37), (37, 25)];
+        for (pane_rows, room_rows) in cases {
+            let kept = kept_grid((86, pane_rows), Some("14"), "14", (86, room_rows));
+            assert_eq!(
+                kept,
+                (86, pane_rows),
+                "{pane_rows} rows in a {room_rows}-row room"
+            );
+        }
     }
 
     #[test]
-    fn a_session_takes_the_viewers_columns_when_keeping_them_would_not_be_readable() {
+    fn a_session_takes_the_viewers_grid_when_keeping_it_would_not_be_readable() {
         // Text would be under 70% size.
-        assert_eq!(kept_cols(213, Some("14"), "14", 141), 141);
-        // Most of the room would be empty.
-        assert_eq!(kept_cols(70, Some("14"), "14", 141), 141);
-        // Never sized by a viewer (a new session's 80 columns).
-        assert_eq!(kept_cols(80, None, "14", 100), 100);
+        assert_eq!(kept_grid((213, 40), Some("14"), "14", (141, 31)), (141, 31));
+        // Never sized by a viewer (a new session's 80x24).
+        assert_eq!(kept_grid((80, 24), None, "14", (100, 31)), (100, 31));
         // The font size setting changed.
-        assert_eq!(kept_cols(141, Some("14"), "16", 123), 123);
+        assert_eq!(kept_grid((141, 31), Some("14"), "16", (123, 27)), (123, 27));
         // An unreadable pane.
-        assert_eq!(kept_cols(0, Some("14"), "14", 141), 141);
+        assert_eq!(kept_grid((0, 0), Some("14"), "14", (141, 31)), (141, 31));
     }
 
     #[test]
-    fn a_pane_sized_before_the_rule_keeps_its_columns_for_any_viewer() {
-        assert_eq!(kept_cols(178, Some("*"), "14", 141), 178);
-        assert_eq!(kept_cols(70, Some("*"), "14", 141), 141);
+    fn a_pane_sized_before_the_rule_keeps_its_grid_for_any_viewer() {
+        assert_eq!(kept_grid((178, 40), Some("*"), "14", (141, 31)), (178, 40));
+        assert_eq!(kept_grid((70, 40), Some("*"), "14", (141, 31)), (141, 31));
     }
 
     #[test]
     #[serial_test::serial]
-    fn a_viewer_keeps_a_sized_panes_columns_and_sizes_an_unsized_one() {
+    fn a_viewer_keeps_a_sized_panes_grid_and_sizes_an_unsized_one() {
         require_tmux!();
-        let (_guard, session) = owner_lock_session("aoe_test_cols_for_viewer");
-        // The test pane is 80 columns and no viewer has sized it.
-        assert_eq!(session.cols_for_viewer("14", 100), 100);
+        let (_guard, session) = owner_lock_session("aoe_test_grid_for_viewer");
+        // The test pane is 80x24 and no viewer has sized it.
+        assert_eq!(session.grid_for_viewer("14", (100, 30)), (100, 30));
         session.set_cols_tag("14");
-        assert_eq!(session.cols_for_viewer("14", 100), 80);
-        assert_eq!(session.cols_for_viewer("14", 70), 80);
-        assert_eq!(session.cols_for_viewer("14", 141), 141);
-        assert_eq!(session.cols_for_viewer("16", 100), 100);
-        // A tag tmux could expand is refused: the pane takes the viewer's columns.
-        assert_eq!(session.cols_for_viewer("#{pane_width}", 100), 100);
+        assert_eq!(session.grid_for_viewer("14", (70, 30)), (80, 24));
+        assert_eq!(session.grid_for_viewer("14", (80, 30)), (80, 24));
+        assert_eq!(session.grid_for_viewer("14", (100, 30)), (100, 30));
+        assert_eq!(session.grid_for_viewer("16", (70, 30)), (70, 30));
+        // A tag tmux could expand is refused: the pane takes the viewer's grid.
+        assert_eq!(session.grid_for_viewer("#{pane_width}", (70, 30)), (70, 30));
     }
 
     #[test]

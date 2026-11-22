@@ -8,6 +8,8 @@ export interface MockHandle {
   liveMessages: Buffer[];
   /** The pane's columns after each resize the mock server answered. */
   livePaneCols: number[];
+  /** The pane's rows after each resize the mock server answered. */
+  livePaneRows: number[];
   liveInput: Buffer[];
   waitForLiveReady: () => Promise<void>;
   /** Switch to explicit frames and await the real reducer's debug frame counter. */
@@ -61,7 +63,8 @@ export async function mockTerminalApis(
   opts: {
     liveHistory?: number;
     /** Columns the session's pane has before this page opens it, sized at the page's own text scale. Like the
-     *  server, the mock keeps a pane's columns while they are within 70% of what a keeping viewer asks for. */
+     *  server, the mock keeps a pane's grid while it is as wide as what a keeping viewer asks for and the asked
+     *  columns are at least 70% of it. */
     paneCols?: number;
     /** History line text by 1-based line number; defaults to a short line that never wraps. */
     liveHistoryLine?: (i: number) => string;
@@ -91,6 +94,7 @@ export async function mockTerminalApis(
     wsMessages: [],
     liveMessages: [],
     livePaneCols: [],
+    livePaneRows: [],
     liveInput: [],
     waitForLiveReady: async () => {
       await page.evaluate(() => document.fonts.ready.then(() => undefined));
@@ -213,13 +217,15 @@ export async function mockTerminalApis(
         if (control.type === "claim_if_vacant") {
           send({ type: "size_owner", is_owner: true });
         } else if (control.type === "resize" && control.rows) {
-          rows = control.rows;
-          // src/tmux/session.rs `kept_cols`.
-          const keeps =
-            !!control.keep && sized && paneCols * 10 >= control.cols * 7 && control.cols * 10 >= paneCols * 7;
-          if (!keeps) paneCols = control.cols;
+          // src/tmux/session.rs `kept_grid`.
+          const keeps = !!control.keep && sized && paneCols >= control.cols && control.cols * 10 >= paneCols * 7;
+          if (!keeps) {
+            paneCols = control.cols;
+            rows = control.rows;
+          }
           sized = sized || !!control.keep;
           handle.livePaneCols.push(paneCols);
+          handle.livePaneRows.push(rows);
           window = Math.max(window, rows);
           send({ type: "size_owner", is_owner: true });
           reply();

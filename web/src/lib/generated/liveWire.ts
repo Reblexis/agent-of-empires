@@ -85,7 +85,7 @@ mouseSgr: boolean, pane0: LivePane0 | null, } | { "type": "size_owner", is_owner
 
 export type LiveClientMessage = { "type": "resize", cols: number, rows: number, 
 /**
- * Keep the pane's present columns when they are close to `cols` and were set at this text scale (see
- * `tmux::kept_cols`). Absent: the pane takes `cols`.
+ * Keep the pane's present grid when it was set at this text scale and `cols` is neither wider nor far
+ * narrower (see `tmux::kept_grid`). Absent: the pane takes `cols` and `rows`.
  */
 keep?: string, } | { "type": "window", lines: number, } | { "type": "cadence", fast: boolean, } | { "type": "claim_if_vacant" } | { "type": "claim" } | { "type": "caps", deflate: boolean, patch: boolean, } | { "type": "resync" } | { "type": "paste", text: string, submit: boolean, };

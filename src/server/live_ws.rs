@@ -1537,20 +1537,20 @@ async fn handle_live_ws_inner(
                                 if cols == 0 || rows == 0 {
                                     continue;
                                 }
-                                // A session keeps the columns it has: a viewer that asks to keep them gets the
-                                // pane's present columns when they are close to what it asked for, and draws
-                                // them in the room it has. Everything below works with the kept count.
-                                let cols = match keep.clone() {
+                                // A session keeps the grid it has: a viewer that asks to keep it gets the pane's
+                                // present columns and rows unless the room is wider or far narrower, and draws them
+                                // in the room it has. Everything below works with the kept grid.
+                                let (cols, rows) = match keep.clone() {
                                     Some(tag) => {
                                         let name = tmux_name.clone();
                                         tokio::task::spawn_blocking(move || {
                                             crate::tmux::Session::from_name(&name)
-                                                .cols_for_viewer(&tag, cols)
+                                                .grid_for_viewer(&tag, (cols, rows))
                                         })
                                         .await
-                                        .unwrap_or(cols)
+                                        .unwrap_or((cols, rows))
                                     }
-                                    None => cols,
+                                    None => (cols, rows),
                                 };
                                 settings.screen_rows.store(rows as u64, Ordering::Relaxed);
                                 settings.screen_cols.store(cols as u64, Ordering::Relaxed);

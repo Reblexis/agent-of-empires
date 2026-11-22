@@ -1,8 +1,8 @@
 // An agent prints its whole conversation again whenever its pane's columns change, on top of the old lines tmux
-// has just re-wrapped, which leaves duplicated, broken text in the history. So a session keeps the columns it has
-// (docs/guides/web/terminal.md, "Width"): the desktop agent terminal asks for the columns that fit its room, the
-// server keeps the pane's present columns when they are close (`kept_cols` in src/tmux/session.rs), and the
-// terminal draws whatever columns the pane has in the room it has.
+// has just re-wrapped, which leaves duplicated, broken text in the history. So a session keeps the grid it has
+// (docs/guides/web/terminal.md, "Width"): the desktop agent terminal asks for the grid that fits its room, the
+// server keeps the pane's present grid unless the room is wider or far narrower (`kept_grid` in
+// src/tmux/session.rs), and the terminal draws whatever columns the pane has in the room it has.
 
 /** Smallest text scale drawn. The server re-wraps a pane this page controls before it gets under 70%; a pane
  *  another device controls can be wider still. */

@@ -96,8 +96,8 @@ export interface MobileLiveTerminalProps {
   /** Identifies this pane in the per-session reading-position memory (lib/liveScrollMemory), where scrolling
    *  records the reader's place. Omitted: no memory. */
   scrollMemoryKey?: string;
-  /** Keep the column count across width changes, shared by every pane with this key (the desktop agent
-   *  terminal). A narrower pane draws the same columns in smaller text instead of resizing tmux. */
+  /** Ask the server to keep the pane's grid (the desktop agent terminal): a narrower or shorter room draws the
+   *  same grid, in smaller text when narrower, instead of resizing tmux. */
   keepPaneColumns?: boolean;
   /** The remembered row to reopen on (recalled by the parent at mount); null opens at the live tail. */
   initialReadingRow?: number | null;
@@ -189,8 +189,8 @@ export function MobileLiveTerminal({
   );
   const { value: frame, held: selectionHeld } = useSelectionHold(streamFrame, scrollerRef, absorbExposedHistory);
 
-  // A session keeps the columns it has (see terminalPaneFit): this terminal asks for the columns that fit its room
-  // and draws whatever columns the pane has, in smaller text when the pane is wider than the room.
+  // A session keeps the grid it has (see terminalPaneFit): this terminal asks for the grid that fits its room and
+  // draws whatever columns the pane has, in smaller text when the pane is wider than the room.
   const keepColumns = !coarse && !!keepPaneColumns;
   const paneCols = keepColumns ? (frame?.cols ?? 0) : 0;
   const [roomWidth, setRoomWidth] = useState(0);

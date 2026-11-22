@@ -1,8 +1,8 @@
 // Viktor, 2026-11-19: "now the bug is back again please look at it deeply and figure out root cause". An agent
 // prints its whole conversation again whenever its pane's columns change, on top of the lines tmux re-wrapped
 // ("i cant read shit", 17 Nov). That day one session's columns changed three times: the dock closed, the sidebar
-// collapsed, and a new layout shipped. A session therefore keeps the columns it has; the desktop agent terminal
-// draws them in the room it has (docs/guides/web/terminal.md, "Width").
+// collapsed, and a new layout shipped. A session therefore keeps the grid it has; the desktop agent terminal draws
+// it across the room it has (docs/guides/web/terminal.md, "Width").
 
 import { test, expect } from "./helpers/mockedTest";
 import type { Page } from "@playwright/test";
@@ -71,12 +71,15 @@ test("a session wider than the room keeps its columns and is drawn in smaller te
   expect(fits).toBe(true);
 });
 
-test("a session narrower than the room keeps its columns at full text size", async ({ page }) => {
+// Viktor, 2026-11-21: "the text in cc terminal doesn't render across the full space .. horizontally". A small window
+// had shrunk the session to 56 columns, and back in a wider room it kept them and left the right side empty.
+test("terminal text does not fill the panel width", async ({ page }) => {
   const mock = await mockTerminalApis(page, { paneCols: 70 });
   await page.setViewportSize({ width: 1400, height: 900 });
   await open(page, mock);
-  expect(resizes(mock).at(-1)!.cols).toBeGreaterThan(70);
-  expect(new Set(mock.livePaneCols)).toEqual(new Set([70]));
+  const asked = resizes(mock).at(-1)!.cols;
+  expect(asked).toBeGreaterThan(70);
+  expect(mock.livePaneCols.at(-1)).toBe(asked);
   expect(await fontPx(page)).toBe(14);
 });
 
@@ -116,16 +119,32 @@ test("shrinking the browser window keeps the session's columns, and the text ret
   expect(await fontPx(page)).toBe(fullFont);
 });
 
-test("a wider browser window keeps the session's columns and leaves a margin", async ({ page }) => {
+test("a wider browser window re-wraps the session to fill the width", async ({ page }) => {
   const mock = await mockTerminalApis(page);
   await page.setViewportSize({ width: 1400, height: 900 });
   await open(page, mock);
-  const fullFont = await fontPx(page);
+  const before = mock.livePaneCols.at(-1)!;
 
   await page.setViewportSize({ width: 1550, height: 900 });
   await page.waitForTimeout(600);
-  expect(new Set(mock.livePaneCols).size).toBe(1);
-  expect(await fontPx(page)).toBe(fullFont);
+  expect(mock.livePaneCols.at(-1)!).toBeGreaterThan(before);
+  expect(await fontPx(page)).toBe(14);
+});
+
+// Viktor, 2026-11-21: "there are vertical render issues too". A change of rows alone makes Claude Code erase or
+// repeat lines of its history, so a shorter or taller window keeps the session's rows.
+test("a shorter or taller browser window keeps the session's rows", async ({ page }) => {
+  const mock = await mockTerminalApis(page);
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await open(page, mock);
+  const rows = mock.livePaneRows.at(-1)!;
+
+  await page.setViewportSize({ width: 1400, height: 760 });
+  await page.waitForTimeout(600);
+  await page.setViewportSize({ width: 1400, height: 1000 });
+  await page.waitForTimeout(600);
+  expect(resizes(mock).some((r) => r.rows !== rows)).toBe(true);
+  expect(new Set(mock.livePaneRows)).toEqual(new Set([rows]));
 });
 
 test("a room under 70% of the session's columns re-wraps it at full text size", async ({ page }) => {
