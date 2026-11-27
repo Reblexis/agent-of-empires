@@ -70,3 +70,22 @@ p90 6 ms, worst 23 ms, none over 50 ms, one long task (73 ms) in the run.
 Still open: a poll that does change a session re-derives the whole sidebar (the lists are
 rebuilt from all 1,191 sessions), and the server spends 200 ms or more building the list
 for every tab every 3 s.
+
+## Installed
+
+27 Nov 2026 15:10 PST: first build (server fix and prediction) installed, previous binary
+kept as `~/.local/bin/aoe.prev-f6f0e4584`. On the live daemon every tmux command then
+started with `CLONE_VFORK` (166 of 166 in 10 s), each spawn syscall took 0.2 ms (median,
+2.9 ms worst), and the daemon's CPU fell from about 90% to under 10%.
+
+27 Nov 2026 15:50 PST: aab1b3ddf installed (adds the refresh fix; the first build kept as
+`~/.local/bin/aoe.prev-build1-terminal-immediate`). Same probe against the live dashboard,
+81 ms each way: 60 words median 3 ms, p90 5 ms, worst 11 ms, no letter over 50 ms and no
+long task in the run; 29 letters median 3 ms, worst 7 ms. Daemon CPU 3.8%.
+`aoe session verify-pointers` clean after both restarts.
+
+Live Playwright specs against the new binary: session-open-stays-at-tail and
+session-switch-keeps-scroll pass (8 of 8). In live-terminal.spec.ts four tests fail the
+same way on the binary installed before (f6f0e4584) and on this one: "scrollback remains
+available through the web capture limit", the two "size ownership" tests, and "HTTP sends
+normalize trailing breaks".
