@@ -23,9 +23,10 @@ test.describe("Live terminal local input (desktop)", () => {
     await scroller(page).click();
     await expect(input(page)).toBeFocused();
 
-    // The prompt has not echoed this browser yet, so the first key waits for the server.
+    // An agent's input box always echoes, so even the first key shows before the server answers.
     await page.keyboard.type("h");
     await expect.poll(() => typed(handle)).toBe("h");
+    await expect(liveContent(page)).toContainText("❯ h");
     await handle.pushLiveFrame({ content: screenOf(["❯ h"]), rows: 24, history: 0, cursor: { x: 3, y: 0 } });
 
     await page.keyboard.type("i");
@@ -36,6 +37,19 @@ test.describe("Live terminal local input (desktop)", () => {
     await handle.pushLiveFrame({ content: screenOf(["❯ hi"]), rows: 24, history: 0, cursor: { x: 4, y: 0 } });
     await expect(liveContent(page)).toContainText("❯ hi");
     await expect(liveContent(page)).not.toContainText("❯ hii");
+  });
+
+  // Viktor, 27 Nov 2026: "terminal seems like it's still laggy and often delayed". Every character after a
+  // prompt's first line waited for the server.
+  test("typing on the second line of a prompt shows before the server's frame", async ({ page }) => {
+    const handle = await openLiveTerminal(page);
+    const rows = ["❯ a first line the agent wrapped", "  second"];
+    await handle.pushLiveFrame({ content: screenOf(rows), rows: 24, history: 0, cursor: { x: 8, y: 1 } });
+    await scroller(page).click();
+    await expect(input(page)).toBeFocused();
+    await page.keyboard.type(" line");
+    await expect.poll(() => typed(handle)).toBe(" line");
+    await expect(liveContent(page)).toContainText("  second line");
   });
 
   test("releasing a drag over the text copies it", async ({ page }) => {

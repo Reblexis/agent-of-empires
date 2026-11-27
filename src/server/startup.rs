@@ -1058,6 +1058,14 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     // Publish counts after readiness so its initial status cannot overwrite them.
     super::systemd_reconcile::push_status(&state).await;
 
+    // Terminal frames and keys are small writes that must leave at once
+    // (docs/guides/web/terminal.md, "Keys never queue on the server"): with Nagle on, a
+    // frame waits for the previous one's ACK, which the proxy may delay by 40 ms.
+    let listener = axum::serve::ListenerExt::tap_io(listener, |tcp| {
+        if let Err(err) = tcp.set_nodelay(true) {
+            tracing::debug!(target: "http.server", "failed to set TCP_NODELAY: {err}");
+        }
+    });
     axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),

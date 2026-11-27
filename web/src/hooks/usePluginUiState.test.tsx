@@ -111,3 +111,24 @@ describe("usePluginUiState pages", () => {
     expect(result.current.pages).toEqual([]);
   });
 });
+
+// docs/guides/web/dashboard.md, "A refresh that changes nothing costs nothing": this poll froze the page for
+// about 60 ms every 3 s by handing every consumer new objects holding the same data.
+describe("usePluginUiState / a poll that changes nothing re-renders nothing", () => {
+  it("keeps the same entries and revisions objects when a poll returns the same data", async () => {
+    const poll = (): PluginUiState =>
+      ({
+        entries: [{ plugin_id: "acme.kit", slot: "sidebar" }],
+        revisions: { "acme.kit": { a: 1 } },
+        notifications: [],
+      }) as unknown as PluginUiState;
+    fetchMock.mockImplementation(() => Promise.resolve(poll()));
+    const { result } = renderHook(() => usePluginUiState());
+    await tick(0);
+    const { entries, revisions } = result.current;
+    expect(entries).toHaveLength(1);
+    await tick(3000);
+    expect(result.current.entries).toBe(entries);
+    expect(result.current.revisions).toBe(revisions);
+  });
+});

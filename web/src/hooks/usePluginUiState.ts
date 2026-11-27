@@ -65,10 +65,12 @@ export function usePluginUiState() {
       try {
         const state = await fetchPluginUiState();
         if (cancelled || state === null) return;
-        setEntries(state.entries);
-        setRevisions(state.revisions ?? {});
-        // Pages rarely change, so keep the identity and spare the TopBar and palette a re-render.
+        // A poll that changes nothing keeps every identity, so nothing re-renders
+        // (docs/guides/web/dashboard.md, "A refresh that changes nothing costs nothing").
+        const nextRevisions = state.revisions ?? {};
         const nextPages = state.pages ?? [];
+        setEntries((prev) => (JSON.stringify(prev) === JSON.stringify(state.entries) ? prev : state.entries));
+        setRevisions((prev) => (JSON.stringify(prev) === JSON.stringify(nextRevisions) ? prev : nextRevisions));
         setPages((prev) => (JSON.stringify(prev) === JSON.stringify(nextPages) ? prev : nextPages));
         apply(state.notifications);
       } finally {

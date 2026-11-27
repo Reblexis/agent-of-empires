@@ -56,6 +56,10 @@ function LoadingRing() {
   );
 }
 
+/** Columns an agent's input box keeps free at its right edge, which decides where typing wraps (measured on
+ *  Claude Code 2.1 and Codex 0.162 with their inline renderers). */
+const AGENT_WRAP_MARGIN: Record<string, number> = { claude: 2, codex: 1 };
+
 export function LiveTerminalView({ session, active = true, surface = "agent", terminalIndex = 0 }: Props) {
   const base = SURFACES[surface];
   const { focusTarget, dataTerm } = base;
@@ -398,7 +402,8 @@ export function LiveTerminalView({ session, active = true, surface = "agent", te
           scrollMemoryKey={scrollMemoryKey}
           keepPaneColumns={surface === "agent"}
           initialReadingRow={initialReadingRow}
-          predictEcho={live.state.connected && live.state.isOwner}
+          predictEcho={live.state.connected}
+          echoWrapMargin={surface === "agent" ? (AGENT_WRAP_MARGIN[session.tool] ?? null) : undefined}
         />
         {coarse && live.state.connected && <KeyboardFab keyboardOpen={inputFocused} onToggle={toggleKeyboard} />}
         {coarse && live.state.connected && webSettings.showArrowJoystick && <ArrowJoystick onArrow={sendArrow} />}

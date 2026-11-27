@@ -212,6 +212,9 @@ pub(crate) fn clear_terminal<B: Backend>(terminal: &mut Terminal<B>) -> Result<(
 }
 
 pub async fn run(profile: &str, startup_warning: Option<String>) -> Result<()> {
+    // The TUI ignores SIGINT/SIGQUIT around attached children; every child resets them.
+    #[cfg(unix)]
+    crate::process::mark_signals_ignored();
     // `AOE_DAEMON_URL` makes this a pure client of a remote daemon.
     if let Some(endpoint) = crate::acp::client::discovery::discover_env() {
         return remote_home::run_standalone(endpoint).await;

@@ -458,10 +458,54 @@ pub fn reset_ignored_signals_before_exec() -> std::io::Result<()> {
     Ok(())
 }
 
+/// Set once this process has ignored SIGINT/SIGQUIT (the TUI's `IgnoreSignalsGuard`).
+#[cfg(unix)]
+static SIGNALS_WERE_IGNORED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Record that this process ignores SIGINT/SIGQUIT at times, so every child built from
+/// now on resets them before exec.
+#[cfg(unix)]
+pub fn mark_signals_ignored() {
+    SIGNALS_WERE_IGNORED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether a child spawned now could inherit an ignored SIGINT/SIGQUIT: the process has
+/// ignored them before, or ignores one right now.
+#[cfg(unix)]
+fn child_may_inherit_ignored_signals() -> bool {
+    use nix::sys::signal::Signal;
+
+    if SIGNALS_WERE_IGNORED.load(std::sync::atomic::Ordering::Relaxed) {
+        return true;
+    }
+    [Signal::SIGINT, Signal::SIGQUIT].into_iter().any(|signal| {
+        let mut current = std::mem::MaybeUninit::<libc::sigaction>::uninit();
+        // SAFETY: a null `act` only reads the current disposition into `current`.
+        let read = unsafe {
+            libc::sigaction(
+                signal as libc::c_int,
+                std::ptr::null(),
+                current.as_mut_ptr(),
+            )
+        };
+        // SAFETY: `sigaction` filled `current` when it returned 0.
+        read != 0 || unsafe { current.assume_init() }.sa_sigaction == libc::SIG_IGN
+    })
+}
+
+/// Make `cmd`'s child start with default SIGINT/SIGQUIT when this process may be
+/// ignoring them. A process that never ignores them (the `aoe serve` daemon, the CLI)
+/// gets no `pre_exec` hook: with one, std starts the child by `fork`, which copies the
+/// parent's page tables and stalls every thread for that long (32 ms measured on a
+/// daemon with 4 GB mapped); without one it uses `posix_spawn`, which copies nothing.
 #[cfg(unix)]
 pub fn reset_signals_on_exec(cmd: &mut Command) {
     use std::os::unix::process::CommandExt;
 
+    if !child_may_inherit_ignored_signals() {
+        return;
+    }
     // SAFETY: the closure only calls `sigaction`, which is
     // async-signal-safe per POSIX, the only requirement for a `pre_exec`
     // closure running between fork and exec.
@@ -1544,6 +1588,42 @@ mod tests {
             matches!(sigquit_after, SigHandler::SigDfl),
             "SIGQUIT should be reset to SIG_DFL, not left as SIG_IGN"
         );
+    }
+
+    /// docs/guides/web/terminal.md, "Keys never queue on the server": the daemon starts
+    /// a tmux command without copying its own memory map. A process that has never
+    /// ignored SIGINT/SIGQUIT adds no `pre_exec` hook, because a hook makes std start
+    /// the child by `fork`.
+    #[test]
+    #[cfg(unix)]
+    fn a_process_that_never_ignored_signals_spawns_without_a_fork_hook() {
+        // The probe runs in a fresh process: sibling tests ignore SIGINT in this one.
+        let exe = std::env::current_exe().expect("test binary path");
+        let output = Command::new(exe)
+            .args([
+                "--exact",
+                "process::tests::fresh_process_signal_probe",
+                "--ignored",
+                "--test-threads=1",
+            ])
+            .output()
+            .expect("re-run the test binary");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "probe failed: {stdout}{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// Run only by the test above, alone in its own process.
+    #[test]
+    #[ignore = "run by a_process_that_never_ignored_signals_spawns_without_a_fork_hook"]
+    #[cfg(unix)]
+    fn fresh_process_signal_probe() {
+        assert!(!child_may_inherit_ignored_signals());
+        mark_signals_ignored();
+        assert!(child_may_inherit_ignored_signals());
     }
 
     #[test]

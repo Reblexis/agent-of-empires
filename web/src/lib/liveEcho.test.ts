@@ -274,4 +274,121 @@ describe("EchoTracker", () => {
       }).not.toThrow();
     }
   });
+
+  // Viktor, 27 Nov 2026: "terminal seems like it's still laggy and often delayed ... make sure it's always
+  // immediate only thing that's then loading is the sending itself". Measured: every character after a prompt's
+  // first line waited for the server.
+  describe("typing is immediate on every line of a prompt", () => {
+    const W = 30;
+    const text = (segs: AnsiSegment[] | null | undefined) => (segs ? segs.map((s) => s.text).join("") : null);
+    /** A row of Claude's input box (2 columns kept free at the right edge) with the rule line under it. */
+    const boxRow = (row: string, x: number, below = "─".repeat(W)): EchoRow => ({
+      segs: [{ text: row, style: {} }],
+      x,
+      width: W,
+      below: [{ text: below, style: {} }],
+      wrapMargin: 2,
+    });
+    const agentTracker = () => {
+      const t = new EchoTracker();
+      t.setTrustAll(true);
+      return t;
+    };
+
+    it("an agent's input box shows the first character at once", () => {
+      const t = agentTracker();
+      const row = boxRow("❯ ", 2);
+      t.input("h", row, 0);
+      expect(text(t.render(row)?.segs)).toBe("❯ h".padEnd(W));
+    });
+
+    it("the second line of a prompt shows typing at once, without an echo of its own", () => {
+      const t = trustedTracker();
+      // The prompt wrapped: the cursor's row is now a continuation row the server has never echoed on.
+      const row = plainRow("  second line", 13);
+      t.input("s", row, 200);
+      expect(shown(t, row)).toEqual({ text: "  second lines".padEnd(20), x: 14 });
+    });
+
+    it("a password prompt after Enter still never shows what is typed", () => {
+      const t = trustedTracker();
+      t.input("sudo ls", plainRow(`${PROMPT}h`, 3), 10);
+      t.input("\r", plainRow(`${PROMPT}h`, 3), 20);
+      const row = plainRow("[sudo] password for v: ", 23, 40);
+      t.input("s3cret", row, 30);
+      expect(shown(t, row)).toBeNull();
+    });
+
+    it("the word that no longer fits moves to the next row as it is typed", () => {
+      const t = agentTracker();
+      // 26 text columns (30 wide, 2 of prompt, 2 kept free); the row is full with the cursor resting at column 28.
+      const full = "❯ " + "a".repeat(20) + " bbbbb";
+      const row = boxRow(full, 28);
+      t.input("c", row, 0);
+      const r = t.render(row)!;
+      expect(text(r.segs)).toBe(("❯ " + "a".repeat(20)).padEnd(W));
+      expect(text(r.below)).toBe("  bbbbbc".padEnd(W));
+      expect(r.x).toBe(8);
+      // More typing continues on the new row, and the server's frame of that row confirms all of it.
+      t.input("d", row, 10);
+      expect(text(t.render(row)!.below)).toBe("  bbbbbcd".padEnd(W));
+      const wrapped = boxRow("  bbbbbcd", 9);
+      t.reconcile(wrapped);
+      expect(t.pending()).toBe(false);
+    });
+
+    it("a row that is one long word breaks where it is full", () => {
+      const t = agentTracker();
+      const row = boxRow("❯ " + "a".repeat(26), 28);
+      t.input("b", row, 0);
+      const r = t.render(row)!;
+      expect(text(r.segs)).toBe(("❯ " + "a".repeat(26)).padEnd(W));
+      expect(text(r.below)).toBe("  b".padEnd(W));
+      expect(r.x).toBe(3);
+    });
+
+    it("a space typed at a full row puts the cursor at the start of the next row", () => {
+      const t = agentTracker();
+      const row = boxRow("❯ " + "a".repeat(26), 28);
+      t.input(" c", row, 0);
+      const r = t.render(row)!;
+      expect(text(r.below)).toBe("  c".padEnd(W));
+      expect(r.x).toBe(3);
+    });
+
+    it("the last column of the box fills without wrapping", () => {
+      const t = agentTracker();
+      const row = boxRow("❯ " + "a".repeat(25), 27);
+      t.input("b", row, 0);
+      const r = t.render(row)!;
+      expect(text(r.segs)).toBe(("❯ " + "a".repeat(25) + "b").padEnd(W));
+      expect(r.below).toBeNull();
+      expect(r.x).toBe(28);
+    });
+
+    it("a wrap the agent draws differently gives way to its screen", () => {
+      const t = agentTracker();
+      const row = boxRow("❯ " + "a".repeat(20) + " bbbbb", 28);
+      t.input("c", row, 0);
+      // The agent kept the word on the first row after all.
+      const other = boxRow("  c", 3);
+      t.reconcile(other);
+      expect(t.pending()).toBe(false);
+      expect(t.render(other)).toBeNull();
+    });
+
+    it("Backspace at the start of a continuation row waits for the server", () => {
+      const t = agentTracker();
+      const row = boxRow("  ", 2);
+      t.input("\x7f", row, 0);
+      expect(t.render(row)).toBeNull();
+    });
+
+    it("a shell prompt does not predict a wrap", () => {
+      const t = trustedTracker();
+      const row = plainRow(`${PROMPT}${"a".repeat(17)}`, 19);
+      t.input("b", row, 0);
+      expect(shown(t, row)).toBeNull();
+    });
+  });
 });

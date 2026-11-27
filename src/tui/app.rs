@@ -179,6 +179,8 @@ impl IgnoreSignalsGuard {
         use nix::sys::signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal};
 
         let ignore = SigAction::new(SigHandler::SigIgn, SaFlags::empty(), SigSet::empty());
+        // Children built from now on reset the two signals before exec.
+        crate::process::mark_signals_ignored();
 
         // SAFETY: SIG_IGN is async-signal-safe per POSIX, which is the only
         // requirement for sigaction calls made outside a signal handler.

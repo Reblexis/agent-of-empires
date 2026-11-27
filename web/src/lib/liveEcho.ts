@@ -14,7 +14,13 @@ import { cellWidth } from "./liveTermLines";
 //
 // Trust is per prompt: a row is predicted visibly only once a row with the same
 // prompt has echoed this browser's typing, so a password prompt (which never
-// echoes) never shows what was typed.
+// echoes) never shows what was typed. Trust also carries from row to row while
+// only plain typing is sent (a prompt that wrapped onto its next row), and an
+// agent's own input box, which always echoes, is trusted from the first key.
+//
+// An agent's input box wraps by word at a known column, so there the row below
+// the cursor's is predicted too: the word that no longer fits moves down to the
+// box's indent, the way the agent will draw it.
 
 /** How long a prediction may stay unconfirmed before it is dropped. */
 export const ECHO_CONFIRM_MS = 1500;
@@ -30,6 +36,10 @@ export interface EchoRow {
   segs: AnsiSegment[];
   x: number;
   width?: number;
+  /** The row under the cursor's, which a wrap is predicted onto. */
+  below?: AnsiSegment[];
+  /** Set for an agent's input box, which wraps by word: the columns it keeps free at the right edge. */
+  wrapMargin?: number;
 }
 
 interface Cell {
@@ -89,16 +99,55 @@ function rowCells(row: EchoRow): Cell[] {
 
 const isBlank = (c: Cell) => c.ch.trim() === "";
 
-/** The row after `events`, or null when the outcome is not predictable (the
- *  cursor would leave the row, or text would be pushed off its end). */
-function applyEvents(row: Cell[], x0: number, events: EchoEvent[]): { cells: Cell[]; x: number } | null {
-  const cells = row.slice();
-  const width = cells.length;
+/** Longest indent an input box may have for its wrap to be predicted. */
+const WRAP_INDENT_MAX = 4;
+
+interface Applied {
+  /** The cursor's row of the snapshot. */
+  cells: Cell[];
+  /** The row under it, when the typing wrapped onto it. */
+  below: Cell[] | null;
+  x: number;
+}
+
+/** Where an input box's text starts: after the prompt glyph and its space on the first row (`❯ `), at the
+ *  leading blanks on a continuation row. Null when the row does not look like one. */
+function boxIndent(cells: Cell[], x: number): number | null {
+  let i = 0;
+  // An empty continuation row is all blanks; its text starts no further right than the cursor.
+  if (cells[0] && isBlank(cells[0])) while (i < cells.length && i < x && isBlank(cells[i]!)) i++;
+  else {
+    while (i < cells.length && !isBlank(cells[i]!)) i++;
+    i += 1;
+  }
+  return i >= 1 && i <= WRAP_INDENT_MAX ? i : null;
+}
+
+/** The rows after `events`, or null when the outcome is not predictable (the cursor would leave the row another
+ *  way than a predicted wrap, or text would be pushed off its end). `wrapMargin` and `under` (the row below, padded
+ *  to the same width) turn on wrap prediction. */
+function applyEvents(
+  row: Cell[],
+  x0: number,
+  events: EchoEvent[],
+  wrapMargin?: number,
+  under?: Cell[] | null,
+): Applied | null {
+  const first = row.slice();
+  const width = first.length;
+  const indent = wrapMargin != null ? boxIndent(first, x0) : null;
+  const wraps = indent != null && wrapMargin != null;
+  // The column the cursor rests at when the row is full; past it the text wraps.
+  const limit = wraps ? width - wrapMargin : width;
+  let below: Cell[] | null = null;
+  let cells = first;
   let x = x0;
   if (x < 0 || x >= width) return null;
   for (const ev of events) {
     if (ev.kind === "bs") {
       if (x === 0 || cells[x - 1]!.ch === "") return null;
+      // Backspace at the start of the box's text joins the row above, which is not predicted.
+      if (wraps && x <= indent) return null;
       cells.splice(x - 1, 1);
       cells.push({ ch: " ", style: BLANK });
       x -= 1;
@@ -106,7 +155,35 @@ function applyEvents(row: Cell[], x0: number, events: EchoEvent[]): { cells: Cel
     }
     const style = x > 0 ? cells[x - 1]!.style : BLANK;
     const rest = cells.slice(x);
-    if (rest.every((c) => isBlank(c) || c.style.dim)) {
+    const atEnd = rest.every((c) => isBlank(c) || c.style.dim);
+    if (wraps && atEnd && x >= limit) {
+      // The row is full: the agent wraps. Only one wrap is predicted ahead of the server.
+      if (below || !under || x > limit) return null;
+      const next: Cell[] = Array.from({ length: width }, () => ({ ch: " ", style: BLANK }));
+      let nx = indent;
+      if (ev.ch !== " ") {
+        // The word that no longer fits moves down whole; a row that is one long word breaks where it is full.
+        let space = -1;
+        for (let i = x - 1; i >= indent; i--) {
+          if (isBlank(cells[i]!)) {
+            space = i;
+            break;
+          }
+        }
+        if (space >= 0) {
+          const word = cells.slice(space + 1, x);
+          if (word.some((c) => c.ch === "") || indent + word.length + 1 > limit) return null;
+          for (const c of word) next[nx++] = c;
+          for (let i = space; i < width; i++) cells[i] = { ch: " ", style: BLANK };
+        }
+        next[nx++] = { ch: ev.ch, style };
+      }
+      below = next;
+      cells = next;
+      x = nx;
+      continue;
+    }
+    if (atEnd) {
       // Blank or a dim placeholder: the app overwrites it.
       for (let i = x; i < width; i++) cells[i] = { ch: " ", style: BLANK };
       cells[x] = { ch: ev.ch, style };
@@ -114,11 +191,13 @@ function applyEvents(row: Cell[], x0: number, events: EchoEvent[]): { cells: Cel
       cells.splice(x, 0, { ch: ev.ch, style });
       if (!isBlank(cells[width]!)) return null;
       cells.length = width;
+      // Text pushed past the box's last column would wrap, which is not predicted mid-row.
+      if (wraps && cells.slice(limit).some((c) => !isBlank(c))) return null;
     }
     x += 1;
-    if (x >= width) return null;
+    if (wraps ? x > limit : x >= width) return null;
   }
-  return { cells, x };
+  return { cells: first, below, x };
 }
 
 /** The row's prompt: its text left of the cursor up to the first space after
@@ -134,6 +213,9 @@ function signature(cells: Cell[], x: number): string {
 
 interface Pending {
   base: Cell[];
+  /** The row under the base row, for a predicted wrap. */
+  under: Cell[] | null;
+  wrapMargin: number | undefined;
   x: number;
   events: EchoEvent[];
   sig: string;
@@ -143,14 +225,34 @@ interface Pending {
   deadline: number | null;
 }
 
+/** The row under the cursor's, padded to `width`. */
+function underCells(row: EchoRow, width: number): Cell[] | null {
+  if (!row.below) return null;
+  const cells = cellsOf(row.below);
+  while (cells.length < width) cells.push({ ch: " ", style: BLANK });
+  return cells;
+}
+
+/** The row the cursor is on after `r`. */
+const cursorRow = (r: Applied) => r.below ?? r.cells;
+
 export class EchoTracker {
   private trusted = new Set<string>();
   private state: Pending | null = null;
+  /** The app echoed this browser's last typing and only plain typing was sent since. */
+  private flow = false;
+  /** Every row echoes (an agent's own input box), so no row has to earn trust. */
+  private trustAll = false;
+
+  setTrustAll(on: boolean) {
+    this.trustAll = on;
+  }
 
   /** Typing sent to the app; `row` is the cursor row it lands on, or null
    *  when nothing may be predicted (no cursor, full-screen app, reading). */
   input(data: string, row: EchoRow | null, now: number) {
     const events = classifyInput(data);
+    if (!events) this.flow = false;
     if (!events || !row) {
       this.state = null;
       return;
@@ -160,15 +262,18 @@ export class EchoTracker {
       const sig = signature(base, row.x);
       this.state = {
         base,
+        under: underCells(row, base.length),
+        wrapMargin: row.wrapMargin,
         x: row.x,
         events: [],
         sig,
-        shown: this.trusted.has(sig),
+        shown: this.trustAll || this.flow || this.trusted.has(sig),
         deadline: now + ECHO_CONFIRM_MS,
       };
     }
-    this.state.events.push(...events);
-    if (!applyEvents(this.state.base, this.state.x, this.state.events)) this.state = null;
+    const s = this.state;
+    s.events.push(...events);
+    if (!applyEvents(s.base, s.x, s.events, s.wrapMargin, s.under)) this.state = null;
   }
 
   /** A new snapshot: settle what the app has processed. A null row (cursor
@@ -179,20 +284,24 @@ export class EchoTracker {
     if (!s || !row) return;
     const seen = rowCells(row);
     for (let j = s.events.length; j >= 0; j--) {
-      const r = applyEvents(s.base, s.x, s.events.slice(0, j));
+      const r = applyEvents(s.base, s.x, s.events.slice(0, j), s.wrapMargin, s.under);
       if (!r || r.x !== row.x) continue;
+      const want = cursorRow(r);
       let same = true;
-      for (let i = 0; i < r.x && same; i++) same = r.cells[i]!.ch === seen[i]?.ch;
+      for (let i = 0; i < r.x && same; i++) same = want[i]!.ch === seen[i]?.ch;
       if (!same) continue;
       if (j > 0) {
         this.trusted.add(s.sig);
+        this.flow = true;
         s.shown = true;
         s.deadline = null;
       }
       s.events = s.events.slice(j);
       s.base = seen;
+      s.under = underCells(row, seen.length);
+      s.wrapMargin = row.wrapMargin;
       s.x = row.x;
-      if (s.events.length === 0) this.state = null;
+      if (s.events.length === 0 || !applyEvents(s.base, s.x, s.events, s.wrapMargin, s.under)) this.state = null;
       return;
     }
     this.state = null;
@@ -204,12 +313,14 @@ export class EchoTracker {
     const deadline = this.state?.deadline;
     if (!this.state || deadline == null || now < deadline) return;
     this.trusted.delete(this.state.sig);
+    this.flow = false;
     this.state = null;
   }
 
   /** Drop every prediction (prediction failed; show the server's screen). */
   reset() {
     this.state = null;
+    this.flow = false;
   }
 
   pending(): boolean {
@@ -225,11 +336,13 @@ export class EchoTracker {
     return this.state?.deadline ?? null;
   }
 
-  /** The cursor row as predicted, or null when nothing is shown. */
-  render(row: EchoRow): { segs: AnsiSegment[]; x: number } | null {
+  /** The cursor row as predicted (and the row under it when the typing wrapped onto it, where the cursor then
+   *  is), or null when nothing is shown. */
+  render(row: EchoRow): { segs: AnsiSegment[]; x: number; below: AnsiSegment[] | null } | null {
     const s = this.state;
     if (!s || !s.shown) return null;
-    const r = applyEvents(rowCells(row), row.x, s.events);
-    return r && { segs: segsOf(r.cells), x: r.x };
+    const base = rowCells(row);
+    const r = applyEvents(base, row.x, s.events, row.wrapMargin, underCells(row, base.length));
+    return r && { segs: segsOf(r.cells), x: r.x, below: r.below && segsOf(r.below) };
   }
 }

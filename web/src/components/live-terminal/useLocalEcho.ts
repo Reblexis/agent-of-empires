@@ -19,6 +19,8 @@ export function useLocalEcho({
   frame,
   lines: parsedLines,
   renderCols,
+  agentBox = false,
+  wrapMargin = null,
 }: {
   /** This browser's keys reach the pane: connected and owning it. */
   enabled: boolean;
@@ -26,8 +28,15 @@ export function useLocalEcho({
   frame: LiveFrame | null;
   lines: AnsiSegment[][];
   renderCols: number;
+  /** The pane is an agent's own input box, which always echoes: no row has to earn trust. */
+  agentBox?: boolean;
+  /** Columns the agent's input box keeps free at the right edge; set when its word wrap is predicted. */
+  wrapMargin?: number | null;
 }) {
   const [echo] = useState(() => new EchoTracker());
+  useLayoutEffect(() => {
+    echo.setTrustAll(agentBox);
+  }, [echo, agentBox]);
   const [echoVersion, setEchoVersion] = useState(0);
   // Nothing is predicted without a cursor, in a full-screen app, while reading, or in a split window (whose cursor
   // row carries the other pane's text).
@@ -37,8 +46,17 @@ export function useLocalEcho({
     const idx = cursorLineIndex(parsedLines.length, frame.rows, cursor.y);
     const segs = parsedLines[idx];
     const width = renderCols > 0 ? renderCols : undefined;
-    return segs ? { segs, x: cursor.x, width, idx } : null;
-  }, [enabled, reading, frame, parsedLines, renderCols]);
+    if (!segs) return null;
+    const wraps = wrapMargin != null && width != null;
+    return {
+      segs,
+      x: cursor.x,
+      width,
+      idx,
+      below: wraps ? parsedLines[idx + 1] : undefined,
+      wrapMargin: wraps ? wrapMargin : undefined,
+    };
+  }, [enabled, reading, frame, parsedLines, renderCols, wrapMargin]);
   // Each new snapshot settles the predictions before paint, so a confirmed character is never drawn twice.
   const [reconciledRow, setReconciledRow] = useState(echoRow);
   if (reconciledRow !== echoRow) {
@@ -71,6 +89,7 @@ export function useLocalEcho({
     if (!predicted || !echoRow) return parsedLines;
     const out = parsedLines.slice();
     out[echoRow.idx] = predicted.segs;
+    if (predicted.below && echoRow.idx + 1 < out.length) out[echoRow.idx + 1] = predicted.below;
     return out;
   }, [parsedLines, predicted, echoRow]);
   useEffect(() => {
@@ -101,5 +120,6 @@ export function useLocalEcho({
     [echo],
   );
 
-  return { lines, cursorX: predicted?.x ?? null, sent };
+  // A predicted wrap puts the cursor on the row below.
+  return { lines, cursorX: predicted?.x ?? null, cursorDy: predicted?.below ? 1 : 0, sent };
 }

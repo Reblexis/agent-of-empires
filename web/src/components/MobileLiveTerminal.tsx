@@ -103,6 +103,9 @@ export interface MobileLiveTerminalProps {
   initialReadingRow?: number | null;
   /** Draw plain typing at the cursor before the server echoes it; only while this browser's keys reach the pane. */
   predictEcho?: boolean;
+  /** Set on an agent's pane, whose input box always echoes: the columns the box keeps free at the right edge when
+   *  its word wrap is known (Claude 2, Codex 1), else null. */
+  echoWrapMargin?: number | null;
 }
 
 /** Heights behind the iOS standalone bottom band: the app root should reach `screen` in portrait. */
@@ -153,6 +156,7 @@ export function MobileLiveTerminal({
   bottomAlign,
   keyboardOpen,
   predictEcho = false,
+  echoWrapMargin,
   scrollMemoryKey,
   keepPaneColumns,
   initialReadingRow = null,
@@ -248,7 +252,15 @@ export function MobileLiveTerminal({
   const [gridCols, setRenderCols] = useState(0);
   // Lines wrap at the pane's own columns when they are known, never at the narrower room's.
   const renderCols = paneCols > 0 ? paneCols : gridCols;
-  const echo = useLocalEcho({ enabled: predictEcho, reading, frame, lines: parsedLines, renderCols });
+  const echo = useLocalEcho({
+    enabled: predictEcho,
+    reading,
+    frame,
+    lines: parsedLines,
+    renderCols,
+    agentBox: echoWrapMargin !== undefined,
+    wrapMargin: echoWrapMargin ?? null,
+  });
   const lines = echo.lines;
   const [wrapCache] = useState(
     () => new WeakMap<AnsiSegment[], { cols: number; rows: AnsiSegment[][]; key: string }>(),
@@ -370,7 +382,8 @@ export function MobileLiveTerminal({
     const none = { row: -1, col: -1, top: null as number | null };
     const frameCursor = !reading ? (frame?.cursor ?? null) : null;
     if (!frameCursor) return none;
-    const cursor = echo.cursorX != null ? { ...frameCursor, x: echo.cursorX } : frameCursor;
+    const cursor =
+      echo.cursorX != null ? { ...frameCursor, x: echo.cursorX, y: frameCursor.y + echo.cursorDy } : frameCursor;
     const lineIdx = cursorLineIndex(lines.length, screenRows, cursor.y);
     const baseRow = lineIdx < 0 || lineIdx >= lines.length ? -1 : (visual.lineStartRow[lineIdx] ?? -1);
     if (baseRow < 0) return none;
@@ -384,6 +397,7 @@ export function MobileLiveTerminal({
     reading,
     frame,
     echo.cursorX,
+    echo.cursorDy,
     lines.length,
     screenRows,
     visual,

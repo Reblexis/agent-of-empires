@@ -87,6 +87,10 @@ The sidebar starts in **Active** view. While central is [running](../central-pau
 
 **All** shows the full live list again. The Active/All choice persists with the existing web display preferences, including their cross-browser synchronization. It remains available in compact mode and combines with text and plugin filters across every grouping axis. Switching the view never stops, archives, snoozes, trashes, deletes or resumes a session, changes its favorite or ownership, or navigates away from the current terminal. Reordering requires All view so hidden rows cannot be reordered accidentally.
 
+## A refresh that changes nothing costs nothing
+
+The dashboard asks the server for the session list and the plugin state every 3 seconds. A refresh that brings the same data draws nothing again, however many sessions (trashed ones included) the list holds, so it does not interrupt typing, scrolling or the terminal. When a session did change, every other session keeps its data untouched.
+
 ## Sorting and grouping
 
 By default the sidebar keeps your manual order. Drag a row (press and hold) to move it; that order syncs across browsers via `workspace-ordering.json`. Drag a project or group header to reorder whole groups, which is per-browser and disabled while a filter or a computed sort is active.
