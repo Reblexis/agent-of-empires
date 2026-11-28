@@ -300,6 +300,9 @@ struct LiveSettings {
     /// [`live_now_ms`] until which frames at a pane geometry other than the
     /// requested grid are withheld after an owner resize; 0 when none.
     resize_settle_until_ms: AtomicU64,
+    /// Key messages (binary frames) received on this connection, counted before each is handed to the pane, so a
+    /// frame never shows a key its `ack` does not count.
+    inputs_received: AtomicU64,
 }
 
 impl LiveSettings {
@@ -314,6 +317,7 @@ impl LiveSettings {
             patch: AtomicBool::new(false),
             force_full: AtomicBool::new(false),
             resize_settle_until_ms: AtomicU64::new(0),
+            inputs_received: AtomicU64::new(0),
         }
     }
 
@@ -1356,12 +1360,14 @@ async fn handle_live_ws_inner(
                         } else {
                             None
                         };
+                        // Read after the capture: every key on this screen is counted.
+                        let ack = capture_settings.inputs_received.load(Ordering::Relaxed);
                         let json = match patch {
                             Some((changed, shift)) => {
                                 stats.patches += 1;
-                                patch_json(&changed, shift, seq, frame.1.as_ref())
+                                patch_json(&changed, shift, seq, frame.1.as_ref(), ack)
                             }
-                            None => frame_json(&frame.0, frame.1.as_ref(), seq),
+                            None => frame_json(&frame.0, frame.1.as_ref(), seq, ack),
                         };
                         last_sent = Some((lines.iter().map(|l| l.to_string()).collect(), history));
                         stats.publishes += 1;
@@ -1498,6 +1504,7 @@ async fn handle_live_ws_inner(
                         last_pong_at = tokio::time::Instant::now();
                     }
                     Some(Ok(Message::Binary(data))) => {
+                        settings.inputs_received.fetch_add(1, Ordering::Relaxed);
                         // Size ownership prevents resize fights, never input from another device.
                         if read_only || data.is_empty() {
                             continue;
@@ -1846,7 +1853,7 @@ fn live_json(message: &LiveServerMessage) -> String {
 }
 
 /// The geometry, cursor and mode fields every frame and patch carries.
-fn frame_meta(cursor: Option<&crate::tmux::PaneCursor>) -> LivePaneMeta {
+fn frame_meta(cursor: Option<&crate::tmux::PaneCursor>, ack: u64) -> LivePaneMeta {
     // The cursor is pane relative while composited content uses the window grid.
     let pane0 = cursor.and_then(|c| c.composite_pane0);
     let (origin_x, origin_y) = pane0.map_or((0, 0), |p| (p.left, p.top));
@@ -1869,6 +1876,7 @@ fn frame_meta(cursor: Option<&crate::tmux::PaneCursor>) -> LivePaneMeta {
             left: p.left,
             top: p.top,
         }),
+        ack,
     }
 }
 
@@ -1878,21 +1886,27 @@ fn patch_json(
     shift: usize,
     seq: u64,
     cursor: Option<&crate::tmux::PaneCursor>,
+    ack: u64,
 ) -> String {
     live_json(&LiveServerMessage::Patch {
         seq,
         base: seq - 1,
         shift,
         lines: changed.iter().map(|(i, row)| (*i, (*row).into())).collect(),
-        meta: frame_meta(cursor),
+        meta: frame_meta(cursor, ack),
     })
 }
 
-fn frame_json(content: &str, cursor: Option<&crate::tmux::PaneCursor>, seq: u64) -> String {
+fn frame_json(
+    content: &str,
+    cursor: Option<&crate::tmux::PaneCursor>,
+    seq: u64,
+    ack: u64,
+) -> String {
     live_json(&LiveServerMessage::Frame {
         seq,
         content: content.into(),
-        meta: frame_meta(cursor),
+        meta: frame_meta(cursor, ack),
     })
 }
 
@@ -2018,7 +2032,7 @@ mod tests {
     }
 
     fn frame_value(cursor: Option<&crate::tmux::PaneCursor>) -> serde_json::Value {
-        serde_json::from_str(&frame_json("hello\nworld", cursor, 1)).unwrap()
+        serde_json::from_str(&frame_json("hello\nworld", cursor, 1, 0)).unwrap()
     }
 
     #[test]
@@ -2102,9 +2116,11 @@ mod tests {
             composite_pane0: None,
         };
         let v: serde_json::Value =
-            serde_json::from_str(&patch_json(&[(1, "B"), (3, "e")], 1, 7, Some(&cursor))).unwrap();
+            serde_json::from_str(&patch_json(&[(1, "B"), (3, "e")], 1, 7, Some(&cursor), 5)).unwrap();
         assert_eq!(v["type"], "patch");
         assert_eq!(v["seq"], 7);
+        // Typing never falls behind: every content message counts the keys received before it was drawn.
+        assert_eq!(v["ack"], 5);
         assert_eq!(v["base"], 6);
         assert_eq!(v["shift"], 1);
         assert_eq!(v["lines"], serde_json::json!([[1, "B"], [3, "e"]]));
@@ -2155,13 +2171,13 @@ mod tests {
         let screen: String = (0..50)
             .map(|i| format!("\x1b[38;5;208mline {i} with some agent output text\x1b[0m\n"))
             .collect();
-        let frame1 = frame_json(&screen, None, 1);
+        let frame1 = frame_json(&screen, None, 1, 0);
         // Frame 2.
         let scrolled = format!(
             "{}\x1b[38;5;208mline 50 with some agent output text\x1b[0m\n",
             screen.split_once('\n').unwrap().1
         );
-        let frame2 = frame_json(&scrolled, None, 2);
+        let frame2 = frame_json(&scrolled, None, 2, 0);
 
         let mut d = FrameDeflater::new();
         let c1 = d.frame(&frame1).unwrap();

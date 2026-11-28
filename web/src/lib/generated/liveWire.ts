@@ -29,7 +29,12 @@ mouse: boolean,
 /**
  * SGR (1006) mouse encoding rather than legacy X10.
  */
-mouseSgr: boolean, pane0: LivePane0 | null, };
+mouseSgr: boolean, pane0: LivePane0 | null, 
+/**
+ * How many of this connection's key messages (binary frames) the server had received when it drew this
+ * content. A viewer predicting its own typing knows the keys it sent after that are not on this screen yet.
+ */
+ack: number, };
 
 export type LiveServerMessage = { "type": "frame", seq: number, content: string, 
 /**
@@ -56,7 +61,12 @@ mouse: boolean,
 /**
  * SGR (1006) mouse encoding rather than legacy X10.
  */
-mouseSgr: boolean, pane0: LivePane0 | null, } | { "type": "patch", seq: number, base: number, shift: number, lines: Array<[number, string]>, 
+mouseSgr: boolean, pane0: LivePane0 | null, 
+/**
+ * How many of this connection's key messages (binary frames) the server had received when it drew this
+ * content. A viewer predicting its own typing knows the keys it sent after that are not on this screen yet.
+ */
+ack: number, } | { "type": "patch", seq: number, base: number, shift: number, lines: Array<[number, string]>, 
 /**
  * Rows of live screen at the end of `content`; the rest is history.
  */
@@ -81,7 +91,12 @@ mouse: boolean,
 /**
  * SGR (1006) mouse encoding rather than legacy X10.
  */
-mouseSgr: boolean, pane0: LivePane0 | null, } | { "type": "size_owner", is_owner: boolean, } | { "type": "clipboard", text: string, } | { "type": "transport", grid: boolean, } | { "type": "hb" };
+mouseSgr: boolean, pane0: LivePane0 | null, 
+/**
+ * How many of this connection's key messages (binary frames) the server had received when it drew this
+ * content. A viewer predicting its own typing knows the keys it sent after that are not on this screen yet.
+ */
+ack: number, } | { "type": "size_owner", is_owner: boolean, } | { "type": "clipboard", text: string, } | { "type": "transport", grid: boolean, } | { "type": "hb" };
 
 export type LiveClientMessage = { "type": "resize", cols: number, rows: number, 
 /**

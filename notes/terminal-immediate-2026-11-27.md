@@ -89,3 +89,34 @@ session-switch-keeps-scroll pass (8 of 8). In live-terminal.spec.ts four tests f
 same way on the binary installed before (f6f0e4584) and on this one: "scrollback remains
 available through the web capture limit", the two "size ownership" tests, and "HTTP sends
 normalize trailing breaks".
+
+## Typing fell behind after one dropped prediction (27 Nov, evening)
+
+Viktor, 27 Nov 2026: "no need for enter to feel immediate but typing in there and scrolling
+atc.. sould be.. i thinkk there may be lags or buffering issues or something like that".
+
+Measured on the live aab1b3ddf build, 81 ms each way, 110 ms between keys:
+- Codex, 60 words: the first row 3 ms a letter, then from the second row on three of four
+  letters 120 to 200 ms (median 118 ms, 120 of 240 over 50 ms).
+- Claude in the phone layout (Pixel 7): the same pattern from the third row on.
+- Cause: when a frame contradicted a prediction (Codex at every wrap, Claude when its box
+  scrolled the screen), every prediction was dropped, and the next key was predicted on
+  the latest frame, which did not hold the keys still on their way. The next frame then
+  contradicted that too, and so on for as long as keys came faster than the round trip.
+- Scrolling: 60 frames a second, no blank rows and no long task, by wheel on desktop and by
+  touch scroll on the phone layout, through 880 lines of history, also 1 s after opening.
+  All 11 live agent panes were inline (none on the alternate screen), so all scroll locally.
+- Typing while Claude streamed an answer: median 3 to 4 ms, worst 18 ms.
+- Polls: 13 polls in 40 s, none changed a session, no long task.
+
+Fix: each frame and patch carries `ack`, the count of key messages (binary frames) the
+server had received on the connection when it drew it, counted before a key is handed to
+tmux and read after the capture. The page numbers its key messages the same way, and the
+tracker keeps the ones a frame cannot hold yet; on a contradicting frame, or a key with no
+prediction standing, those are predicted again on top of the frame.
+
+Installed 27 Nov 2026 17:45 PST (previous binary `~/.local/bin/aoe.prev-aab1b3ddf`; the
+binary was built before the commit, so its version string still names 60db41c0f).
+Same probes on the live build: Codex 60 words median 3 ms, p90 5 ms, worst 17 ms, none
+over 50 ms; Claude phone layout 60 words median 5 ms, p90 6 ms, worst 20 ms, none over 50.
+`aoe session verify-pointers` clean after the restart.

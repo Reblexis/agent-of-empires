@@ -21,6 +21,11 @@ import { cellWidth } from "./liveTermLines";
 // An agent's input box wraps by word at a known column, so there the row below
 // the cursor's is predicted too: the word that no longer fits moves down to the
 // box's indent, the way the agent will draw it.
+//
+// A wrong guess must not make typing fall behind. Each frame says how many of this connection's keys the server had
+// received when it drew it (`ack`), and the tracker keeps the keys sent after that (`flight`). When a frame fits no
+// prediction, or a key arrives with no prediction standing, the keys the frame cannot hold yet are predicted again
+// on top of it. Keys the server had received are taken as drawn; one that was not shows a frame later.
 
 /** How long a prediction may stay unconfirmed before it is dropped. */
 export const ECHO_CONFIRM_MS = 1500;
@@ -40,6 +45,9 @@ export interface EchoRow {
   below?: AnsiSegment[];
   /** Set for an agent's input box, which wraps by word: the columns it keeps free at the right edge. */
   wrapMargin?: number;
+  /** How many of this connection's keys the server had received when it drew this row's frame; absent when the
+   *  server does not say. */
+  ack?: number;
 }
 
 interface Cell {
@@ -233,6 +241,16 @@ function underCells(row: EchoRow, width: number): Cell[] | null {
   return cells;
 }
 
+/** A key message on its way to the server: its number on the connection and what it types (null: not plain
+ *  typing). */
+interface Flight {
+  seq: number;
+  events: EchoEvent[] | null;
+}
+
+/** Most keys kept while the server stays silent. */
+const FLIGHT_MAX = 512;
+
 /** The row the cursor is on after `r`. */
 const cursorRow = (r: Applied) => r.below ?? r.cells;
 
@@ -243,6 +261,10 @@ export class EchoTracker {
   private flow = false;
   /** Every row echoes (an agent's own input box), so no row has to earn trust. */
   private trustAll = false;
+  /** Keys sent that the latest frame cannot hold yet, in order. */
+  private flight: Flight[] = [];
+  /** The number of the last key this tracker was told about. */
+  private lastSeq: number | null = null;
 
   setTrustAll(on: boolean) {
     this.trustAll = on;
@@ -250,38 +272,83 @@ export class EchoTracker {
 
   /** Typing sent to the app; `row` is the cursor row it lands on, or null
    *  when nothing may be predicted (no cursor, full-screen app, reading). */
-  input(data: string, row: EchoRow | null, now: number) {
+  input(data: string, row: EchoRow | null, now: number, seq?: number | null) {
     const events = classifyInput(data);
-    if (!events) this.flow = false;
+    // A key whose number is unknown or out of order (queued while reconnecting) ends the bookkeeping.
+    const prev = this.lastSeq;
+    this.lastSeq = seq ?? null;
+    // A skipped number is a key that did not come through here (a toolbar key, a forwarded wheel step): unknown,
+    // so not plain typing.
+    const skipped = seq != null && prev != null && seq > prev + 1;
+    if (seq == null || (prev != null && seq <= prev) || this.flight.length >= FLIGHT_MAX) this.flight = [];
+    else {
+      if (skipped) this.flight.push({ seq: seq - 1, events: null });
+      this.flight.push({ seq, events });
+    }
+    if (!events || skipped) this.flow = false;
+    if (skipped) this.state = null;
     if (!events || !row) {
       this.state = null;
       return;
     }
     if (!this.state) {
-      const base = rowCells(row);
-      const sig = signature(base, row.x);
-      this.state = {
-        base,
-        under: underCells(row, base.length),
-        wrapMargin: row.wrapMargin,
-        x: row.x,
-        events: [],
-        sig,
-        shown: this.trustAll || this.flow || this.trusted.has(sig),
-        deadline: now + ECHO_CONFIRM_MS,
-      };
+      // With the server's count, the keys before this one that the frame cannot hold yet are predicted with it.
+      const ahead = row.ack != null && seq != null && this.flight.length > 0 ? this.ahead(row.ack) : events;
+      this.state = ahead && this.start(row, ahead, now + ECHO_CONFIRM_MS);
+      return;
     }
     const s = this.state;
     s.events.push(...events);
     if (!applyEvents(s.base, s.x, s.events, s.wrapMargin, s.under)) this.state = null;
   }
 
+  /** What the keys the server had not received at `ack` type, or null when one of them is not plain typing or
+   *  there are none. */
+  private ahead(ack: number): EchoEvent[] | null {
+    const events: EchoEvent[] = [];
+    for (const f of this.flight) {
+      if (f.seq <= ack) continue;
+      if (!f.events) return null;
+      events.push(...f.events);
+    }
+    return events.length > 0 ? events : null;
+  }
+
+  /** A prediction of `events` on top of `row`, or null when they are not predictable there. */
+  private start(row: EchoRow, events: EchoEvent[], deadline: number | null): Pending | null {
+    const base = rowCells(row);
+    const under = underCells(row, base.length);
+    if (!applyEvents(base, row.x, events, row.wrapMargin, under)) return null;
+    const sig = signature(base, row.x);
+    return {
+      base,
+      under,
+      wrapMargin: row.wrapMargin,
+      x: row.x,
+      events: events.slice(),
+      sig,
+      shown: this.trustAll || this.flow || this.trusted.has(sig),
+      deadline,
+    };
+  }
+
   /** A new snapshot: settle what the app has processed. A null row (cursor
    *  hidden mid-redraw) settles nothing. Clock-free so it can run during
    *  render; progress restarts the confirmation clock through `arm`. */
   reconcile(row: EchoRow | null) {
+    if (!row) return;
+    const ack = row.ack;
+    if (ack != null) this.flight = this.flight.filter((f) => f.seq > ack);
     const s = this.state;
-    if (!s || !row) return;
+    // The keys this frame cannot hold yet, predicted on top of it when no standing prediction fits it.
+    const again = () => {
+      const ahead = ack != null ? this.ahead(ack) : null;
+      this.state = ahead && this.start(row, ahead, null);
+    };
+    if (!s) {
+      again();
+      return;
+    }
     const seen = rowCells(row);
     for (let j = s.events.length; j >= 0; j--) {
       const r = applyEvents(s.base, s.x, s.events.slice(0, j), s.wrapMargin, s.under);
@@ -304,7 +371,7 @@ export class EchoTracker {
       if (s.events.length === 0 || !applyEvents(s.base, s.x, s.events, s.wrapMargin, s.under)) this.state = null;
       return;
     }
-    this.state = null;
+    again();
   }
 
   /** Drop a prediction the app has not confirmed in time; its prompt has to
@@ -315,12 +382,14 @@ export class EchoTracker {
     this.trusted.delete(this.state.sig);
     this.flow = false;
     this.state = null;
+    this.flight = [];
   }
 
   /** Drop every prediction (prediction failed; show the server's screen). */
   reset() {
     this.state = null;
     this.flow = false;
+    this.flight = [];
   }
 
   pending(): boolean {

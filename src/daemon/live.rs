@@ -53,6 +53,11 @@ pub struct LivePaneMeta {
     /// SGR (1006) mouse encoding rather than legacy X10.
     pub mouse_sgr: bool,
     pub pane0: Option<LivePane0>,
+    /// How many of this connection's key messages (binary frames) the server had received when it drew this
+    /// content. A viewer predicting its own typing knows the keys it sent after that are not on this screen yet.
+    #[serde(default)]
+    #[cfg_attr(feature = "typescript", ts(type = "number"))]
+    pub ack: u64,
 }
 
 /// Daemon to client.
@@ -189,6 +194,7 @@ mod tests {
                 left: 41,
                 top: 0,
             }),
+            ack: 12,
         }
     }
 
@@ -208,6 +214,7 @@ mod tests {
                     "rows": 24, "cols": 100, "history": 40, "cursor": {"x": 3, "y": 1},
                     "altScreen": true, "mouse": true, "mouseSgr": true,
                     "pane0": {"cols": 40, "rows": 10, "left": 41, "top": 0},
+                    "ack": 12,
                 }),
             ),
             (

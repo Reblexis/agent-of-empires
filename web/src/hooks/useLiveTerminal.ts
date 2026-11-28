@@ -52,7 +52,10 @@ type LiveDataMessage = Extract<LiveServerMessage, { type: "frame" | "patch" }>;
 /** Longest a socket's first screens wait for the pane to take this page's size. */
 const FIRST_SCREEN_HOLD_MS = 600;
 
-export type LiveFrame = Omit<FrameMessage, "type" | "seq" | "pane0" | "cols"> & {
+export type LiveFrame = Omit<FrameMessage, "type" | "seq" | "pane0" | "cols" | "ack"> & {
+  /** How many of this connection's keys the server had received when it drew the frame; absent on a remembered
+   *  or prefetched picture. */
+  ack?: number;
   /** Columns of the pane as tmux has it; absent or 0 when unknown (a prefetched picture). */
   cols?: number;
   lines?: string[];
@@ -120,6 +123,8 @@ export function useLiveTerminal(
   const telemetrySeenRef = useRef(false);
   // Binary keystrokes and JSON paste messages, in send order.
   const pendingInputRef = useRef<(Uint8Array<ArrayBuffer> | string)[]>([]);
+  // Key messages (binary) put on the current socket, which the server counts back in each frame's `ack`.
+  const inputSeqRef = useRef(0);
   // Local copy of the pane's scrollback (lib/liveHistory.ts). While it is incomplete the wire window is widened to the
   // full history (`downloadingRef`); otherwise the wire carries the component's live window and the copy is extended
   // from it.
@@ -134,7 +139,10 @@ export function useLiveTerminal(
 
   const sendIfOpen = useCallback((data: string | ArrayBufferView<ArrayBuffer>) => {
     const ws = wsRef.current;
-    if (ws?.readyState === WebSocket.OPEN) ws.send(data);
+    if (ws?.readyState !== WebSocket.OPEN) return;
+    // Forwarded mouse bytes are key messages to the server, counted like typed ones.
+    if (typeof data !== "string") inputSeqRef.current += 1;
+    ws.send(data);
   }, []);
 
   // The window actually requested from the server: the full history while the scrollback copy downloads, the
@@ -272,6 +280,7 @@ export function useLiveTerminal(
       const ws = new WebSocket(url, protocols);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
+      inputSeqRef.current = 0;
       sentWindowRef.current = null;
       if (openTimer) clearTimeout(openTimer);
       openTimer = setTimeout(() => {
@@ -284,7 +293,10 @@ export function useLiveTerminal(
         if (wsRef.current !== ws || ws.readyState !== WebSocket.OPEN) return;
         const pending = pendingInputRef.current;
         pendingInputRef.current = [];
-        for (const data of pending) ws.send(data);
+        for (const data of pending) {
+          if (typeof data !== "string") inputSeqRef.current += 1;
+          ws.send(data);
+        }
       };
 
       ws.onopen = () => {
@@ -425,6 +437,7 @@ export function useLiveTerminal(
           mouse: msg.mouse,
           mouseSgr: msg.mouseSgr,
           pane0: msg.pane0,
+          ack: msg.ack,
           grid: owner && grid && grid.rows === msg.rows ? { ...grid } : null,
         };
         streamShownRef.current = true;
@@ -528,6 +541,7 @@ export function useLiveTerminal(
   const sendInput = useCallback((message: Uint8Array<ArrayBuffer> | string): boolean => {
     const ws = wsRef.current;
     if (ws?.readyState === WebSocket.OPEN) {
+      if (typeof message !== "string") inputSeqRef.current += 1;
       ws.send(message);
       return true;
     }
@@ -625,9 +639,13 @@ export function useLiveTerminal(
     }
   }, [setState]);
 
+  /** The number of the key message sent last on the current connection. */
+  const inputSeq = useCallback(() => inputSeqRef.current, []);
+
   return {
     state,
     sendData,
+    inputSeq,
     sendPaste,
     forwardWheel,
     forwardButton,

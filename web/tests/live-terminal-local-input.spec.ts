@@ -52,6 +52,31 @@ test.describe("Live terminal local input (desktop)", () => {
     await expect(liveContent(page)).toContainText("  second line");
   });
 
+  // Viktor, 27 Nov 2026: "typing in there and scrolling atc.. sould be [immediate].. i thinkk there may be lags or
+  // buffering issues". After one frame the page had not predicted, every later letter waited a round trip for as
+  // long as the typing went on.
+  test("typing keeps showing at once after a frame the page did not predict", async ({ page }) => {
+    const handle = await openLiveTerminal(page);
+    const frame = (rows: string[], x: number, y: number, ack: number) =>
+      handle.pushLiveFrame({ content: screenOf(rows), rows: 24, history: 0, cursor: { x, y }, ack });
+    await frame(["› "], 2, 0, 0);
+    await scroller(page).click();
+    await expect(input(page)).toBeFocused();
+    await page.keyboard.type("abc");
+    await expect.poll(() => typed(handle)).toBe("abc");
+    // The agent drew the first key its own way (moved to a new row); keys 2 and 3 had not reached it yet.
+    await frame(["› old", "  A"], 3, 1, 1);
+    await expect(liveContent(page)).toContainText("  Abc");
+    await page.keyboard.type("d");
+    await expect(liveContent(page)).toContainText("  Abcd");
+    // The frames catch up one key at a time; nothing doubles and nothing goes missing.
+    await frame(["› old", "  Ab"], 4, 1, 2);
+    await expect(liveContent(page)).toContainText("  Abcd");
+    await frame(["› old", "  Abcd"], 6, 1, 4);
+    await expect(liveContent(page)).toContainText("  Abcd");
+    await expect(liveContent(page)).not.toContainText("  Abcdd");
+  });
+
   test("releasing a drag over the text copies it", async ({ page }) => {
     const handle = await openLiveTerminal(page);
     await handle.pushLiveFrame({ content: screenOf(["alpha beta"]), rows: 24, history: 0, cursor: null });

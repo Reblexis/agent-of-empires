@@ -389,6 +389,7 @@ export function LiveTerminalView({ session, active = true, surface = "agent", te
           enterReading={live.enterReading}
           returnToLive={live.returnToLive}
           sendData={live.sendData}
+          inputSeq={live.inputSeq}
           sendPaste={sendPasteOrReport}
           uploadPastedImage={uploadPastedImage}
           forwardWheel={live.forwardWheel}

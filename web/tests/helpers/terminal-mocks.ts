@@ -18,7 +18,11 @@ export interface MockHandle {
 }
 
 type LiveFrameMessage = Extract<LiveServerMessage, { type: "frame" }>;
-type LiveFrameDefaults = Pick<LiveFrameMessage, "cursor" | "altScreen" | "mouse" | "mouseSgr" | "pane0" | "cols">;
+// `ack` stays absent unless a test sets it: a frame that counts no keys back predicts the way it did before.
+type LiveFrameDefaults = Pick<
+  LiveFrameMessage,
+  "cursor" | "altScreen" | "mouse" | "mouseSgr" | "pane0" | "cols" | "ack"
+>;
 type LiveFrameFields = Omit<LiveFrameMessage, "type" | "seq" | keyof LiveFrameDefaults> & Partial<LiveFrameDefaults>;
 
 /** `history` numbered scrollback lines, then a `rows`-tall screen with a prompt on its first line. */
@@ -55,7 +59,7 @@ function liveFrameMessage(seq: number, frame: LiveFrameFields): LiveServerMessag
     mouse: frame.mouse ?? false,
     mouseSgr: frame.mouseSgr ?? false,
     pane0: frame.pane0 ?? null,
-  };
+  } as LiveServerMessage;
 }
 
 export async function mockTerminalApis(

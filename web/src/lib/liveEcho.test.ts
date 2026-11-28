@@ -384,6 +384,95 @@ describe("EchoTracker", () => {
       expect(t.render(row)).toBeNull();
     });
 
+    // Viktor, 27 Nov 2026: "typing in there and scrolling atc.. sould be [immediate].. i thinkk there may be lags
+    // or buffering issues". In Codex every letter from the second line on waited a round trip: one dropped
+    // prediction left each later key predicted on a screen that did not hold the keys still on their way.
+    describe("a dropped prediction never makes typing fall behind", () => {
+      const row = (t: string, x: number, ack: number): EchoRow => ({ ...boxRow(t, x), ack });
+
+      it("keys still on their way are predicted on top of the frame that contradicted the prediction", () => {
+        const t = agentTracker();
+        t.input("a", row("› ", 2, 0), 0, 1);
+        t.input("b", row("› ", 2, 0), 10, 2);
+        t.input("c", row("› ", 2, 0), 20, 3);
+        // The app drew the first key its own way (on the next row); keys 2 and 3 had not reached it yet.
+        const moved = row("  x", 3, 1);
+        t.reconcile(moved);
+        expect(text(t.render(moved)?.segs)).toBe("  xbc".padEnd(W));
+      });
+
+      it("a key pressed after a drop shows with the keys before it that the frame does not hold yet", () => {
+        const t = agentTracker();
+        t.input("a", row("› ", 2, 0), 0, 1);
+        const moved = row("  x", 3, 0);
+        // A frame drawn before key 1 arrived, showing something the prediction did not expect.
+        t.reconcile(moved);
+        t.input("b", moved, 10, 2);
+        expect(text(t.render(moved)?.segs)).toBe("  xab".padEnd(W));
+      });
+
+      it("typing fast through a line the agent wraps its own way keeps every later letter instant", () => {
+        const t = agentTracker();
+        let seq = 0;
+        // The server is two keys behind the browser throughout.
+        let screen = row("  qq", 4, 0);
+        t.reconcile(screen);
+        t.input("q", screen, 0, ++seq);
+        t.input("q", screen, 0, ++seq);
+        // An unexpected redraw (not what was predicted) arrives, holding key 1 only.
+        screen = row("  QQq", 5, 1);
+        t.reconcile(screen);
+        for (let i = 0; i < 6; i++) {
+          t.input("q", screen, 0, ++seq);
+          const r = t.render(screen);
+          expect(r, `key ${seq}`).not.toBeNull();
+          expect(text(r!.segs)!.trimEnd().length, `key ${seq}`).toBe(5 + (seq - 1));
+          // The frame holding the key before the last one arrives.
+          screen = row("  QQq" + "q".repeat(seq - 2), 5 + seq - 2, seq - 1);
+          t.reconcile(screen);
+          expect(text(t.render(screen)?.segs)!.trimEnd().length).toBe(5 + (seq - 1));
+        }
+      });
+
+      it("a key that is not plain typing, still on its way, makes the view wait for the server", () => {
+        const t = agentTracker();
+        t.input("a", row("› ", 2, 0), 0, 1);
+        t.input("\r", row("› ", 2, 0), 10, 2);
+        const next = row("› ", 2, 1);
+        t.input("b", next, 20, 3);
+        expect(t.render(next)).toBeNull();
+        // Once the server has received Enter, typing is predicted again.
+        const after = row("› ", 2, 2);
+        t.reconcile(after);
+        expect(text(t.render(after)?.segs)).toBe("› b".padEnd(W));
+      });
+
+      it("a key sent around the tracker (a toolbar key, a wheel step) counts as not plain typing", () => {
+        const t = agentTracker();
+        t.input("a", row("› ", 2, 0), 0, 1);
+        // Key 2 went out another way; key 3 is typed while both are on their way.
+        const next = row("› a", 3, 1);
+        t.reconcile(next);
+        t.input("b", next, 20, 3);
+        expect(t.render(next)).toBeNull();
+        const after = row("› a", 3, 2);
+        t.reconcile(after);
+        expect(text(t.render(after)?.segs)).toBe("› ab".padEnd(W));
+      });
+
+      it("a password prompt still never shows what is typed, whatever the frames say", () => {
+        const t = new EchoTracker();
+        const pw = (ack: number): EchoRow => ({ segs: [{ text: "[sudo] password for v: ", style: {} }], x: 23, width: 40, ack });
+        t.input("s", pw(0), 0, 1);
+        t.input("3", pw(0), 10, 2);
+        t.reconcile(pw(1));
+        t.input("c", pw(1), 20, 3);
+        expect(t.render(pw(1))).toBeNull();
+        t.reconcile(pw(3));
+        expect(t.render(pw(3))).toBeNull();
+      });
+    });
+
     it("a shell prompt does not predict a wrap", () => {
       const t = trustedTracker();
       const row = plainRow(`${PROMPT}${"a".repeat(17)}`, 19);

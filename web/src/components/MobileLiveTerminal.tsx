@@ -71,6 +71,8 @@ export interface MobileLiveTerminalProps {
   returnToLive: (rows: number) => void;
   /** Returns whether the pane will receive the data. */
   sendData: (data: string) => boolean;
+  /** The number of the key message sent last on the connection, which frames count back (`ack`). */
+  inputSeq?: () => number;
   sendPaste: (text: string, submit: boolean) => boolean;
   /** Uploads a pasted image and resolves to a path the pane can read, or null. */
   uploadPastedImage: (file: File) => Promise<string | null>;
@@ -145,6 +147,7 @@ export function MobileLiveTerminal({
   enterReading,
   returnToLive,
   sendData: sendDataRaw,
+  inputSeq,
   sendPaste,
   uploadPastedImage,
   forwardWheel,
@@ -512,10 +515,10 @@ export function MobileLiveTerminal({
       if (!forwardModeRef.current && (readingRef.current || liveDetachedRef.current)) jumpToLatest();
       // The key goes out first: a prediction never stands between a key and the session.
       const delivered = sendDataRaw(data);
-      echoSent(data, delivered);
+      echoSent(data, delivered, delivered && inputSeq ? inputSeq() : null);
       return delivered;
     },
-    [sendDataRaw, stopMomentum, cancelTouchWheelQueue, echoSent, forwardModeRef, liveDetachedRef, jumpToLatest],
+    [inputSeq, sendDataRaw, stopMomentum, cancelTouchWheelQueue, echoSent, forwardModeRef, liveDetachedRef, jumpToLatest],
   );
 
   const pinchRef = useRef<{

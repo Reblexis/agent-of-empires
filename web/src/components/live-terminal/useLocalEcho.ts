@@ -55,6 +55,7 @@ export function useLocalEcho({
       idx,
       below: wraps ? parsedLines[idx + 1] : undefined,
       wrapMargin: wraps ? wrapMargin : undefined,
+      ack: frame.ack,
     };
   }, [enabled, reading, frame, parsedLines, renderCols, wrapMargin]);
   // Each new snapshot settles the predictions before paint, so a confirmed character is never drawn twice.
@@ -106,11 +107,12 @@ export function useLocalEcho({
     return () => clearTimeout(timer);
   }, [echo, echoVersion, reconciledRow]);
 
-  /** Called after the key went out; an undelivered key drops every prediction. */
+  /** Called after the key went out, with its number on the connection when known; an undelivered key drops every
+   *  prediction. */
   const sent = useCallback(
-    (data: string, delivered: boolean) => {
+    (data: string, delivered: boolean, seq?: number | null) => {
       try {
-        if (delivered) echo.input(data, echoRowRef.current, Date.now());
+        if (delivered) echo.input(data, echoRowRef.current, Date.now(), seq);
         else echo.reset();
       } catch (err) {
         fail(echo, err);
