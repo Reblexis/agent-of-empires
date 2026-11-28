@@ -232,7 +232,7 @@ mod tests {
                     "type": "patch", "seq": 8, "base": 7, "shift": 2, "lines": [[0, "a"]],
                     "rows": 24, "cols": 0, "history": 0, "cursor": null,
                     "altScreen": false, "mouse": false, "mouseSgr": false,
-                    "pane0": null,
+                    "pane0": null, "ack": 0,
                 }),
             ),
             (
