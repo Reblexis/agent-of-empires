@@ -2116,7 +2116,8 @@ mod tests {
             composite_pane0: None,
         };
         let v: serde_json::Value =
-            serde_json::from_str(&patch_json(&[(1, "B"), (3, "e")], 1, 7, Some(&cursor), 5)).unwrap();
+            serde_json::from_str(&patch_json(&[(1, "B"), (3, "e")], 1, 7, Some(&cursor), 5))
+                .unwrap();
         assert_eq!(v["type"], "patch");
         assert_eq!(v["seq"], 7);
         // Typing never falls behind: every content message counts the keys received before it was drawn.
